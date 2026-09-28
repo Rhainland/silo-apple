@@ -43,6 +43,11 @@ struct SeriesDownloadMenuButton: View {
     /// highlighted episode cannot blank the sheet or retarget its download.
     @State private var optionsTarget: SeriesEpisodeDownloadTarget?
     @State private var episodeErrorMessage: String?
+    /// True from presenting a sheet until its dismissal finishes. An alert
+    /// raised while a sheet is still animating away can be dropped, so a
+    /// failure in that window waits in `pendingEpisodeError`.
+    @State private var sheetOnScreen = false
+    @State private var pendingEpisodeError: String?
 
     /// Presentation of the trigger. `labeled` matches the detail page's named
     /// action row; `circle` is the original chrome, still used elsewhere.
@@ -114,9 +119,13 @@ struct SeriesDownloadMenuButton: View {
         // fails to present when teardown runs long (slow device,
         // accessibility animations, low power).
         .sheet(item: $activeSheet, onDismiss: {
+            sheetOnScreen = false
             if let pendingSheet {
                 self.pendingSheet = nil
                 activeSheet = pendingSheet
+            } else if let pendingEpisodeError {
+                self.pendingEpisodeError = nil
+                episodeErrorMessage = pendingEpisodeError
             }
         }) { sheet in
             switch sheet {
@@ -153,6 +162,9 @@ struct SeriesDownloadMenuButton: View {
                 SeriesMonitorSheet(seriesId: seriesId, seriesTitle: detail.title, seasons: seasons)
             }
         }
+        .onChange(of: activeSheet) { _, sheet in
+            if sheet != nil { sheetOnScreen = true }
+        }
         // The options sheet dismisses as soon as it hands off, so a failed
         // registration has to surface from here.
         .alert(
@@ -183,7 +195,11 @@ struct SeriesDownloadMenuButton: View {
             } catch DownloadError.registrationAlreadyInFlight {
                 // The original request owns the Preparing state.
             } catch {
-                episodeErrorMessage = error.localizedDescription
+                if sheetOnScreen {
+                    pendingEpisodeError = error.localizedDescription
+                } else {
+                    episodeErrorMessage = error.localizedDescription
+                }
             }
         }
     }

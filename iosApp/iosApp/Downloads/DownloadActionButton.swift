@@ -266,12 +266,13 @@ struct DownloadActionButton: View {
 
     /// One-tap entry: start immediately with defaults unless the size that
     /// would land on disk (the displayed version's size, or the max across
-    /// candidates when no versions are known) warrants confirming first.
+    /// candidates when that size is unknown) warrants confirming first.
     private func handleDownloadTap() {
         guard !isRegistrationPending, record == nil else { return }
         let estimate = versions.isEmpty
             ? DownloadSizeEstimate.estimate(fileSizes: candidateFileSizes)
-            : DownloadSizeEstimate.estimate(versions: versions, fileId: displayedVersionFileId)
+            : (DownloadSizeEstimate.estimate(versions: versions, fileId: displayedVersionFileId)
+                ?? DownloadSizeEstimate.estimate(fileSizes: candidateFileSizes))
         let available = DownloadFilePaths.deviceStorage().available
         if let warning = estimate?.warningMessage(availableBytes: available) {
             largeDownloadWarning = warning
