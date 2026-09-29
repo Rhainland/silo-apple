@@ -28,7 +28,7 @@ enum OfflinePreparedTrackInventory {
             guard hasSynthesizedName(track) else { return track }
             return track.replacing(
                 title: PlayerTrack.normalizedText(manifestTrack.title),
-                lang: track.lang ?? PlayerTrack.normalizedText(manifestTrack.language)
+                lang: track.normalizedLanguageCode ?? PlayerTrack.normalizedText(manifestTrack.language)
             )
         }
     }

@@ -100,6 +100,15 @@ final class OfflinePreparedTrackInventoryTests: XCTestCase {
         XCTAssertEqual(tracks.map(\.isDefault), [true, false, false])
     }
 
+    func testUndeterminedProbedLanguageTakesTheManifestLanguage() {
+        let probed = [track(id: 1, kind: .audio, title: "UND (aac)", lang: "und", codec: "aac")]
+        let tracks = OfflinePreparedTrackInventory.audioTracks(
+            probed,
+            manifestTracks: [manifestAudio(title: nil, language: "de")]
+        )
+        XCTAssertEqual(tracks.first?.lang, "de")
+    }
+
     func testRealAudioTitleIsKept() {
         let probed = [track(id: 1, kind: .audio, title: "Director's Cut Mix", lang: "eng", codec: "aac")]
         let tracks = OfflinePreparedTrackInventory.audioTracks(
