@@ -402,7 +402,7 @@ final class DownloadManager {
     func seriesPosterImageURL(for group: DownloadSeriesGroup) -> URL? {
         let records = group.allRecords
         return records.lazy.compactMap { self.seriesPosterImageURL(for: $0) }.first
-            ?? records.lazy.compactMap { self.posterImageURL(for: $0) }.first
+            ?? records.lazy.compactMap { self.existingFileURL(for: $0, filename: $0.posterFilename) }.first
     }
 
     /// Older builds recorded artwork filenames even when the write failed, so
