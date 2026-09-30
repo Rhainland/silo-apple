@@ -346,6 +346,19 @@ final class TitleArtPreferencesTests: XCTestCase {
         XCTAssertFalse(store.showsTitleArt)
     }
 
+    func testAChangeThatLandsAfterAProfileSwitchStillReachesItsProfilesCache() async {
+        transport.effective = (true, "default")
+        let store = makeStore()
+        await store.refresh()
+
+        transport.onPut = { [unowned self] in self.identity = Self.profileB }
+        store.setShowTitleArt(false)
+        await store.waitForPendingWrites()
+
+        identity = Self.profileA
+        XCTAssertFalse(makeStore().showsTitleArt, "profile A's next launch shows its saved choice")
+    }
+
     func testAReadThatRacesAChangeDoesNotUndoIt() async {
         transport.effective = (true, "default")
         let store = makeStore()
@@ -400,6 +413,8 @@ private final class FakeTitleArtTransport: TitleArtTransport, @unchecked Sendabl
     var deleteError: Error?
     /// Runs inside the capability probe, while a refresh waits on it.
     var onCapabilityProbe: (@MainActor () -> Void)?
+    /// Runs inside the next write, before it answers.
+    var onPut: (@MainActor () -> Void)?
 
     private(set) var effectiveReads = 0
     private(set) var requestedKeys: [SettingKey] = []
@@ -441,6 +456,9 @@ private final class FakeTitleArtTransport: TitleArtTransport, @unchecked Sendabl
             }
             calls.append(.put(scope.scope, flag))
             identities.append(requestIdentity)
+            let hook = onPut
+            onPut = nil
+            hook?()
             if let putError { throw putError }
         }
     }

@@ -409,9 +409,11 @@ final class TitleArtPreferences {
                     }
                 }
             }
+            // The server holds this for the change's own profile and server,
+            // even if another one became active while it was in flight.
+            persist(next, cacheKey: context.cacheKey)
             guard isCurrent(context) else { return }
             confirmed = next
-            persist(next, cacheKey: context.cacheKey)
         } catch {
             // Drop everything queued behind this change: it was planned from a
             // state the server never reached. A later choice is planned afresh
