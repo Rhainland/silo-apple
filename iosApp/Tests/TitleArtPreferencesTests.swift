@@ -359,6 +359,51 @@ final class TitleArtPreferencesTests: XCTestCase {
         XCTAssertFalse(makeStore().showsTitleArt, "profile A's next launch shows its saved choice")
     }
 
+    /// Kody K1: profile A's failed write must only drop changes planned on
+    /// A's state. A change queued for profile B after the switch still runs.
+    func testAFailedWriteForOneProfileDoesNotDropAnotherProfilesChange() async {
+        let gate = WriteGate()
+        transport.writeGate = gate
+        let store = makeStore()
+        await store.refresh()
+        store.setShowTitleArt(false)
+
+        identity = Self.profileB
+        await store.refresh()
+        store.setShowTitleArt(false)
+
+        transport.failingProfiles = [Self.profileA.profileId]
+        gate.open()
+        await store.waitForPendingWrites()
+
+        XCTAssertEqual(transport.calls, [.put(.profileDevice, false), .put(.profileDevice, false)])
+        XCTAssertEqual(transport.identities, [Self.profileA, Self.profileB])
+        XCTAssertFalse(store.showsTitleArt)
+        transport.capabilities = .failed(.transport(description: "offline"))
+        XCTAssertFalse(makeStore().showsTitleArt, "profile B's change reached its cache")
+    }
+
+    /// Kody K2: switching A -> B -> A while A's write is pending repaints A's
+    /// older cache and the refresh skips its read; the write landing must put
+    /// A's choice back on screen.
+    func testSwitchingBackWhileAWriteIsPendingShowsItOnceItLands() async {
+        let gate = WriteGate()
+        transport.writeGate = gate
+        let store = makeStore()
+        await store.refresh()
+        store.setShowTitleArt(false)
+
+        identity = Self.profileB
+        await store.refresh()
+        identity = Self.profileA
+        await store.refresh()
+        XCTAssertTrue(store.showsTitleArt, "A's older cache is back while its write is pending")
+
+        gate.open()
+        await store.waitForPendingWrites()
+        XCTAssertFalse(store.showsTitleArt)
+    }
+
     func testAReadThatRacesAChangeDoesNotUndoIt() async {
         transport.effective = (true, "default")
         let store = makeStore()
@@ -376,6 +421,23 @@ final class TitleArtPreferencesTests: XCTestCase {
 
 private final class ObservationFlag: @unchecked Sendable {
     var fired = false
+}
+
+@MainActor
+private final class WriteGate {
+    private var isOpen = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        guard !isOpen else { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func open() {
+        isOpen = true
+        waiters.forEach { $0.resume() }
+        waiters = []
+    }
 }
 
 private func titleArtCapabilities(revision: Int) -> APIv2SettingsContractCapabilities {
@@ -410,6 +472,11 @@ private final class FakeTitleArtTransport: TitleArtTransport, @unchecked Sendabl
     var capabilities: SettingsCapabilitiesResult = .available(titleArtCapabilities(revision: 16))
     var effective: (value: Bool, source: String) = (true, "default")
     var putError: Error?
+    /// Profiles whose writes fail; other profiles' writes succeed.
+    var failingProfiles: Set<String> = []
+    /// Holds every write until opened, so a test can switch profiles while a
+    /// write is in flight.
+    var writeGate: WriteGate?
     var deleteError: Error?
     /// Runs inside the capability probe, while a refresh waits on it.
     var onCapabilityProbe: (@MainActor () -> Void)?
@@ -449,6 +516,9 @@ private final class FakeTitleArtTransport: TitleArtTransport, @unchecked Sendabl
         value: SettingJSONValue,
         requestIdentity: HTTPRequestIdentity
     ) async throws {
+        if let gate = await MainActor.run(body: { writeGate }) {
+            await gate.wait()
+        }
         try await MainActor.run {
             guard key == .uiTitleArt, case .bool(let flag) = value else {
                 XCTFail("unexpected write \(key) \(value)")
@@ -460,6 +530,9 @@ private final class FakeTitleArtTransport: TitleArtTransport, @unchecked Sendabl
             onPut = nil
             hook?()
             if let putError { throw putError }
+            if failingProfiles.contains(requestIdentity.profileId) {
+                throw SettingsAPIError.server(status: 503, code: "unavailable", message: "busy")
+            }
         }
     }
 

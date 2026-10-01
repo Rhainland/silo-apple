@@ -224,10 +224,11 @@ final class TitleArtPreferences {
     @ObservationIgnored private var pendingWrites: [String: Int] = [:]
     @ObservationIgnored private var settledWrites: [String: Int] = [:]
     @ObservationIgnored private var writeTail: Task<Void, Never>?
-    /// Bumped when a queued change fails. Every change queued behind it was
-    /// planned from the optimistic state the failure just disproved, so those
-    /// changes are dropped rather than sent.
-    @ObservationIgnored private var queueEpoch = 0
+    /// Per profile cache key, bumped when a queued change for that profile
+    /// fails. Every change for the same profile queued behind it was planned
+    /// from the optimistic state the failure just disproved, so those changes
+    /// are dropped rather than sent. Other profiles' changes are unaffected.
+    @ObservationIgnored private var failureEpochs: [String: Int] = [:]
 
     private struct OperationContext: Equatable {
         let cacheKey: String
@@ -359,7 +360,7 @@ final class TitleArtPreferences {
         guard context.cacheKey == loadedCacheKey else { return }
 
         localMutationRevision += 1
-        let epoch = queueEpoch
+        let epoch = failureEpochs[context.cacheKey, default: 0]
         errorMessage = nil
         setting = next
         pendingWrites[context.cacheKey, default: 0] += 1
@@ -386,7 +387,7 @@ final class TitleArtPreferences {
             isSaving = pendingWrites[loadedCacheKey ?? "", default: 0] > 0
         }
         // An earlier change failed after this one was planned on top of it.
-        guard epoch == queueEpoch else { return }
+        guard epoch == failureEpochs[context.cacheKey, default: 0] else { return }
         do {
             for step in steps {
                 switch step {
@@ -414,11 +415,20 @@ final class TitleArtPreferences {
             persist(next, cacheKey: context.cacheKey)
             guard isCurrent(context) else { return }
             confirmed = next
+            // The last change still pending for this profile is its final
+            // choice. Adopt it: switching away and back repaints the profile's
+            // older cache, and the refresh after that skips its read while this
+            // write is pending. With newer changes queued, their optimistic
+            // value stays on screen until the last one lands. (The defer above
+            // has not decremented yet, so 1 means this change only.)
+            if pendingWrites[context.cacheKey, default: 0] == 1 {
+                setting = next
+            }
         } catch {
             // Drop everything queued behind this change: it was planned from a
             // state the server never reached. A later choice is planned afresh
             // from the confirmed state below.
-            queueEpoch &+= 1
+            failureEpochs[context.cacheKey, default: 0] &+= 1
             guard isCurrent(context) else { return }
             let message = Self.writeFailureMessage(for: error)
             errorMessage = message
