@@ -81,6 +81,14 @@ struct SessionExpiryEvent: Equatable, Sendable {
     let disposition: RejectedRefreshDisposition
 }
 
+/// Nonsecret notification payload naming the account and profile whose
+/// verification proof the server stopped accepting. The account session is
+/// still valid; only the profile needs selecting and verifying again.
+struct ProfileVerificationRequiredEvent: Equatable, Sendable {
+    let account: RefreshAccountIdentity
+    let profileID: String
+}
+
 struct TemporaryAuthScope: Equatable, Sendable {
     /// Stable for this installed credential overlay and replaced whenever a
     /// new remote-playback handoff is activated.

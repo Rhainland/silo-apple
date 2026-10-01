@@ -584,6 +584,16 @@ final class AuthService: @unchecked Sendable {
         await recoverFromInvalidProfile(expectedProfileID: activeProfileID)
     }
 
+    /// Recovery for `HTTPClient`'s `.siloProfileVerificationRequired`: the
+    /// server stopped accepting the active profile's proof (for example after
+    /// an admin changed the account's access), but the account session is
+    /// still valid. Delivery is asynchronous, so the event is applied only
+    /// while the account that sent the rejected request is still current.
+    func recoverFromProfileVerificationRequired(_ event: ProfileVerificationRequiredEvent) async {
+        guard await TokenStore.shared.refreshAccountIdentity() == event.account else { return }
+        await recoverFromInvalidProfile(expectedProfileID: event.profileID)
+    }
+
     /// Recover from the server's profile-specific 403/404 responses. The
     /// expected ID prevents a late failed request from clearing a profile the
     /// user selected after that request started.
@@ -592,6 +602,15 @@ final class AuthService: @unchecked Sendable {
         let serverID = serverRegistry.activeServerId
         let expectedAccount = await TokenStore.shared.refreshAccountIdentity()
         guard let transitionLease = await HTTPClient.shared.beginIdentityTransition() else {
+            return
+        }
+        // Several failures can start a recovery for the same profile (the
+        // Home prefetch and the global 403 signal, or one observer per
+        // window). Leases queue, so a later caller gets here only after the
+        // first finished; it must not cancel the requests Who's Watching has
+        // started since.
+        guard profileId == expectedProfileID else {
+            await HTTPClient.shared.endIdentityTransition(transitionLease)
             return
         }
         #if os(iOS) || os(tvOS)

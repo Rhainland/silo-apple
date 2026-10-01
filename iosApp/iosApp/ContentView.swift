@@ -170,6 +170,10 @@ struct ContentView: View {
                 router.expiredSession()
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .siloProfileVerificationRequired)) { notification in
+            guard let event = notification.object as? ProfileVerificationRequiredEvent else { return }
+            Task { await AuthService.shared.recoverFromProfileVerificationRequired(event) }
+        }
         .onReceive(NotificationCenter.default.publisher(for: .siloProfileSelectionRequired)) { _ in
             guard shouldPresentProfileSelectionAfterRecovery(
                 isLoggedIn: AuthService.shared.isLoggedIn,
