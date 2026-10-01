@@ -912,6 +912,14 @@ struct TVItemDetailView: View {
                 let response: EpisodesResponse
                 if let cached: EpisodesResponse = ResponseCache.shared.get(key) {
                     response = cached
+                } else if viewModel.episodePagesRevision != 0 {
+                    // A watched change dropped these pages. A shared request
+                    // sent before the write could still be in flight and would
+                    // hand back the old state, so read the server directly.
+                    response = try await SiloAPI.shared.episodes(
+                        seriesId: detail.contentId, seasonNumber: season.seasonNumber,
+                        libraryId: libraryId
+                    )
                 } else {
                     response = try await MetadataRequestPool.shared.episodes(
                         seriesId: detail.contentId, seasonNumber: season.seasonNumber,
