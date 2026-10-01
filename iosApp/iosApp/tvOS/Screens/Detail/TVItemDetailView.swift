@@ -275,7 +275,8 @@ struct TVItemDetailView: View {
                 detail: detail,
                 isFavorite: viewModel.isFavorite,
                 inWatchlist: viewModel.inWatchlist,
-                isWatched: viewModel.selectedSeason?.userData?.played ?? false,
+                isSeriesWatched: viewModel.isWatched,
+                isSeasonWatched: viewModel.selectedSeason?.userData?.played ?? false,
                 seasons: viewModel.seasons,
                 selectedSeason: viewModel.selectedSeason,
                 episodes: viewModel.episodes,
@@ -417,7 +418,8 @@ struct TVItemDetailView: View {
                 },
                 onToggleFavorite: { Task { await viewModel.toggleFavorite() } },
                 onToggleWatchlist: { Task { await viewModel.toggleWatchlist() } },
-                onToggleWatched: { Task { await viewModel.toggleSelectedSeasonWatched() } },
+                onToggleSeriesWatched: { Task { await viewModel.toggleWatched() } },
+                onToggleSeasonWatched: { Task { await viewModel.toggleSelectedSeasonWatched() } },
                 onPersonTap: { personId in
                     if !personId.isEmpty {
                         router.navigate(to: .personDetail(personId: personId))
@@ -440,7 +442,7 @@ struct TVItemDetailView: View {
                 await loadSeriesNextUpPlaybackDetail(for: detail)
             }
             .task(
-                id: "\(detail.contentId):\(viewModel.selectedSeason?.seasonNumber ?? -1):\(carouselRetryGeneration)",
+                id: "\(detail.contentId):\(viewModel.selectedSeason?.seasonNumber ?? -1):\(carouselRetryGeneration):\(viewModel.episodePagesRevision)",
                 priority: .background
             ) {
                 await prefetchAdjacentSeriesSeasons(for: detail)
