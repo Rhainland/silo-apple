@@ -87,6 +87,11 @@ struct SessionExpiryEvent: Equatable, Sendable {
 struct ProfileVerificationRequiredEvent: Equatable, Sendable {
     let account: RefreshAccountIdentity
     let profileID: String
+    /// `TokenStore`'s process-local generation for the selection that sent
+    /// the rejected proof. It names that installation without carrying the
+    /// proof, so recovery can leave a later selection of the same profile
+    /// alone.
+    let profileSelection: UUID
 }
 
 struct TemporaryAuthScope: Equatable, Sendable {
@@ -456,6 +461,12 @@ actor TokenStore {
             return nil
         }
         return profileSelectionGeneration
+    }
+
+    /// Whether `generation` is still the installed persistent profile
+    /// selection.
+    func isCurrentProfileSelection(_ generation: UUID) -> Bool {
+        temporaryScope == nil && profileSelectionGeneration == generation
     }
 
     /// Ownership fence for one awaited operation.
@@ -1451,7 +1462,8 @@ actor TokenStore {
     /// profiles without forcing another sign-in.
     func deactivateProfile(
         expectedAccount: RefreshAccountIdentity?,
-        expectedProfileID: String? = nil
+        expectedProfileID: String? = nil,
+        expectedProfileSelection: UUID? = nil
     ) -> Bool {
         guard temporaryScope == nil else { return false }
         if let expectedAccount,
@@ -1460,6 +1472,10 @@ actor TokenStore {
         }
         if let expectedProfileID,
            defaults.string(forKey: profileIdDefaultsKey) != expectedProfileID {
+            return false
+        }
+        if let expectedProfileSelection,
+           profileSelectionGeneration != expectedProfileSelection {
             return false
         }
         ensureLoaded()

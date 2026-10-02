@@ -20,6 +20,7 @@ final class ProfileVerificationSignalTests: XCTestCase {
     private struct Harness {
         let serverId: String
         let serverURL: String
+        let defaults: SharedDefaults
         let tokens: TokenStore
         let http: HTTPClient
         let stub: StubURLProtocol.Handler
@@ -36,8 +37,9 @@ final class ProfileVerificationSignalTests: XCTestCase {
     ) async throws -> Harness {
         let name = "ProfileVerificationSignalTests.\(UUID().uuidString)"
         let suite = try XCTUnwrap(UserDefaults(suiteName: name))
+        let defaults = SharedDefaults(suite: suite, standard: suite)
         let tokens = TokenStore(keychain: SharedKeychain(service: name, accessGroup: nil),
-            defaults: SharedDefaults(suite: suite, standard: suite))
+            defaults: defaults)
         addTeardownBlock {
             _ = await tokens.clearTokens()
             UserDefaults().removePersistentDomain(forName: name)
@@ -58,7 +60,8 @@ final class ProfileVerificationSignalTests: XCTestCase {
         stub.route(StubURLProtocol.path(Self.resourcePath)) { _ in response }
         let http = HTTPClient(session: stub.makeSession(), tokenStore: tokens,
             responseReceivedBarrier: responseReceivedBarrier)
-        return Harness(serverId: serverId, serverURL: serverURL, tokens: tokens, http: http, stub: stub)
+        return Harness(serverId: serverId, serverURL: serverURL, defaults: defaults,
+            tokens: tokens, http: http, stub: stub)
     }
 
     /// Counts signals for one harness's server, so traffic from other tests
@@ -184,6 +187,50 @@ final class ProfileVerificationSignalTests: XCTestCase {
         await expectForbidden { try await h.http.requestData(method: "GET", path: Self.resourcePath) }
 
         XCTAssertTrue(signals.events.isEmpty)
+    }
+
+    /// Recovery that runs while the rejected selection is still installed
+    /// returns the user to profile selection.
+    func testRecoveryClearsTheRejectedSelection() async throws {
+        let h = try await harness()
+        let event = try await rejectedEvent(h)
+
+        await recoveryService(h).recoverFromProfileVerificationRequired(event)
+
+        let profileID = await h.tokens.getProfileId()
+        let proof = await h.tokens.getProfileToken()
+        XCTAssertNil(profileID)
+        XCTAssertNil(proof)
+    }
+
+    /// The event is delivered asynchronously and recovery can queue behind a
+    /// profile activation. If the user selected the same profile again with a
+    /// new proof meanwhile, recovery must leave that selection in place.
+    func testRecoveryKeepsAReplacementSelectionOfTheSameProfile() async throws {
+        let h = try await harness()
+        let event = try await rejectedEvent(h)
+        let reactivated = await h.tokens.activateProfile(profileID: "profile", profileToken: "proof-2",
+            expectedAccount: event.account)
+        XCTAssertTrue(reactivated)
+
+        await recoveryService(h).recoverFromProfileVerificationRequired(event)
+
+        let profileID = await h.tokens.getProfileId()
+        let proof = await h.tokens.getProfileToken()
+        XCTAssertEqual(profileID, "profile")
+        XCTAssertEqual(proof, "proof-2")
+    }
+
+    private func rejectedEvent(_ h: Harness) async throws -> ProfileVerificationRequiredEvent {
+        let (signals, observer) = observeSignals(for: h.serverId)
+        defer { NotificationCenter.default.removeObserver(observer) }
+        await expectForbidden { try await h.http.requestData(method: "GET", path: Self.resourcePath) }
+        return try XCTUnwrap(signals.events.first)
+    }
+
+    private func recoveryService(_ h: Harness) -> AuthService {
+        AuthService(launchPreferences: ProfileLaunchPreferences(defaults: h.defaults),
+            httpClient: h.http, tokenStore: h.tokens, defaults: h.defaults)
     }
 
     func testOtherRejectionsDoNotSignal() async throws {
