@@ -128,9 +128,14 @@ actor HTTPClient {
     private var mediaRefreshBackoff: (auth: CapturedOrdinaryRequestAuth, until: ContinuousClock.Instant)?
     private var proactiveMediaRefreshes: [RefreshAccountIdentity: (id: UUID, task: Task<Void, Never>)] = [:]
     /// The profile proof the last `.siloProfileVerificationRequired` was
-    /// posted for (access token dropped). A burst of rejected requests posts
-    /// once; a new proof or profile is a different identity and posts again.
-    private var lastProfileVerificationSignal: CapturedOrdinaryRequestAuth?
+    /// posted for (access token dropped), with the `TokenStore` selection
+    /// generation it was installed under. A burst of rejected requests posts
+    /// once; a new proof, profile, or selection of the same profile posts
+    /// again.
+    private var lastProfileVerificationSignal: (
+        auth: CapturedOrdinaryRequestAuth,
+        selection: UUID
+    )?
 
     /// A flight's value is the update requirement its refresh answer proved,
     /// if any. Success and every other failure are read back from
@@ -1108,7 +1113,9 @@ actor HTTPClient {
     /// different profile through extra headers, a temporary playback handoff,
     /// or a request whose profile or proof has since been replaced (the user
     /// already re-verified, or switched profile) does not trigger recovery.
-    /// A burst of rejected requests for one proof posts once.
+    /// A burst of rejected requests for one proof posts once per selection:
+    /// picking the same profile again (even with the same proof, or none)
+    /// starts a new selection, and its rejection posts again.
     private func signalProfileVerificationIfRequired(
         _ data: Data,
         _ response: HTTPURLResponse,
@@ -1131,14 +1138,11 @@ actor HTTPClient {
             profileId: profileID,
             profileToken: auth.profileToken
         )
-        guard !isProfileVerificationSignaled(signal),
-              await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: signal) != nil,
-              // Re-checked after the TokenStore hop: another rejected request
-              // in the same burst may have posted meanwhile.
-              !isProfileVerificationSignaled(signal) else {
+        guard let selection = await tokenStore.profileSelectionGeneration(matchingIdentityOf: signal),
+              !isProfileVerificationSignaled(signal, selection: selection) else {
             return
         }
-        lastProfileVerificationSignal = signal
+        lastProfileVerificationSignal = (signal, selection)
         Self.logger.notice("Active profile verification rejected; requesting profile selection")
         #if os(iOS) || os(tvOS)
         // Essential: the user is about to land on Who's Watching without
@@ -1163,8 +1167,12 @@ actor HTTPClient {
         }
     }
 
-    private func isProfileVerificationSignaled(_ signal: CapturedOrdinaryRequestAuth) -> Bool {
-        lastProfileVerificationSignal?.sameCredentialIdentity(as: signal) ?? false
+    private func isProfileVerificationSignaled(
+        _ signal: CapturedOrdinaryRequestAuth,
+        selection: UUID
+    ) -> Bool {
+        guard let last = lastProfileVerificationSignal else { return false }
+        return last.selection == selection && last.auth.sameCredentialIdentity(as: signal)
     }
 
     /// The stable identifier of an `application/problem+json` body: the final
