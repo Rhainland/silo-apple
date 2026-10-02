@@ -142,6 +142,35 @@ final class ProfileVerificationSignalTests: XCTestCase {
         XCTAssertEqual(signals.events.count, 2)
     }
 
+    /// Recovery sends the user to Who's Watching. Picking the same profile
+    /// again from a stale list that says it has no PIN installs the same
+    /// (absent) proof; its rejection must still post, or the user is left on
+    /// failing screens.
+    func testReselectingTheSameProofSignalsAgain() async throws {
+        let h = try await harness()
+        let (signals, observer) = observeSignals(for: h.serverId)
+        defer { NotificationCenter.default.removeObserver(observer) }
+        let current = await h.tokens.refreshAccountIdentity()
+        let account = try XCTUnwrap(current)
+
+        let first = await h.tokens.activateProfile(profileID: "profile", profileToken: nil,
+            expectedAccount: account)
+        XCTAssertTrue(first)
+        await expectForbidden { try await h.http.requestData(method: "GET", path: Self.resourcePath) }
+        await expectForbidden { try await h.http.requestData(method: "GET", path: Self.resourcePath) }
+        XCTAssertEqual(signals.events.count, 1, "one selection posts once")
+
+        let deactivated = await h.tokens.deactivateProfile(expectedAccount: account,
+            expectedProfileID: "profile")
+        XCTAssertTrue(deactivated)
+        let again = await h.tokens.activateProfile(profileID: "profile", profileToken: nil,
+            expectedAccount: account)
+        XCTAssertTrue(again)
+        await expectForbidden { try await h.http.requestData(method: "GET", path: Self.resourcePath) }
+
+        XCTAssertEqual(signals.events.count, 2)
+    }
+
     /// A response that arrives after the user already re-verified (or picked
     /// another profile) belongs to the replaced proof and must not send the
     /// user back to profile selection.
