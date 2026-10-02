@@ -1161,7 +1161,11 @@ actor HTTPClient {
             ]
         )
         #endif
-        let event = ProfileVerificationRequiredEvent(account: auth.account, profileID: profileID)
+        let event = ProfileVerificationRequiredEvent(
+            account: auth.account,
+            profileID: profileID,
+            profileSelection: selection
+        )
         await MainActor.run {
             NotificationCenter.default.post(name: .siloProfileVerificationRequired, object: event)
         }
