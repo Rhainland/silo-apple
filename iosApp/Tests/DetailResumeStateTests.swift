@@ -7,12 +7,17 @@ final class DetailResumeStateTests: XCTestCase {
 
     private struct FetchFailure: Error {}
 
+    /// Builds watch state the way `watchDetail` does: the server's
+    /// snake_case `user_data` through the production decoder and projection.
     private func userData(position: Double?, duration: Double? = 2700) throws -> LeafItemUserData {
-        var object: [String: Any] = ["played": false]
-        if let position { object["positionSeconds"] = position }
-        if let duration { object["durationSeconds"] = duration }
+        var object: [String: Any] = [
+            "played": false, "watched_count": 0, "unplayed_count": 1, "in_progress_count": 0,
+        ]
+        if let position { object["position_seconds"] = position }
+        if let duration { object["duration_seconds"] = duration }
         let data = try JSONSerialization.data(withJSONObject: object)
-        return try JSONDecoder().decode(LeafItemUserData.self, from: data)
+        let wire = try HTTPClient.makeJSONDecoder().decode(APIv2CatalogRead.WatchRollup.self, from: data)
+        return try LeafItemUserData(catalog: wire)
     }
 
     // MARK: - resumePosition(cached:)
