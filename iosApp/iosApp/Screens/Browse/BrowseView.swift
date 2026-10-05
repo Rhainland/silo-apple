@@ -149,19 +149,31 @@ struct BrowseView: View {
     // MARK: - Control bar (Sort + Filter)
 
     private var controlBar: some View {
-        HStack(spacing: 9) {
-            sortMenu
-            Button { showFilters = true } label: {
-                controlChip(
-                    icon: "line.3.horizontal.decrease",
-                    text: "Filter",
-                    badge: viewModel.filterState.activeFacetCount
-                )
+        // At accessibility text sizes the two chips no longer fit side by
+        // side and SwiftUI broke their labels mid-word; stack them instead.
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 9) {
+                sortMenu
+                filterButton
+                Spacer(minLength: 0)
             }
-            .buttonStyle(.plain)
-            Spacer(minLength: 0)
+            VStack(alignment: .leading, spacing: 9) {
+                sortMenu
+                filterButton
+            }
         }
         .padding(.horizontal, SiloTheme.padding)
+    }
+
+    private var filterButton: some View {
+        Button { showFilters = true } label: {
+            controlChip(
+                icon: "line.3.horizontal.decrease",
+                text: "Filter",
+                badge: viewModel.filterState.activeFacetCount
+            )
+        }
+        .buttonStyle(.plain)
     }
 
     private var sortMenu: some View {
