@@ -1,0 +1,80 @@
+import XCTest
+@testable import Silo
+
+/// A detail page that stays open while another device plays must offer and
+/// resume from the server's newer position, not the page's snapshot.
+final class DetailResumeStateTests: XCTestCase {
+
+    private struct FetchFailure: Error {}
+
+    private func userData(position: Double?, duration: Double? = 2700) throws -> LeafItemUserData {
+        var object: [String: Any] = ["played": false]
+        if let position { object["positionSeconds"] = position }
+        if let duration { object["durationSeconds"] = duration }
+        let data = try JSONSerialization.data(withJSONObject: object)
+        return try JSONDecoder().decode(LeafItemUserData.self, from: data)
+    }
+
+    // MARK: - resumePosition(cached:)
+
+    func testServerPositionWinsOverStaleSnapshot() throws {
+        let cached = try userData(position: 307)
+        let state = DetailResumeState.refreshed(try userData(position: 1210))
+        XCTAssertEqual(state.resumePosition(cached: cached), 1210)
+    }
+
+    func testServerWithoutProgressSuppressesStaleResume() throws {
+        let cached = try userData(position: 307)
+        XCTAssertNil(DetailResumeState.refreshed(nil).resumePosition(cached: cached))
+        XCTAssertNil(
+            DetailResumeState.refreshed(try userData(position: nil)).resumePosition(cached: cached)
+        )
+    }
+
+    func testServerProgressOffersResumeWhenSnapshotHadNone() throws {
+        let state = DetailResumeState.refreshed(try userData(position: 1210))
+        XCTAssertEqual(state.resumePosition(cached: nil), 1210)
+    }
+
+    func testServerPositionNearEndIsNotOffered() throws {
+        let cached = try userData(position: 307)
+        let state = DetailResumeState.refreshed(try userData(position: 2698, duration: 2700))
+        XCTAssertNil(state.resumePosition(cached: cached))
+    }
+
+    func testUnavailableFallsBackToSnapshot() throws {
+        let cached = try userData(position: 307)
+        XCTAssertEqual(DetailResumeState.unavailable.resumePosition(cached: cached), 307)
+        XCTAssertNil(DetailResumeState.unavailable.resumePosition(cached: nil))
+    }
+
+    // MARK: - load
+
+    func testLoadReturnsFetchedWatchState() async throws {
+        let fresh = try userData(position: 1210)
+        let state = await DetailResumeState.load { fresh }
+        XCTAssertEqual(state, .refreshed(fresh))
+    }
+
+    func testLoadKeepsServerAnswerOfNoWatchState() async {
+        let state = await DetailResumeState.load { nil }
+        XCTAssertEqual(state, .refreshed(nil))
+    }
+
+    func testLoadMapsFailureToUnavailable() async {
+        let state = await DetailResumeState.load { throw FetchFailure() }
+        XCTAssertEqual(state, .unavailable)
+    }
+
+    func testLoadTimesOutToUnavailable() async throws {
+        let fresh = try userData(position: 1210)
+        let started = ContinuousClock.now
+        let state = await DetailResumeState.load(timeout: .milliseconds(50)) {
+            try await Task.sleep(for: .seconds(30))
+            return fresh
+        }
+        XCTAssertEqual(state, .unavailable)
+        // The stalled fetch is cancelled rather than awaited to completion.
+        XCTAssertLessThan(ContinuousClock.now - started, .seconds(10))
+    }
+}

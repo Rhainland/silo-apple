@@ -615,17 +615,10 @@ private struct ItemDetailPhoneContent: View {
                     selectedSeriesEpisodeId = nil
                     Task { await viewModel.selectSeason(season) }
                 },
-                onPlayEpisode: { id, fileId, startFromBeginning in
+                onPlayEpisode: { id, fileId, startFromBeginning, resumePosition in
                     awaitsPlaybackReturn = true
                     SeriesPlaybackReturnInbox.discardPending()
                     let usesSelectedEpisodeControls = id == playbackEpisode(for: detail)?.contentId
-                    let episode = viewModel.episodes.first(where: { $0.contentId == id })
-                    let resumePosition = startFromBeginning
-                        ? nil
-                        : PlaybackResumePoint.position(
-                            episode?.userData?.positionSeconds,
-                            duration: episode?.userData?.durationSeconds
-                        )
                     presentPlayerFromDetail(
                         contentId: id,
                         fileId: usesSelectedEpisodeControls
@@ -635,9 +628,10 @@ private struct ItemDetailPhoneContent: View {
                         subtitleTrackIndex: usesSelectedEpisodeControls
                             ? preferredNextUpSubtitleTrackIndex : nil,
                         startFromBeginning: startFromBeginning,
-                        resumePosition: resumePosition
+                        resumePosition: startFromBeginning ? nil : resumePosition
                     )
                 },
+                refreshResumeState: { id in await refreshedResumeState(contentId: id) },
                 onEpisodeTap: { id in
                     // The rail has already completed its native deceleration by
                     // the time it reports a centered card. Publishing this
@@ -726,7 +720,7 @@ private struct ItemDetailPhoneContent: View {
                 selectedVersionFileId: preferredVersionFileId,
                 selectedAudioTrackIndex: preferredAudioTrackIndex,
                 selectedSubtitleTrackIndex: preferredSubtitleTrackIndex,
-                onPlay: { startFromBeginning in
+                onPlay: { startFromBeginning, resumePosition in
                     // Track picks only travel with a resolved file.
                     let fileId = playbackFileId(for: detail)
                     presentPlayerFromDetail(
@@ -735,9 +729,10 @@ private struct ItemDetailPhoneContent: View {
                         audioTrackIndex: fileId == nil ? nil : preferredAudioTrackIndex,
                         subtitleTrackIndex: fileId == nil ? nil : preferredSubtitleTrackIndex,
                         startFromBeginning: startFromBeginning,
-                        resumePosition: startFromBeginning ? nil : playableResumePosition(for: detail)
+                        resumePosition: startFromBeginning ? nil : resumePosition
                     )
                 },
+                refreshResumeState: { await refreshedResumeState(contentId: contentId) },
                 onSelectVersion: { fileId in
                     preferredVersionFileId = fileId
                     preferredAudioTrackIndex = sanitizedAudioTrackIndex(
@@ -821,6 +816,17 @@ private struct ItemDetailPhoneContent: View {
             )?.fileId
         }
         return nil
+    }
+
+    /// The server's current watch state for a Play tap. Skipped when the
+    /// server is known unreachable, so a downloaded copy still plays at once
+    /// from the page's snapshot.
+    private func refreshedResumeState(contentId: String) async -> DetailResumeState {
+        guard ConnectionMonitor.shared.isServerReachable else { return .unavailable }
+        let libraryId = libraryId
+        return await DetailResumeState.load {
+            try await SiloAPI.shared.watchDetail(contentId: contentId, libraryId: libraryId).userData
+        }
     }
 
     private func playableResumePosition(for detail: ItemDetail) -> Double? {
