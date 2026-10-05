@@ -1839,6 +1839,8 @@ actor HTTPClient {
             && !(method == "PATCH" && path.hasPrefix("/api/v2/profiles/")
                 && path.split(separator: "/").count == 4)
             && !(path == "/api/v2/downloads" && method == "POST")
+            // A resent create would start a second shuffle.
+            && !(path == "/api/v2/shuffles" && method == "POST")
             && path != diagnosticsUploads
             && !(path.hasPrefix(diagnosticsUploads + "/") && path.hasSuffix("/complete"))
     }

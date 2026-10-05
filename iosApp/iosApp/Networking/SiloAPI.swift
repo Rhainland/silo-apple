@@ -396,6 +396,42 @@ actor SiloAPI {
         try await apiV2Client.moveCollection(version, toGroupId: groupId)
     }
 
+    // --- Shuffle ---
+
+    func shuffleCapability() async throws -> APIv2ShuffleCapability {
+        try await apiV2Client.shuffleCapability(auth: try await detailReadAuth())
+    }
+
+    /// `non_retryable`: dispatched once. A lost answer leaves an unused
+    /// shuffle that the server deletes with other abandoned ones.
+    func createShuffle(scope: ShuffleScopeRequest) async throws -> APIv2Shuffle {
+        try await apiV2Client.createShuffle(
+            scope: scope, imageSize: await imageSizeQuery["image_size"], auth: try await mutationAuth()
+        )
+    }
+
+    func shuffle(id: String) async throws -> APIv2Shuffle {
+        try await apiV2Client.shuffle(id: id, imageSize: await imageSizeQuery["image_size"], auth: try await detailReadAuth())
+    }
+
+    func advanceShuffle(id: String, fromContentId: String) async throws -> APIv2Shuffle {
+        try await apiV2Client.advanceShuffle(
+            id: id, fromContentId: fromContentId,
+            imageSize: await imageSizeQuery["image_size"], auth: try await mutationAuth()
+        )
+    }
+
+    func skipShuffleItem(id: String, nextContentId: String) async throws -> APIv2Shuffle {
+        try await apiV2Client.skipShuffleItem(
+            id: id, nextContentId: nextContentId,
+            imageSize: await imageSizeQuery["image_size"], auth: try await mutationAuth()
+        )
+    }
+
+    func deleteShuffle(id: String) async throws {
+        try await apiV2Client.deleteShuffle(id: id, auth: try await mutationAuth())
+    }
+
     // --- Collection groups (personal) ---
 
     /// `non_retryable`, like ``createCollection(name:)``.

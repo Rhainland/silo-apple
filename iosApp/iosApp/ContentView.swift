@@ -547,11 +547,12 @@ struct ContentView: View {
         async let ai: Void = AICapabilities.shared.refresh()
         async let imageSize: Void = ImageSizeCapability.shared.refresh()
         async let requests: Void = RequestsFeatureStore.shared.refresh()
+        async let shuffle: Void = ShuffleFeatureStore.shared.refresh()
         async let subtitles: Void = SubtitleProvidersStore.shared.refresh()
         async let profile: Void = CurrentProfileStore.shared.refresh()
         async let customization: Void = uiCustomization.refresh()
         async let seek: Void = SeekIntervalPreferences.shared.refresh()
-        _ = await (overlay, ai, imageSize, requests, subtitles, profile, customization, seek)
+        _ = await (overlay, ai, imageSize, requests, shuffle, subtitles, profile, customization, seek)
     }
 
     @MainActor
@@ -2433,7 +2434,8 @@ struct MainTabView: View {
                 prefersLastUsedVersion: payload.prefersLastUsedVersion,
                 offlineDownloadId: payload.offlineDownloadId,
                 posterURLHint: payload.posterURL,
-                backdropURLHint: payload.backdropURL
+                backdropURLHint: payload.backdropURL,
+                shuffle: payload.shuffle
             )
         }
         #endif
