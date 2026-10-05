@@ -73,12 +73,7 @@ struct AsyncImageView: View {
                     placeholder(frame: frame)
                         .overlay {
                             if placeholderStyle.showsErrorIcon {
-                                // Decorative: the enclosing card's label
-                                // already names the item, and the symbol's
-                                // own label ("Movie") would misstate it.
-                                Image(systemName: placeholderSymbol)
-                                    .foregroundColor(.siloOnSurface.opacity(0.3))
-                                    .accessibilityHidden(true)
+                                ArtworkPlaceholderGlyph(symbol: placeholderSymbol)
                             }
                         }
                 } else {
@@ -170,6 +165,27 @@ enum ArtworkPlaceholderSymbol {
         default:
             return fallback
         }
+    }
+}
+
+/// The faint glyph drawn over missing artwork.
+///
+/// It is decoration: the enclosing card's label already names the item, and
+/// the symbol's own label ("Movie", "Tv") would misstate it. An `Image` with
+/// `accessibilityHidden` is gone for VoiceOver but still listed in the
+/// UI-automation tree that XCUITest and Maestro read, so the symbol is drawn
+/// into a canvas, which exposes no element for it.
+struct ArtworkPlaceholderGlyph: View {
+    let symbol: String
+
+    var body: some View {
+        Canvas { context, size in
+            var glyph = context.resolve(Image(systemName: symbol))
+            glyph.shading = .color(Color.siloOnSurface.opacity(0.3))
+            context.draw(glyph, at: CGPoint(x: size.width / 2, y: size.height / 2))
+        }
+        .accessibilityHidden(true)
+        .allowsHitTesting(false)
     }
 }
 

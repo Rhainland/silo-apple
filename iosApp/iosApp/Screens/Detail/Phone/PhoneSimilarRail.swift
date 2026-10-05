@@ -252,9 +252,7 @@ private struct PhonePosterCard: View {
                 .fill(Color.siloSurfaceElevated)
                 .frame(width: cardWidth, height: cardHeight)
                 .overlay(
-                    Image(systemName: item.placeholderSymbol ?? placeholderSymbol)
-                        .foregroundColor(.siloOnSurface.opacity(0.3))
-                        .accessibilityHidden(true)
+                    ArtworkPlaceholderGlyph(symbol: item.placeholderSymbol ?? placeholderSymbol)
                 )
         }
     }
