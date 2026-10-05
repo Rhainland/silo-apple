@@ -565,6 +565,11 @@ class PlayerViewModel {
     /// UI in a terminal paused state without letting tail-drain callbacks
     /// overwrite it or surface a false decode error.
     var hasReachedEndOfFile = false
+    /// The item played to its end. An end of stream short of the end (the
+    /// source went away) parks the player the same way but finishes nothing.
+    private var finishedAtEndOfFile: Bool {
+        hasReachedEndOfFile && !reachedEndPrematurely
+    }
     let settings = PlayerSettings.shared
     /// Profile-wide skip intervals. Read at each skip, so a change made while
     /// the player is open applies to the next press.
@@ -720,6 +725,16 @@ class PlayerViewModel {
     /// instead of ending playback; before that it is a startup failure.
     @ObservationIgnored
     private var viewingHasPlayed = false
+    /// Whether the current transport's source stopped delivering, and a
+    /// seek target it has not played from yet. Decides whether an end of
+    /// stream is a lost connection and where a reconnect resumes.
+    @ObservationIgnored
+    private var sourceWatch = PlaybackSourceWatch()
+    /// Set when the latest end of stream came short of the end of the item.
+    /// Such an end never finishes the item: no watched state, no completed
+    /// progress report.
+    @ObservationIgnored
+    private var reachedEndPrematurely = false
     private var nextUpLookupTask: Task<Void, Never>?
     private var nextUpOnDeckTask: Task<Void, Never>?
     private var nextUpCountdownTask: Task<Void, Never>?
@@ -1331,6 +1346,7 @@ class PlayerViewModel {
             }
             syncIntroSkipPrompt()
         case .phase(let phase):
+            sourceWatch.observe(phase)
             aetherPhase = phase
             sampleStalledBuffer()
             isLoading = currentPhaseIsLoading()
@@ -1346,7 +1362,10 @@ class PlayerViewModel {
             if playerSeconds.isFinite, playheadSample?.seconds != playerSeconds {
                 playheadSample = (playerSeconds, .now)
             }
+            // While reconnecting the transport is dead; its clock can still
+            // tick or park, but the position is the reconnect's.
             guard !hasReachedEndOfFile,
+                  !isReconnecting,
                   playerSeconds.isFinite,
                   let timeline = aetherPlaybackController.activeSpec?.timeline else { return }
             let movieTime = timeline.sourcePosition(forPlayerTime: playerSeconds)
@@ -1369,6 +1388,7 @@ class PlayerViewModel {
                 seekFilterTimeoutTask = nil
             }
             currentTime = movieTime
+            sourceWatch.observePlayhead(movieTime)
             updateNextUpPresentation(for: movieTime)
             syncIntroSkipPrompt()
             autoSkipCreditsIfNeeded(at: movieTime)
@@ -1537,7 +1557,7 @@ class PlayerViewModel {
         // device cannot reach.
         if currentTransportHasShownFrame,
            PlaybackReconnectPolicy.isConnectionLoss(failure, serverUnreachable: isServerUnreachable),
-           beginReconnect(position: currentTime, resume: aetherPlaybackController.shouldPlayWhenReady) {
+           beginReconnect(position: sourcePlayhead, resume: aetherPlaybackController.shouldPlayWhenReady) {
             return
         }
         let serverCanAdapt: Set<PlaybackErrorKind> = [
@@ -1558,7 +1578,7 @@ class PlayerViewModel {
            activePreparedProtocolV3 != nil,
            committedProtocolV3LoadEpoch != nil {
             attemptProtocolV3Replan(
-                position: currentTime,
+                position: sourcePlayhead,
                 classification: failure.kind.rawValue,
                 message: failure.message
             )
@@ -1698,7 +1718,7 @@ class PlayerViewModel {
 
     private func attemptProtocolV3Recovery(after message: String) {
         attemptProtocolV3Replan(
-            position: currentTime,
+            position: sourcePlayhead,
             classification: protocolV3FailureClassification(message),
             message: message
         )
@@ -3038,7 +3058,7 @@ class PlayerViewModel {
     private func completionProgressPositionForCurrentItem() -> Double {
         PlayerNextUpCompletionPolicy.progressPosition(
             isNextUpPresented: showNextUpScreen,
-            hasReachedEndOfFile: hasReachedEndOfFile,
+            hasReachedEndOfFile: finishedAtEndOfFile,
             currentTime: currentTime,
             duration: duration,
             promptSeconds: settings.nextUpPromptSeconds,
@@ -3292,6 +3312,8 @@ class PlayerViewModel {
             shouldPlayWhenReady: shouldPlayWhenReady
         )
         activeAetherLoadEpoch = loadEpoch
+        // A new transport starts at its own position with its own reader.
+        sourceWatch = PlaybackSourceWatch()
         establishedAetherLoadEpoch = nil
         lastAetherAudioTrackSwitchFailure = nil
         committedProtocolV3LoadEpoch = nil
@@ -3854,6 +3876,32 @@ class PlayerViewModel {
         // `commitSeek`, `handleFileLoaded`) already clears it, so a genuine
         // second end still reports.
         guard !hasReachedEndOfFile else { return }
+        // The reconnect replaces this transport; its end says nothing about
+        // the item.
+        guard !reconnectCycle.isActive else { return }
+
+        // Aether reports a source that stopped delivering as an ordinary end
+        // of stream once its reader gives up, for example after a seek past
+        // the buffer while the server is down. Short of the end, that is a
+        // lost connection, not the item finishing (§6.2): reconnect at the
+        // position the stream last played from, and neither finish the item
+        // nor start the next one.
+        if currentTransportHasShownFrame,
+           let position = PlaybackReconnectPolicy.endOfStreamReconnectPosition(
+               playhead: sourcePlayhead,
+               duration: duration,
+               sourceStalled: sourceWatch.isStalled,
+               serverUnreachable: isServerUnreachable
+           ) {
+            Self.logger.warning(
+                "[CMP] handleEndOfFile: source ended short of the end at \(position, privacy: .public)/\(self.duration, privacy: .public) clock=\(self.currentTime, privacy: .public); treating as a lost connection"
+            )
+            if beginReconnect(position: position, resume: aetherPlaybackController.shouldPlayWhenReady) {
+                currentTime = position
+                return
+            }
+        }
+
         hasReachedEndOfFile = true
 
         // Detect a premature EOF before the autoplay hand-off. FFmpeg's
@@ -3862,18 +3910,14 @@ class PlayerViewModel {
         // player then drains its buffered packets cleanly and lands here, but
         // treating that as a natural end would trigger autoplay against the
         // same dead network that just dropped us.
-        let observedPosition = currentTime
+        // While the source was failing the clock may have run on without a
+        // frame; the position the stream last played from decides.
+        let sourceFailing = sourceWatch.isStalled || isServerUnreachable
+        let observedPosition = sourceFailing ? sourcePlayhead : currentTime
         let safeDuration = duration
-        let isPremature: Bool = {
-            guard safeDuration.isFinite, safeDuration > 0,
-                  observedPosition.isFinite, observedPosition > 0 else {
-                return false
-            }
-            let remaining = safeDuration - observedPosition
-            let progress = observedPosition / safeDuration
-            return remaining > Self.nearEndPlaybackErrorThresholdSeconds
-                && progress < 0.985
-        }()
+        let isPremature = observedPosition > 0
+            && PlaybackReconnectPolicy.isBeforeNaturalEnd(position: observedPosition, duration: safeDuration)
+        reachedEndPrematurely = isPremature
 
         // A Watch Party has no postroll to fall back on, and a member parked
         // on a dead stream is one the room can no longer move. Remount at the
@@ -3933,7 +3977,11 @@ class PlayerViewModel {
         hideControlsTask?.cancel()
         hideControlsTask = nil
         aetherPlaybackController.pause()
-        if duration.isFinite, duration > 0 {
+        if isPremature {
+            // The periodic and final progress reports read `currentTime`; a
+            // premature end must not report the item as played to the end.
+            currentTime = observedPosition
+        } else if duration.isFinite, duration > 0 {
             currentTime = duration
         }
         isLoading = false
@@ -4954,6 +5002,12 @@ class PlayerViewModel {
         return startedAetherLoadEpoch == epoch && committedProtocolV3LoadEpoch == epoch
     }
 
+    /// The last position the stream played from: a seek target it has not
+    /// played from yet, otherwise the clock.
+    private var sourcePlayhead: Double {
+        sourceWatch.playhead(currentTime: currentTime)
+    }
+
     /// The app's own requests could not reach the server either.
     private var isServerUnreachable: Bool {
         let monitor = ConnectionMonitor.shared
@@ -5708,6 +5762,7 @@ class PlayerViewModel {
         seekOriginTime = currentTime
         seekTargetTime = clampedTarget
         currentTime = clampedTarget
+        sourceWatch.seekCommitted(to: clampedTarget)
         scrubPreviewTime = clampedTarget
         isScrubbing = false
         scrubPreviewProvider.endInteraction()
@@ -7011,7 +7066,7 @@ class PlayerViewModel {
         didSkipCreditsToEnd = skippedCreditsToEnd
         let currentItemCompleted = PlayerNextUpCompletionPolicy.shouldFinalizeAsCompleted(
             isNextUpPresented: showNextUpScreen,
-            hasReachedEndOfFile: hasReachedEndOfFile,
+            hasReachedEndOfFile: finishedAtEndOfFile,
             currentTime: currentTime,
             duration: duration,
             promptSeconds: settings.nextUpPromptSeconds,
@@ -7122,7 +7177,7 @@ class PlayerViewModel {
             let finalOfflinePosition = completionProgressPositionForCurrentItem()
             let endedNaturally = PlayerNextUpCompletionPolicy.shouldFinalizeAsCompleted(
                 isNextUpPresented: showNextUpScreen,
-                hasReachedEndOfFile: hasReachedEndOfFile,
+                hasReachedEndOfFile: finishedAtEndOfFile,
                 currentTime: currentTime,
                 duration: duration,
                 promptSeconds: settings.nextUpPromptSeconds,

@@ -124,6 +124,44 @@ enum PlaybackReconnectPolicy {
         return serverUnreachable && sourceFailureKinds.contains(failure.kind)
     }
 
+    /// An end of stream this far from the end, or earlier, cannot be the
+    /// item finishing. Matches the near-end window in which a playback
+    /// error still counts as a natural end.
+    static let naturalEndSeconds: Double = 8
+    static let naturalEndFraction: Double = 0.985
+
+    /// Whether `position` is short of the end of an item `duration` long.
+    /// False when the duration is unknown, which leaves an end of stream as
+    /// it was reported.
+    static func isBeforeNaturalEnd(position: Double, duration: Double) -> Bool {
+        guard duration.isFinite, duration > 0, position.isFinite, position >= 0 else {
+            return false
+        }
+        return duration - position > naturalEndSeconds
+            && position / duration < naturalEndFraction
+    }
+
+    /// Where to reconnect when the engine reports end of stream, or nil when
+    /// it is the item finishing. Aether turns a source that stopped
+    /// delivering (its reconnect ladder ran out after a seek past the
+    /// buffer) into an ordinary end of stream, and its clock can run on, or
+    /// park, without a frame, so the playhead is the last position the
+    /// stream actually played from (`PlaybackSourceWatch.playhead`). An end
+    /// of stream short of the end while the source was failing is a lost
+    /// connection (§6.2).
+    static func endOfStreamReconnectPosition(
+        playhead: Double,
+        duration: Double,
+        sourceStalled: Bool,
+        serverUnreachable: Bool
+    ) -> Double? {
+        guard sourceStalled || serverUnreachable,
+              isBeforeNaturalEnd(position: playhead, duration: duration) else {
+            return nil
+        }
+        return playhead
+    }
+
     /// `NSURLErrorDomain` codes that mean the request never got an answer.
     static let connectivityErrorCodes: Set<Int> = [
         NSURLErrorTimedOut,
@@ -167,6 +205,58 @@ enum PlaybackReconnectPolicy {
         if error is PlaybackV3TerminalFailure { return true }
         if case APIv2Error.serverUpdateRequired = error { return true }
         return false
+    }
+}
+
+/// What the player knows about the current transport's source: whether its
+/// reader stopped delivering, and a seek target the stream has not played
+/// from yet.
+///
+/// After a seek past the buffer over a dead source, Aether's clock runs on
+/// without a frame and can end at a parked position. The seek target stays
+/// the playhead until playback moves on from it while the source delivers.
+struct PlaybackSourceWatch: Equatable {
+    /// How far past a seek target playback has to move, with the source
+    /// delivering, before the clock is trusted again.
+    static let confirmationSeconds: Double = 2
+    static let confirmationWindowSeconds: Double = 30
+
+    /// The engine reports the source as stalled: its reader is retrying or
+    /// gave up. A stalled phase outranks seeking, playing and paused, so any
+    /// of those means the reader delivers again.
+    private(set) var isStalled = false
+    private(set) var unconfirmedSeekTarget: Double?
+
+    mutating func observe(_ phase: PlaybackPhase) {
+        switch phase {
+        case .stalled:
+            isStalled = true
+        case .playing, .paused, .seeking, .rebuffering:
+            isStalled = false
+        case .idle, .loading, .ended, .error:
+            break
+        }
+    }
+
+    mutating func seekCommitted(to target: Double) {
+        guard target.isFinite else { return }
+        unconfirmedSeekTarget = max(0, target)
+    }
+
+    mutating func observePlayhead(_ time: Double) {
+        guard let target = unconfirmedSeekTarget, !isStalled, time.isFinite else { return }
+        // Playback moves through this window tick by tick. A clock that
+        // jumps past it in one step (to a parked end of media) did not play
+        // from the target.
+        let moved = time - target
+        if moved >= Self.confirmationSeconds, moved <= Self.confirmationWindowSeconds {
+            unconfirmedSeekTarget = nil
+        }
+    }
+
+    /// The last position the stream played from.
+    func playhead(currentTime: Double) -> Double {
+        unconfirmedSeekTarget ?? currentTime
     }
 }
 
