@@ -314,6 +314,8 @@ private struct ItemDetailPhoneContent: View {
     @Environment(SiloControlClient.self) private var siloControl
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var controlRequestBox: ControlRequestBox?
+    /// The cast button's in-flight watch-state read. A second tap replaces it.
+    @State private var controlResumeLookupTask: Task<Void, Never>?
     @State private var isShowingControlPicker = false
     @State private var isShowingRemoteControl = false
     #endif
@@ -373,6 +375,10 @@ private struct ItemDetailPhoneContent: View {
         }
         .onDisappear {
             isPageVisible = false
+            #if os(iOS)
+            controlResumeLookupTask?.cancel()
+            controlResumeLookupTask = nil
+            #endif
             viewModel.cancelDetailLoading()
             // The trailer poll isn't owned by `.task`, so it would otherwise
             // keep running (and retaining the view model) after the route
@@ -531,7 +537,25 @@ private struct ItemDetailPhoneContent: View {
     /// connected remote or the TV picker.
     private func handleRemoteControlTap() {
         if let detail = viewModel.detail, isDirectlyPlayable(detail) {
-            playOnTV(currentControlRequest(for: detail))
+            // The TV resumes from the request's explicit position, so read
+            // the server's current one rather than the page's snapshot.
+            let fileId = playbackFileId(for: detail)
+            let audioTrackIndex = preferredAudioTrackIndex
+            let subtitleTrackIndex = preferredSubtitleTrackIndex
+            controlResumeLookupTask?.cancel()
+            controlResumeLookupTask = Task {
+                let state = await refreshedResumeState(contentId: contentId)
+                guard !Task.isCancelled else { return }
+                controlResumeLookupTask = nil
+                playOnTV(SiloControlPlaybackRequest(
+                    contentId: contentId,
+                    fileId: fileId,
+                    audioTrackIndex: audioTrackIndex,
+                    subtitleTrackIndex: subtitleTrackIndex,
+                    startFromBeginning: false,
+                    resumePosition: state.resumePosition(cached: detail.userData)
+                ))
+            }
         } else if siloControl.remotePlaybackEngaged {
             isShowingRemoteControl = true
         } else {
@@ -544,19 +568,6 @@ private struct ItemDetailPhoneContent: View {
     /// containers have no single "this item" to cast.
     private func isDirectlyPlayable(_ detail: ItemDetail) -> Bool {
         !detail.isAudiobook && detail.type != "season" && detail.type != "series"
-    }
-
-    /// The cast request for the visible movie or episode, resuming from the
-    /// saved position when there is one.
-    private func currentControlRequest(for detail: ItemDetail) -> SiloControlPlaybackRequest {
-        SiloControlPlaybackRequest(
-            contentId: contentId,
-            fileId: playbackFileId(for: detail),
-            audioTrackIndex: preferredAudioTrackIndex,
-            subtitleTrackIndex: preferredSubtitleTrackIndex,
-            startFromBeginning: false,
-            resumePosition: playableResumePosition(for: detail)
-        )
     }
 
     private func playOnTV(_ request: SiloControlPlaybackRequest) {
@@ -827,13 +838,6 @@ private struct ItemDetailPhoneContent: View {
         return await DetailResumeState.load {
             try await SiloAPI.shared.watchDetail(contentId: contentId, libraryId: libraryId).userData
         }
-    }
-
-    private func playableResumePosition(for detail: ItemDetail) -> Double? {
-        PlaybackResumePoint.position(
-            detail.userData?.positionSeconds,
-            duration: detail.userData?.durationSeconds
-        )
     }
 
     private func effectiveVersion(for detail: ItemDetail, versionFileId: Int?) -> FileVersion? {
