@@ -30,6 +30,16 @@ final class PlayerTerminalFailureRetryTests: XCTestCase {
         }
     }
 
+    func testReplanRefusalsThatFailAFreshStartHideRetry() {
+        // The start path refuses both with retryable: false, so a fresh
+        // session from Retry would fail the same way.
+        for reason in ["server_upgrade_required", PlaybackSessionBridge.fixedSourceFailure().reason] {
+            let deadEnd = PlaybackSessionBridge.replanDeadEnd(reason: reason, message: "Playback can't continue.")
+            XCTAssertFalse(deadEnd.retryable, reason)
+            XCTAssertFalse(PlayerViewModel.isRetryablePlaybackFailure(deadEnd), reason)
+        }
+    }
+
     func testTransportFailureStaysRetryable() {
         XCTAssertTrue(PlayerViewModel.isRetryablePlaybackFailure(URLError(.cannotConnectToHost)))
     }
