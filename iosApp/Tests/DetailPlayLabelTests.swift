@@ -23,15 +23,21 @@ final class DetailPlayLabelTests: XCTestCase {
         XCTAssertEqual(DetailPlayLabel.item(nil), "Play")
     }
 
+    /// Builds watch state the way the detail reads do: the server's
+    /// snake_case `user_data` through the production decoder and projection.
     private func userData(position: Double?, duration: Double?) throws -> LeafItemUserData {
-        var fields = ["\"played\":false"]
-        if let position { fields.append("\"positionSeconds\":\(position)") }
-        if let duration { fields.append("\"durationSeconds\":\(duration)") }
-        if position != nil { fields.append("\"isInProgress\":true") }
-        return try JSONDecoder().decode(
-            LeafItemUserData.self,
-            from: Data("{\(fields.joined(separator: ","))}".utf8)
-        )
+        var object: [String: Any] = [
+            "played": false, "watched_count": 0, "unplayed_count": 1,
+            "in_progress_count": position == nil ? 0 : 1,
+        ]
+        if let position {
+            object["position_seconds"] = position
+            object["is_in_progress"] = true
+        }
+        if let duration { object["duration_seconds"] = duration }
+        let data = try JSONSerialization.data(withJSONObject: object)
+        let wire = try HTTPClient.makeJSONDecoder().decode(APIv2CatalogRead.WatchRollup.self, from: data)
+        return try LeafItemUserData(catalog: wire)
     }
 
     private func episode(position: Double?, duration: Double?) throws -> EpisodeListItem {
