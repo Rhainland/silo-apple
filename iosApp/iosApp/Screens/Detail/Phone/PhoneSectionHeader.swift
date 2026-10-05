@@ -10,14 +10,14 @@ struct PhoneSectionHeader: View {
     var body: some View {
         HStack(alignment: .firstTextBaseline) {
             Text(title)
-                .font(.system(size: 22, weight: .semibold))
+                .siloScaledFont(size: 22, weight: .semibold, relativeTo: .title2)
                 .foregroundColor(.siloOnSurface)
 
             Spacer(minLength: 8)
 
             if let trailingText, !trailingText.isEmpty {
                 Text(trailingText)
-                    .font(.system(size: 13, weight: .medium))
+                    .siloScaledFont(size: 13, weight: .medium, relativeTo: .footnote)
                     .foregroundColor(.siloSecondaryText)
             }
         }
