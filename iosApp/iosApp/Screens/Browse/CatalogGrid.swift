@@ -67,18 +67,23 @@ struct CatalogGrid: View {
                 }
             }
             ForEach(items) { item in
+                // Search can return episodes: caption them with the series
+                // name and "S01E02 · Pilot", as on Home.
                 MediaCard(
-                    title: item.title,
+                    title: EpisodeCardCaption.cardTitle(for: item),
                     posterUrl: item.posterUrl ?? "",
                     thumbhash: item.posterThumbhash,
                     year: item.year,
+                    subtitle: EpisodeCardCaption.line(for: item),
                     userState: item.userState,
                     overlayData: OverlayData.from(item),
                     action: { onItemTap(item) },
                     playAction: playAction(for: item),
                     contentId: item.contentId,
+                    seriesContext: SeriesDetailContext(item: SectionItem(browseItem: item)),
                     aspect: item.isAudiobook ? .square : .poster,
-                    cardWidthOverride: widthOverride
+                    cardWidthOverride: widthOverride,
+                    episodeAccessibilityLabel: EpisodeCardCaption.accessibilityLabel(for: item)
                 )
                 .frame(maxWidth: .infinity)
                 .onAppear {

@@ -2,7 +2,7 @@ import SwiftUI
 
 /// Full-screen search with debounced query and grid results — Plezy style.
 struct SearchView: View {
-    @State private var viewModel = SearchViewModel(includesPeople: true)
+    @State private var viewModel = SearchViewModel(includesPeople: true, includesEpisodes: true)
     @State private var requestsViewModel = RequestSearchSectionViewModel()
     @State private var navPrefs = AppNavPreferences.shared
     @Environment(AppRouter.self) private var router

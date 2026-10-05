@@ -304,12 +304,10 @@ actor SiloAPI {
         return person
     }
 
-    /// Whether the server can search people by media scope. The same
-    /// capability guarantees results only carry credits the profile can see,
-    /// so without it search offers no people at all.
-    func peopleSearchSupported() async throws -> Bool {
+    /// The search features this server offers; see ``CatalogSearchFeatures``.
+    func catalogSearchFeatures() async throws -> CatalogSearchFeatures {
         let auth = try await detailReadAuth()
-        return try await apiV2Client.catalogSearchCapabilities(auth: auth).peopleMediaScope == true
+        return CatalogSearchFeatures(try await apiV2Client.catalogSearchCapabilities(auth: auth))
     }
 
     /// People matching `query` for the acting profile, exact names first.
