@@ -335,6 +335,19 @@ struct PlaybackReconnectCycle: Equatable {
         self.position = max(0, position)
     }
 
+    /// How far the saved position may differ from what an attempt asked for
+    /// before the new transport has to seek.
+    static let seekToleranceSeconds: Double = 0.5
+
+    /// Where the new transport has to seek when the saved position moved (a
+    /// seek while reconnecting) after an attempt asked for `requested`, or
+    /// nil when the plan already starts there.
+    func seekTarget(afterRequesting requested: Double?) -> Double? {
+        guard isActive else { return nil }
+        guard let requested, requested.isFinite else { return position }
+        return abs(position - requested) > Self.seekToleranceSeconds ? position : nil
+    }
+
     /// Ends the cycle. `recovered` records when a plan came back, so a stream
     /// that drops again right away continues this cycle's budget.
     mutating func end(recovered: Bool, now: Date) {

@@ -2313,7 +2313,13 @@ class PlayerViewModel {
                 }
                 // The server answered with a plan: any reconnect ends here,
                 // and the new transport plays only if the viewer was playing.
-                let reconnectResume = self.adoptPlanEndingReconnect()
+                // A seek made while this request was out is queued for the
+                // new transport; this task's exit issues it.
+                let reconnectHandoff = self.adoptPlanEndingReconnect(requestedPosition: position)
+                let reconnectResume = reconnectHandoff?.resume
+                if let seekTarget = reconnectHandoff?.seekTarget {
+                    self.pendingProtocolV3SeekReanchorPosition = seekTarget
+                }
 
                 let previousSessionId = self.activePlaybackSessionId
                 self.activePlaybackSessionId = prepared.session.sessionId
@@ -4555,7 +4561,10 @@ class PlayerViewModel {
                 }
                 // A reconnect's new session ends the reconnect; it plays only
                 // if the viewer was playing when the connection dropped.
-                let reconnectResume = self.adoptPlanEndingReconnect()
+                let reconnectHandoff = self.adoptPlanEndingReconnect(
+                    requestedPosition: resumePositionOverride
+                )
+                let reconnectResume = reconnectHandoff?.resume
                 if let preparedOfflineContext {
                     self.offlinePlaybackContext = preparedOfflineContext
                 }
@@ -4661,6 +4670,12 @@ class PlayerViewModel {
                     await self.bindRealtimeControl(sessionId: session.sessionId)
                     try self.requireCurrentStreamLoad(currentStreamLoadGeneration)
                     self.reapplyDeferredAutoSubtitlePolicyIfNeeded()
+                }
+                // The viewer seeked while the reconnect's start was out: move
+                // the new transport to where they want to be.
+                if let seekTarget = reconnectHandoff?.seekTarget {
+                    try self.requireCurrentStreamLoad(currentStreamLoadGeneration)
+                    self.commitSeek(to: seekTarget, source: "reconnectSeek")
                 }
             } catch is CancellationError {
                 // Tear the abandoned Aether load down before retiring its
@@ -5165,18 +5180,23 @@ class PlayerViewModel {
         }
     }
 
-    /// Ends a running reconnect because the server handed back a plan.
-    /// Returns the play intent the new transport takes, or nil when no
-    /// reconnect was running.
-    private func adoptPlanEndingReconnect() -> Bool? {
+    /// Ends a running reconnect because the server handed back a plan for a
+    /// request made at `requestedPosition`. Returns the play intent the new
+    /// transport takes and where to seek it when the viewer moved the saved
+    /// position after the request went out, or nil when no reconnect was
+    /// running.
+    private func adoptPlanEndingReconnect(
+        requestedPosition: Double?
+    ) -> (resume: Bool, seekTarget: Double?)? {
         guard reconnectCycle.isActive else { return nil }
         let resume = reconnectCycle.resume
+        let seekTarget = reconnectCycle.seekTarget(afterRequesting: requestedPosition)
         reconnectTimerTask?.cancel()
         reconnectTimerTask = nil
         reconnectCycle.end(recovered: true, now: Date())
         connectionState = .connected
         Self.logger.info("Playback reconnected resume=\(resume, privacy: .public)")
-        return resume
+        return (resume, seekTarget)
     }
 
     /// Stops a running reconnect without a plan: the viewer left, other

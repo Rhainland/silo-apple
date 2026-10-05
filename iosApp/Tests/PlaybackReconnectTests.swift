@@ -148,6 +148,20 @@ final class PlaybackReconnectTests: XCTestCase {
         XCTAssertEqual(cycle.position, 250, "an ended cycle keeps its saved position")
     }
 
+    func testSeekWhileAnAttemptIsOutMovesTheNewTransport() {
+        var cycle = PlaybackReconnectCycle()
+        _ = cycle.begin(position: 100, resume: true, freshBudget: false, now: start)
+        // The attempt asked for the saved position; nothing moved since.
+        XCTAssertNil(cycle.seekTarget(afterRequesting: 100))
+        XCTAssertNil(cycle.seekTarget(afterRequesting: 100.2))
+        // The viewer seeked while the request was out.
+        cycle.updatePosition(250)
+        XCTAssertEqual(cycle.seekTarget(afterRequesting: 100), 250)
+        XCTAssertNil(cycle.seekTarget(afterRequesting: 250))
+        cycle.end(recovered: true, now: start)
+        XCTAssertNil(cycle.seekTarget(afterRequesting: 100), "an ended cycle has nothing to hand over")
+    }
+
     // MARK: - Answers
 
     func testUnreachableOrOverloadedServerWaitsForTheNextAttempt() {
