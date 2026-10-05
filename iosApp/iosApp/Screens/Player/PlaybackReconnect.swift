@@ -1,0 +1,251 @@
+import AetherEngine
+import Foundation
+
+/// Whether a stream that already played is connected to the server.
+/// `reconnecting` while the player retries after a mid-stream drop, `lost`
+/// once it gave up and offers Try again.
+enum PlaybackConnectionState: Equatable {
+    case connected
+    case reconnecting
+    case lost
+}
+
+/// The rules of a mid-stream reconnect (playback protocol v3 §6.2, "A lost
+/// connection is not a failed route").
+///
+/// A stream that already showed frames and then lost the server has not
+/// failed its route, so the player must not report it with
+/// `failure_recovery`: that operation excludes the current route, and a
+/// direct-play viewer would come back on a transcode. Instead each attempt
+/// asks for the current route again with a `track_change` that changes
+/// nothing, at the saved position. When the session did not survive (a server
+/// restart answers 404) the player starts a new session at the same position
+/// with the same tracks.
+enum PlaybackReconnectPolicy {
+    /// The classification a reconnect replan carries. It maps to
+    /// `track_change` (see `PlaybackSessionBridge.replanOperation`), which
+    /// keeps the current route eligible.
+    static let classification = "connection_lost"
+
+    /// Backoff: 1 s doubling to a 15 s cap, for 12 attempts, about two and a
+    /// quarter minutes in total.
+    static let baseDelay: TimeInterval = 1
+    static let maxDelay: TimeInterval = 15
+    static let maxAttempts = 12
+    /// A cycle that starts within this long of the previous one recovering
+    /// continues that cycle's budget, so a server that answers the API but
+    /// drops every stream cannot keep the player retrying forever.
+    static let stableInterval: TimeInterval = 30
+
+    /// Delay before the next attempt once `attempts` attempts were made.
+    static func delay(afterAttempts attempts: Int) -> TimeInterval {
+        let exponent = min(max(0, attempts), 16)
+        return min(maxDelay, baseDelay * pow(2, Double(exponent)))
+    }
+
+    /// Which request of an attempt failed.
+    enum Step: Equatable {
+        /// The no-op `track_change` replan against the current session.
+        case replan
+        /// A new session at the saved position.
+        case start
+    }
+
+    /// What an attempt's failure means for the cycle.
+    enum Verdict: Equatable {
+        /// The server could not be reached, was overloaded, or asked for a
+        /// retry: wait for the next attempt.
+        case retryLater
+        /// The server answered the replan, but the session did not survive.
+        /// Start a new session at the saved position.
+        case startNewSession
+        /// The server refused a new session: stop and tell the viewer.
+        case giveUp
+    }
+
+    static func verdict(for error: Error, step: Step) -> Verdict {
+        if isUnanswered(error) { return .retryLater }
+        switch step {
+        case .replan:
+            // Anything the server said means the session is gone (404 after a
+            // restart, an expiry, a terminal answer). That includes
+            // `installation_changed`: a replan always carries the old
+            // session's installation and cannot succeed, while a new start
+            // probes the new one. A failure on this side (the adopted plan's
+            // load) is not the server's verdict; try again later.
+            return isServerAnswer(error) ? .startNewSession : .retryLater
+        case .start:
+            // The start already re-probed after `installation_changed`
+            // (`withInstallationRefresh`); one that still says so is a server
+            // mid-upgrade, which a later attempt can reach.
+            if PlaybackV3CapabilityGate.isInstallationChanged(error) { return .retryLater }
+            return isServerAnswer(error) ? .giveUp : .retryLater
+        }
+    }
+
+    /// Whether a request failed without the server deciding anything: it was
+    /// unreachable or overloaded (`isTransient`), or another replan of the
+    /// session held the lease. A recovery replan that fails this way after
+    /// the viewing played joins the reconnect instead of ending playback.
+    static func isUnanswered(_ error: Error) -> Bool {
+        if isTransient(error) { return true }
+        if let problem = problem(in: error), problem.identifier == "replan_in_progress" {
+            return true
+        }
+        return false
+    }
+
+    /// Whether a failed request may succeed if it is sent again later: it
+    /// never got an answer (connection refused, timeout, DNS, connection
+    /// lost), or the server answered 5xx, 408 or 429.
+    static func isTransient(_ error: Error) -> Bool {
+        if let status = httpStatus(in: error) {
+            return status >= 500 || status == 408 || status == 429
+        }
+        var transport = error
+        if case HTTPError.network(let underlying) = error { transport = underlying }
+        if let urlError = transport as? URLError { return urlError.code != .cancelled }
+        if case HTTPError.network = error { return true }
+        return false
+    }
+
+    /// Whether an Aether failure on a transport that already showed a frame
+    /// is the server going away rather than the route failing. The URL
+    /// error underneath says so directly. Otherwise a source that died is
+    /// a lost connection only while the app also cannot reach the server
+    /// (`serverUnreachable`): a dead transcoder on a server that answers is a
+    /// route failure and keeps the ordinary recovery.
+    static func isConnectionLoss(_ failure: PlaybackErrorInfo, serverUnreachable: Bool) -> Bool {
+        if failure.underlyingDomain == NSURLErrorDomain,
+           let code = failure.underlyingCode,
+           connectivityErrorCodes.contains(code) {
+            return true
+        }
+        return serverUnreachable && sourceFailureKinds.contains(failure.kind)
+    }
+
+    /// `NSURLErrorDomain` codes that mean the request never got an answer.
+    static let connectivityErrorCodes: Set<Int> = [
+        NSURLErrorTimedOut,
+        NSURLErrorCannotFindHost,
+        NSURLErrorCannotConnectToHost,
+        NSURLErrorNetworkConnectionLost,
+        NSURLErrorDNSLookupFailed,
+        NSURLErrorNotConnectedToInternet,
+        NSURLErrorInternationalRoamingOff,
+        NSURLErrorCallIsActive,
+        NSURLErrorDataNotAllowed,
+    ]
+
+    /// Failures that say the media source stopped answering without saying
+    /// why. A refused source (an HTTP status) is an answer, and decoder or
+    /// pipeline failures are about the route.
+    static let sourceFailureKinds: Set<PlaybackErrorKind> = [
+        .vodSourceFailed,
+        .nativeItemFailed,
+        .sourceOpenFailed,
+        .reloadFailed,
+    ]
+
+    private static func problem(in error: Error) -> APIv2Problem? {
+        guard case APIv2Error.problem(let problem) = error else { return nil }
+        return problem
+    }
+
+    private static func httpStatus(in error: Error) -> Int? {
+        switch error {
+        case APIv2Error.problem(let problem): return problem.status
+        case APIv2Error.httpStatus(let status): return status
+        case HTTPError.http(let status, _): return status
+        case APIError.httpError(let status): return status
+        default: return nil
+        }
+    }
+
+    private static func isServerAnswer(_ error: Error) -> Bool {
+        if httpStatus(in: error) != nil { return true }
+        if error is PlaybackV3TerminalFailure { return true }
+        if case APIv2Error.serverUpdateRequired = error { return true }
+        return false
+    }
+}
+
+/// One mid-stream reconnect cycle: its budget, the saved position and the
+/// viewer's play intent. A value type with no clock or timers of its own so
+/// the schedule can be tested; the player owns the timer and the requests.
+struct PlaybackReconnectCycle: Equatable {
+    /// What the player does next.
+    enum Next: Equatable {
+        /// Run the next attempt after this delay.
+        case attempt(after: TimeInterval)
+        /// The budget is spent: tell the viewer the connection was lost.
+        case giveUp
+    }
+
+    private(set) var isActive = false
+    /// Invalidates the timer and requests of a cycle that has ended.
+    private(set) var generation: UInt64 = 0
+    private(set) var attempts = 0
+    private(set) var position: Double = 0
+    /// Whether playback resumes once a plan is adopted.
+    private(set) var resume = true
+    private var recoveredAt: Date?
+
+    /// Starts a cycle. Nil while one is already running: a second loss
+    /// report joins it. `freshBudget` is the viewer's Try again, which starts
+    /// over at once; otherwise a cycle that starts soon after the previous one
+    /// recovered continues its budget.
+    mutating func begin(position: Double, resume: Bool, freshBudget: Bool, now: Date) -> Next? {
+        guard !isActive else { return nil }
+        isActive = true
+        generation &+= 1
+        let recentlyRecovered = recoveredAt.map {
+            now.timeIntervalSince($0) < PlaybackReconnectPolicy.stableInterval
+        } ?? false
+        if freshBudget || !recentlyRecovered {
+            attempts = 0
+        }
+        self.position = position.isFinite ? max(0, position) : 0
+        self.resume = resume
+        if attempts >= PlaybackReconnectPolicy.maxAttempts {
+            // The stream keeps dropping right after every recovery.
+            end(recovered: false, now: now)
+            return .giveUp
+        }
+        return .attempt(after: freshBudget ? 0 : PlaybackReconnectPolicy.delay(afterAttempts: attempts))
+    }
+
+    func isCurrent(_ generation: UInt64) -> Bool {
+        isActive && self.generation == generation
+    }
+
+    /// Counts the attempt about to be sent.
+    mutating func beginAttempt() {
+        attempts += 1
+    }
+
+    /// The attempt could not reach the server: wait, or give up once the
+    /// budget is spent.
+    mutating func retryLater(now: Date) -> Next {
+        guard attempts < PlaybackReconnectPolicy.maxAttempts else {
+            end(recovered: false, now: now)
+            return .giveUp
+        }
+        return .attempt(after: PlaybackReconnectPolicy.delay(afterAttempts: attempts))
+    }
+
+    /// A seek while reconnecting is where the viewer wants to resume.
+    mutating func updatePosition(_ position: Double) {
+        guard isActive, position.isFinite else { return }
+        self.position = max(0, position)
+    }
+
+    /// Ends the cycle. `recovered` records when a plan came back, so a stream
+    /// that drops again right away continues this cycle's budget.
+    mutating func end(recovered: Bool, now: Date) {
+        guard isActive else { return }
+        isActive = false
+        generation &+= 1
+        if recovered { recoveredAt = now }
+    }
+}

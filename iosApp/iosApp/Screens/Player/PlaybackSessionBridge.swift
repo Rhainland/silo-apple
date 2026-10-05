@@ -1292,12 +1292,17 @@ actor PlaybackSessionBridge {
     /// operation. A user-initiated track or quality change is an intent, not a
     /// failure, and carries no `failure` block.
     ///
+    /// A lost connection is not a failed route either (§6.2): the reconnect
+    /// asks for the current route again with a `track_change` that changes
+    /// nothing, which keeps that route eligible where `failure_recovery`
+    /// would exclude it.
+    ///
     /// This overload predates `output_change_v1` and keeps an output-route
     /// change on `failure_recovery`. Prefer the `serverFeatures` overload:
     /// only that one can tell whether the server offers the intent operation.
     static func replanOperation(forClassification classification: String) -> String {
         switch classification {
-        case "audio_track_changed", "subtitle_track_changed":
+        case "audio_track_changed", "subtitle_track_changed", PlaybackReconnectPolicy.classification:
             return PlaybackProtocolV3.ReplanOperation.trackChange
         case "quality_changed":
             return PlaybackProtocolV3.ReplanOperation.qualityChange

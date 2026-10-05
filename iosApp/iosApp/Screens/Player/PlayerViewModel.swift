@@ -278,6 +278,27 @@ class PlayerViewModel {
     /// damaged source, for example), so the error view offers no Retry that
     /// would only fail the same way again.
     var errorIsRetryable = true
+    /// Mid-stream connection state (§6.2): `reconnecting` while the player
+    /// retries after the server dropped, `lost` once it gave up.
+    private(set) var connectionState: PlaybackConnectionState = .connected
+    var isReconnecting: Bool { connectionState == .reconnecting }
+    /// The notice the player shows: the reconnect status while it runs,
+    /// otherwise the latest transient notice.
+    var presentedNotice: PlayerNotice? {
+        isReconnecting ? Self.reconnectingNotice : activeNotice
+    }
+    /// The error view's retry action, which restarts the reconnect after the
+    /// player gave up on a lost connection.
+    var retryButtonTitle: String {
+        connectionState == .lost ? "Try again" : "Retry"
+    }
+    private static let reconnectingNotice = PlayerNotice(
+        title: "Reconnecting…",
+        message: "The connection to the server was lost. Playback will continue where you left off.",
+        tone: .info
+    )
+    static let connectionLostMessage =
+        "Connection lost\nSilo couldn't reconnect to the server. Check your connection, then try again to continue where you left off."
     var remoteDismissToken: UUID?
     var audioTracks: [PlayerTrack] = []
     var subtitleTracks: [PlayerTrack] = [] {
@@ -686,6 +707,19 @@ class PlayerViewModel {
     /// reload whose only change is a refreshed bearer. Reusing this gate keeps
     /// credential recovery from racing route replans, seeks, or track changes.
     private var protocolV3ReplanTask: Task<Void, Never>?
+    /// The running mid-stream reconnect (§6.2), its pending attempt timer,
+    /// and the start request a new session uses when the old one is gone.
+    @ObservationIgnored
+    private var reconnectCycle = PlaybackReconnectCycle()
+    @ObservationIgnored
+    private var reconnectTimerTask: Task<Void, Never>?
+    @ObservationIgnored
+    private var reconnectLoadRequest: LoadRequest?
+    /// Whether any transport of the current viewing has shown a frame. A
+    /// recovery replan that cannot reach the server then joins the reconnect
+    /// instead of ending playback; before that it is a startup failure.
+    @ObservationIgnored
+    private var viewingHasPlayed = false
     private var nextUpLookupTask: Task<Void, Never>?
     private var nextUpOnDeckTask: Task<Void, Never>?
     private var nextUpCountdownTask: Task<Void, Never>?
@@ -986,6 +1020,10 @@ class PlayerViewModel {
         /// Automatic playback recovery. Failures stay on the player surface
         /// instead of using the Next Up postroll.
         case recovery
+        /// A mid-stream reconnect's new session after the old one did not
+        /// survive (§6.2). Failures go back to the reconnect, which waits
+        /// for the next attempt or gives up.
+        case reconnect
     }
 
     private enum BeginFreshLoadError: Error {
@@ -1484,7 +1522,22 @@ class PlayerViewModel {
             // replans.
             return
         }
+        if reconnectCycle.isActive {
+            // While the server is unreachable a dying transport says nothing
+            // about its route; the reconnect replaces it anyway (§6.2).
+            return
+        }
         if attemptProtocolV3AuthenticationReload(after: failure) {
+            return
+        }
+        // A stream that already showed frames and then lost the server has
+        // not failed its route: reconnect instead of `failure_recovery`, which
+        // would exclude the route (§6.2). A transport that never showed a
+        // frame keeps the ordinary recovery, since that route may be one this
+        // device cannot reach.
+        if currentTransportHasShownFrame,
+           PlaybackReconnectPolicy.isConnectionLoss(failure, serverUnreachable: isServerUnreachable),
+           beginReconnect(position: currentTime, resume: aetherPlaybackController.shouldPlayWhenReady) {
             return
         }
         let serverCanAdapt: Set<PlaybackErrorKind> = [
@@ -1539,6 +1592,7 @@ class PlayerViewModel {
     private func handleAetherStartupMilestone(epoch: AetherPlaybackController.LoadEpoch) {
         guard startedAetherLoadEpoch != epoch else { return }
         startedAetherLoadEpoch = epoch
+        viewingHasPlayed = true
         handleFileLoaded()
         if isNextUpTransitioning {
             isNextUpTransitioning = false
@@ -1615,6 +1669,10 @@ class PlayerViewModel {
     private func handlePlaybackError(_ message: String, failure: PlaybackErrorInfo? = nil) {
         let logMessage = MediaLogRedactor.sanitize(message)
         Self.logger.error("Player error: \(logMessage, privacy: .public)")
+        guard !reconnectCycle.isActive else {
+            Self.logger.info("Ignoring playback error while reconnecting: \(logMessage, privacy: .public)")
+            return
+        }
         guard !hasReachedEndOfFile else {
             Self.logger.info("Ignoring playback error after EOF: \(logMessage, privacy: .public)")
             return
@@ -2090,6 +2148,16 @@ class PlayerViewModel {
                     + (requestedSubtitleTrackIndex.map(String.init) ?? "off")
             )
         }
+        // A recovery or seek replan that cannot reach the server after the
+        // viewing played is a lost connection, not a failed route (§6.2). The
+        // viewer's play intent is the one at the time of the request: a
+        // failed transport is torn down, and that pause is not theirs.
+        let resolvedOperation = operation
+            ?? PlaybackSessionBridge.replanOperation(forClassification: classification)
+        let joinsReconnectWhenUnanswered = classification != "output_route_changed"
+            && (resolvedOperation == PlaybackProtocolV3.ReplanOperation.failureRecovery
+                || resolvedOperation == PlaybackProtocolV3.ReplanOperation.seekReanchor)
+        let playIntentAtRequest = aetherPlaybackController.shouldPlayWhenReady
         progressTask?.cancel()
         isLoading = true
         isBuffering = false
@@ -2194,6 +2262,11 @@ class PlayerViewModel {
                     subtitleTrackIndex: requestedSubtitleTrackIndex,
                     outputRouteSnapshot: outputRouteSnapshot
                 ) else {
+                    if self.reconnectCycle.isActive {
+                        // No session left to replan: start a new one.
+                        self.scheduleReconnectSessionStart()
+                        return
+                    }
                     self.finalizeTerminalPlaybackError(message)
                     return
                 }
@@ -2211,6 +2284,9 @@ class PlayerViewModel {
                       currentStreamLoadGeneration == self.streamLoadGeneration else {
                     throw CancellationError()
                 }
+                // The server answered with a plan: any reconnect ends here,
+                // and the new transport plays only if the viewer was playing.
+                let reconnectResume = self.adoptPlanEndingReconnect()
 
                 let previousSessionId = self.activePlaybackSessionId
                 self.activePlaybackSessionId = prepared.session.sessionId
@@ -2264,7 +2340,8 @@ class PlayerViewModel {
                 }
                 try self.requireCurrentStreamLoad(currentStreamLoadGeneration)
                 self.resolvedServerUrl = streamRequest.serverUrl
-                let shouldPlayWhenReady = !self.isWatchPartyPlayback && self.aetherPlaybackController.shouldPlayWhenReady
+                let shouldPlayWhenReady = !self.isWatchPartyPlayback
+                    && (reconnectResume ?? self.aetherPlaybackController.shouldPlayWhenReady)
                 try await self.loadAether(
                     prepared: prepared,
                     streamRequest: streamRequest,
@@ -2297,6 +2374,13 @@ class PlayerViewModel {
                 }
                 if currentStreamLoadGeneration == self.streamLoadGeneration {
                     restorePriorReplanState()
+                    // A reconnect replan the bridge abandoned (its session
+                    // moved on) must not leave the reconnect waiting forever.
+                    // Leaving the player or a new load cancels the task and
+                    // the reconnect with it.
+                    if !Task.isCancelled, !self.isDisposed, self.reconnectCycle.isActive {
+                        self.continueReconnect(after: CancellationError(), step: .replan)
+                    }
                 }
                 return
             } catch {
@@ -2331,6 +2415,18 @@ class PlayerViewModel {
                 Self.logger.error(
                     "Protocol V3 replan failed: \(MediaLogRedactor.sanitize(error), privacy: .public)"
                 )
+                if self.reconnectCycle.isActive {
+                    // A replan sent while reconnecting got no plan back: the
+                    // reconnect decides whether to wait or start over.
+                    self.continueReconnect(after: error, step: .replan)
+                    return
+                }
+                if joinsReconnectWhenUnanswered,
+                   self.viewingHasPlayed,
+                   PlaybackReconnectPolicy.isUnanswered(error),
+                   self.beginReconnect(position: position, resume: playIntentAtRequest) {
+                    return
+                }
                 if PlaybackSessionBridge.isPlaybackSessionMissing(error),
                    self.attemptStaleSessionRenewal(
                        reason: "protocol_v3_replan_missing_session",
@@ -3968,6 +4064,7 @@ class PlayerViewModel {
     }
 
     private func handleNowPlayingPlay() {
+        guard !isReconnecting else { return }
         if watchPartyAdapter?.request(.play) == true { return }
         aetherPlaybackController.play()
         #if os(tvOS)
@@ -4251,6 +4348,12 @@ class PlayerViewModel {
         // its end.
         if lastLoadRequest?.contentId != request.contentId {
             introSkipPrompt.reset()
+            viewingHasPlayed = false
+            reconnectLoadRequest = nil
+        }
+        // Any other start takes the session over from a running reconnect.
+        if origin != .reconnect {
+            cancelReconnect()
         }
         lastLoadRequest = request
         offlinePlaybackContext = nil
@@ -4395,6 +4498,9 @@ class PlayerViewModel {
                 if prepared.protocolV3 != nil {
                     uncommittedPrepared = prepared
                 }
+                // A reconnect's new session ends the reconnect; it plays only
+                // if the viewer was playing when the connection dropped.
+                let reconnectResume = self.adoptPlanEndingReconnect()
                 if let preparedOfflineContext {
                     self.offlinePlaybackContext = preparedOfflineContext
                 }
@@ -4485,7 +4591,7 @@ class PlayerViewModel {
                     prepared: prepared,
                     streamRequest: streamRequest,
                     expectedStreamLoadGeneration: currentStreamLoadGeneration,
-                    shouldPlayWhenReady: !self.isWatchPartyPlayback
+                    shouldPlayWhenReady: !self.isWatchPartyPlayback && (reconnectResume ?? true)
                 )
                 if prepared.protocolV3 != nil {
                     guard await self.sessionBridge.commitPendingProtocolV3Transition(prepared) else {
@@ -4689,6 +4795,23 @@ class PlayerViewModel {
                 tone: .warning,
                 duration: 6
             )
+        case .reconnect:
+            guard reconnectCycle.isActive else {
+                // The start was answered with a plan, so the reconnect is
+                // over and the new transport failed on its own: an ordinary
+                // playback failure.
+                finalizeTerminalPlaybackError(message)
+                return
+            }
+            // The failed start stopped the old session in the bridge, so the
+            // next attempt starts a new one instead of replanning.
+            disposeAetherPlayback()
+            activePlaybackSessionId = nil
+            activePreparedProtocolV3 = nil
+            isPlaying = false
+            // The start's own timeout is the server not answering in time.
+            let reconnectError: Error = error is BeginFreshLoadError ? URLError(.timedOut) : error
+            continueReconnect(after: reconnectError, step: .start)
         }
     }
 
@@ -4732,6 +4855,7 @@ class PlayerViewModel {
         progressTask = nil
         staleSessionRecoveryTask?.cancel()
         staleSessionRecoveryTask = nil
+        cancelReconnect()
         disposeAetherPlayback()
         activePlaybackSessionId = nil
         activePreparedProtocolV3 = nil
@@ -4747,8 +4871,14 @@ class PlayerViewModel {
     @discardableResult
     private func attemptStaleSessionRenewal(reason: String, observedPosition: Double) -> Bool {
         guard !isDisposed,
-              let lastLoadRequest else {
+              let lastLoadRequest,
+              let renewalRequest = makeRecoveryLoadRequest() else {
             return false
+        }
+        // A running reconnect owns the session: it starts a new one itself
+        // once the server answers that the old one is gone.
+        if reconnectCycle.isActive {
+            return true
         }
 
         let staleSessionId = activePlaybackSessionId ?? "unknown"
@@ -4763,14 +4893,6 @@ class PlayerViewModel {
         let durationHint = duration.isFinite && duration > 0
             ? duration
             : (currentSelectedVersion?.duration ?? 0)
-        let renewalRequest = lastLoadRequest.copyForRecovery(
-            preferredFileId: currentSelectedVersion?.fileId ?? lastLoadRequest.preferredFileId,
-            preferredAudioTrackIndex: resolvedAudioTrackIndexForResume(),
-            preferredSubtitleTrackIndex: resolvedSubtitleTrackIndexForResume(),
-            preferredSidecarSubtitleTrackId: resolvedSidecarSubtitleTrackIdForResume(),
-            offlineDownloadId: nil,
-            serverSubtitlesDisabled: hasDisabledServerSubtitlesForResume
-        )
 
         Self.logger.warning(
             "Renewing stale playback session \(staleSessionId, privacy: .public) reason=\(reason, privacy: .public) position=\(resumePosition, privacy: .public)"
@@ -4797,6 +4919,229 @@ class PlayerViewModel {
             )
         }
         return true
+    }
+
+    /// A start request for the current item that keeps what the viewer is
+    /// watching: the same version and the current audio and subtitle choice
+    /// (subtitles that are off stay off).
+    private func makeRecoveryLoadRequest() -> LoadRequest? {
+        guard let lastLoadRequest else { return nil }
+        return lastLoadRequest.copyForRecovery(
+            preferredFileId: currentSelectedVersion?.fileId ?? lastLoadRequest.preferredFileId,
+            preferredAudioTrackIndex: resolvedAudioTrackIndexForResume(),
+            preferredSubtitleTrackIndex: resolvedSubtitleTrackIndexForResume(),
+            preferredSidecarSubtitleTrackId: resolvedSidecarSubtitleTrackIdForResume(),
+            offlineDownloadId: nil,
+            serverSubtitlesDisabled: hasDisabledServerSubtitlesForResume
+        )
+    }
+
+    // MARK: - Mid-stream reconnect (playback protocol v3 §6.2)
+    //
+    // A stream that already played and then lost the server has not failed
+    // its route, so the player pauses, keeps the position and retries with
+    // backoff. Each attempt first asks for the current route again with a
+    // `track_change` that changes nothing; if the session did not survive (a
+    // server restart answers 404) it starts a new session at the same
+    // position with the same tracks. Any plan the server hands back ends the
+    // cycle; leaving the player or starting other playback cancels it. Only
+    // one attempt is in flight at a time.
+
+    /// Whether the transport on screen is a committed Protocol V3 load that
+    /// has shown its own first frame.
+    private var currentTransportHasShownFrame: Bool {
+        guard activePreparedProtocolV3 != nil, let epoch = activeAetherLoadEpoch else { return false }
+        return startedAetherLoadEpoch == epoch && committedProtocolV3LoadEpoch == epoch
+    }
+
+    /// The app's own requests could not reach the server either.
+    private var isServerUnreachable: Bool {
+        let monitor = ConnectionMonitor.shared
+        return !monitor.isDeviceOnline || monitor.serverStatus == .unreachable
+    }
+
+    /// Starts a reconnect, or joins the one already running. Returns false
+    /// when this playback cannot reconnect (offline or Watch Party playback,
+    /// or nothing to restart), leaving the caller's ordinary handling.
+    /// `freshBudget` is the viewer's Try again: a full budget, first attempt
+    /// at once.
+    @discardableResult
+    private func beginReconnect(position: Double, resume: Bool, freshBudget: Bool = false) -> Bool {
+        guard !isDisposed,
+              !isWatchPartyPlayback,
+              offlinePlaybackContext == nil,
+              let lastLoadRequest,
+              lastLoadRequest.offlineDownloadId == nil else {
+            return false
+        }
+        if reconnectCycle.isActive { return true }
+        // Taken while the viewer's selection is still published. After a
+        // give-up the session is torn down, so Try again reuses it.
+        if activePreparedProtocolV3 != nil || reconnectLoadRequest == nil {
+            reconnectLoadRequest = makeRecoveryLoadRequest()
+        }
+        guard let next = reconnectCycle.begin(
+            position: position,
+            resume: resume,
+            freshBudget: freshBudget,
+            now: Date()
+        ) else { return true }
+        Self.logger.warning(
+            "Playback connection lost; reconnecting position=\(self.reconnectCycle.position, privacy: .public) resume=\(resume, privacy: .public) attempts=\(self.reconnectCycle.attempts, privacy: .public)"
+        )
+        // Nothing plays until a new plan arrives. Progress reports and
+        // stale-session renewal would race the reconnect's own requests; the
+        // adopted plan's first frame starts reporting again.
+        progressTask?.cancel()
+        progressTask = nil
+        staleSessionRecoveryTask?.cancel()
+        staleSessionRecoveryTask = nil
+        aetherPlaybackController.pause()
+        isPlaying = false
+        isLoading = false
+        isBuffering = false
+        bufferingProgress = nil
+        error = nil
+        errorIsRetryable = true
+        connectionState = .reconnecting
+        scheduleReconnect(next)
+        return true
+    }
+
+    private func scheduleReconnect(_ next: PlaybackReconnectCycle.Next) {
+        switch next {
+        case .giveUp:
+            giveUpReconnect(message: Self.connectionLostMessage)
+        case .attempt(let delay):
+            reconnectTimerTask?.cancel()
+            let generation = reconnectCycle.generation
+            reconnectTimerTask = Task { @MainActor [weak self] in
+                if delay > 0 {
+                    try? await Task.sleep(for: .seconds(delay))
+                }
+                guard !Task.isCancelled,
+                      let self,
+                      !self.isDisposed,
+                      self.reconnectCycle.isCurrent(generation) else { return }
+                self.reconnectTimerTask = nil
+                self.runReconnectAttempt(generation: generation)
+            }
+        }
+    }
+
+    private func runReconnectAttempt(generation: UInt64) {
+        guard !isDisposed, reconnectCycle.isCurrent(generation) else { return }
+        // One request at a time: a replan or start already talking to the
+        // server decides first; check again once it has settled.
+        if protocolV3ReplanTask != nil || freshLoadTask != nil {
+            scheduleReconnect(.attempt(after: PlaybackReconnectPolicy.baseDelay))
+            return
+        }
+        reconnectCycle.beginAttempt()
+        Self.logger.info(
+            "Playback reconnect attempt \(self.reconnectCycle.attempts, privacy: .public)/\(PlaybackReconnectPolicy.maxAttempts, privacy: .public)"
+        )
+        if activePreparedProtocolV3 != nil,
+           activePlaybackSessionId != nil,
+           attemptProtocolV3Replan(
+               position: reconnectCycle.position,
+               classification: PlaybackReconnectPolicy.classification,
+               message: "Reconnect at the saved position after the connection to the server was lost."
+           ) {
+            return
+        }
+        startReconnectSession()
+    }
+
+    /// A new session at the saved position with the viewer's tracks, for a
+    /// session that did not survive (or that a give-up already tore down).
+    private func startReconnectSession() {
+        guard let request = reconnectLoadRequest ?? makeRecoveryLoadRequest() else {
+            giveUpReconnect(message: Self.connectionLostMessage)
+            return
+        }
+        beginFreshLoad(
+            request: request,
+            progressPosition: nil,
+            resumePositionOverride: reconnectCycle.position,
+            allowNearEndResume: true,
+            origin: .reconnect
+        )
+    }
+
+    /// An attempt's request failed: wait for the next one, start a new
+    /// session, or give up.
+    private func continueReconnect(after error: Error, step: PlaybackReconnectPolicy.Step) {
+        guard !isDisposed, reconnectCycle.isActive else { return }
+        isLoading = false
+        Self.logger.warning(
+            "Playback reconnect attempt failed step=\(String(describing: step), privacy: .public): \(MediaLogRedactor.sanitize(error), privacy: .public)"
+        )
+        switch PlaybackReconnectPolicy.verdict(for: error, step: step) {
+        case .retryLater:
+            scheduleReconnect(reconnectCycle.retryLater(now: Date()))
+        case .startNewSession:
+            scheduleReconnectSessionStart()
+        case .giveUp:
+            giveUpReconnect(
+                message: error.localizedDescription,
+                retryable: Self.isRetryablePlaybackFailure(error)
+            )
+        }
+    }
+
+    /// Starts the new session from a fresh task: the failing replan's task is
+    /// still unwinding, and the new load must not cancel it mid-cleanup.
+    private func scheduleReconnectSessionStart() {
+        reconnectTimerTask?.cancel()
+        let generation = reconnectCycle.generation
+        reconnectTimerTask = Task { @MainActor [weak self] in
+            guard let self,
+                  !self.isDisposed,
+                  self.reconnectCycle.isCurrent(generation) else { return }
+            self.reconnectTimerTask = nil
+            self.startReconnectSession()
+        }
+    }
+
+    /// Ends a running reconnect because the server handed back a plan.
+    /// Returns the play intent the new transport takes, or nil when no
+    /// reconnect was running.
+    private func adoptPlanEndingReconnect() -> Bool? {
+        guard reconnectCycle.isActive else { return nil }
+        let resume = reconnectCycle.resume
+        reconnectTimerTask?.cancel()
+        reconnectTimerTask = nil
+        reconnectCycle.end(recovered: true, now: Date())
+        connectionState = .connected
+        Self.logger.info("Playback reconnected resume=\(resume, privacy: .public)")
+        return resume
+    }
+
+    /// Stops a running reconnect without a plan: the viewer left, other
+    /// playback started, or playback ended in an error.
+    private func cancelReconnect() {
+        reconnectTimerTask?.cancel()
+        reconnectTimerTask = nil
+        reconnectCycle.end(recovered: false, now: Date())
+        if connectionState != .connected {
+            connectionState = .connected
+        }
+    }
+
+    /// The budget ran out or the server refused a new session: tell the
+    /// viewer, and keep the position and intent for Try again. A refusal the
+    /// server marked not retryable offers no Try again, so the connection is
+    /// not reported as lost.
+    private func giveUpReconnect(message: String, retryable: Bool = true) {
+        Self.logger.error("Playback reconnect gave up after \(self.reconnectCycle.attempts, privacy: .public) attempts")
+        let position = reconnectCycle.position
+        cancelReconnect()
+        currentTime = position
+        finalizeTerminalPlaybackError(message, retryable: retryable)
+        if retryable {
+            connectionState = .lost
+        }
     }
 
     private func isPlaybackSessionMissingMessage(_ message: String) -> Bool {
@@ -4859,6 +5204,18 @@ class PlayerViewModel {
     /// fresh session — simpler than retrying just the stream load, and
     /// tolerates stale server-side sessions that may have been reaped.
     func retry() {
+        if connectionState == .lost {
+            // Try again after a lost connection: a fresh reconnect at the
+            // saved position, with the viewer's tracks and play intent.
+            connectionState = .connected
+            if beginReconnect(
+                position: reconnectCycle.position,
+                resume: reconnectCycle.resume,
+                freshBudget: true
+            ) {
+                return
+            }
+        }
         guard let last = lastLoadRequest else { return }
         Self.logger.info("Retrying playback for contentId=\(last.contentId, privacy: .public)")
         beginFreshLoad(
@@ -4870,6 +5227,8 @@ class PlayerViewModel {
     }
 
     func togglePlayPause() {
+        // Nothing can play until the reconnect hands over a new transport.
+        guard !isReconnecting else { return }
         if watchPartyAdapter?.request(isPlaying ? .pause : .play) == true { return }
         // `isPlaying` is driven by the backend's `onPauseChange` callback;
         // let that be the single writer so the UI can't drift out of sync
@@ -5324,6 +5683,16 @@ class PlayerViewModel {
             return true
         }
         let clampedTarget = duration > 0 ? min(max(0, target), duration) : max(0, target)
+        if isReconnecting {
+            // The transport is dead; the reconnect resumes where the viewer
+            // wants to be.
+            reconnectCycle.updatePosition(clampedTarget)
+            currentTime = clampedTarget
+            scrubPreviewTime = clampedTarget
+            isScrubbing = false
+            scrubPreviewProvider.endInteraction()
+            return false
+        }
         let requiresReplan: Bool = {
             guard let timeline = aetherPlaybackController.activeSpec?.timeline else { return true }
             if case .replan = timeline.seekDisposition(forSourceTime: clampedTarget) {
@@ -6707,6 +7076,8 @@ class PlayerViewModel {
         progressTask?.cancel()
         staleSessionRecoveryTask?.cancel()
         staleSessionRecoveryTask = nil
+        // Leaving the player stops a running reconnect.
+        cancelReconnect()
         settingsRefreshTask?.cancel()
         settingsRefreshTask = nil
         seekIntervalRefreshTask?.cancel()

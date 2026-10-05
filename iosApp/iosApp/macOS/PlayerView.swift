@@ -114,11 +114,11 @@ private struct MacPlayerScreen: View {
                     .transition(.opacity)
                 }
 
-                if viewModel.isLoading || viewModel.isBuffering {
+                if viewModel.isLoading || viewModel.isBuffering || viewModel.isReconnecting {
                     PlayerBufferingCapsule()
                 }
 
-                if let notice = viewModel.activeNotice {
+                if let notice = viewModel.presentedNotice {
                     PlayerNoticeOverlay(notice: notice)
                         .padding(.top, 72)
                 }
@@ -257,7 +257,7 @@ private struct MacPlayerScreen: View {
 
             HStack(spacing: 12) {
                 if viewModel.errorIsRetryable {
-                    Button("Retry") {
+                    Button(viewModel.retryButtonTitle) {
                         viewModel.retry()
                     }
                     .buttonStyle(.borderedProminent)
