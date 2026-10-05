@@ -77,4 +77,32 @@ final class DetailResumeStateTests: XCTestCase {
         // The stalled fetch is cancelled rather than awaited to completion.
         XCTAssertLessThan(ContinuousClock.now - started, .seconds(10))
     }
+
+    func testLoadTimesOutWhenFetchIgnoresCancellation() async throws {
+        let fresh = try userData(position: 1210)
+        let started = ContinuousClock.now
+        let state = await DetailResumeState.load(timeout: .milliseconds(50)) {
+            // Joining an unstructured task, as a shared token-refresh flight
+            // does, keeps the fetch waiting after it is cancelled.
+            await Task { try? await Task.sleep(for: .seconds(5)) }.value
+            return fresh
+        }
+        XCTAssertEqual(state, .unavailable)
+        // The fallback arrives on time instead of after the stray fetch.
+        XCTAssertLessThan(ContinuousClock.now - started, .seconds(2))
+    }
+
+    func testCancellingTheCallerReturnsUnavailableWithoutWaitingForFetch() async {
+        let started = ContinuousClock.now
+        let lookup = Task {
+            await DetailResumeState.load(timeout: .seconds(30)) {
+                await Task { try? await Task.sleep(for: .seconds(5)) }.value
+                return nil
+            }
+        }
+        lookup.cancel()
+        let state = await lookup.value
+        XCTAssertEqual(state, .unavailable)
+        XCTAssertLessThan(ContinuousClock.now - started, .seconds(2))
+    }
 }

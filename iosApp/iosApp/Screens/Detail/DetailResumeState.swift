@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 /// The watch state a detail page's Play tap resumes from.
 ///
@@ -32,28 +33,65 @@ enum DetailResumeState: Equatable {
         )
     }
 
-    /// Runs `fetch`, mapping a thrown error or a fetch slower than `timeout`
-    /// to `.unavailable`. The losing branch is cancelled.
+    /// Runs `fetch`, mapping a thrown error, a fetch slower than `timeout`,
+    /// or the caller's cancellation to `.unavailable`.
+    ///
+    /// The fetch runs in its own task and is cancelled, not awaited, once
+    /// the answer is decided. A task group would join it on exit, so a fetch
+    /// parked where cancellation can't reach (such as a shared token-refresh
+    /// flight) would hold the tap past the timeout.
     static func load(
         timeout: Duration = defaultTimeout,
         fetch: @escaping @Sendable () async throws -> LeafItemUserData?
     ) async -> DetailResumeState {
-        await withTaskGroup(of: DetailResumeState?.self) { group in
-            group.addTask {
-                do {
-                    let userData = try await fetch()
-                    return Task.isCancelled ? nil : .refreshed(userData)
-                } catch {
-                    return .unavailable
-                }
+        let answer = FirstAnswer()
+        let fetchTask = Task {
+            do {
+                answer.settle(.refreshed(try await fetch()))
+            } catch {
+                answer.settle(.unavailable)
             }
-            group.addTask {
-                try? await Task.sleep(for: timeout)
-                return nil
-            }
-            let first = await group.next() ?? nil
-            group.cancelAll()
-            return first ?? .unavailable
         }
+        let timeoutTask = Task {
+            try? await Task.sleep(for: timeout)
+            answer.settle(.unavailable)
+        }
+        let state = await withTaskCancellationHandler {
+            await withCheckedContinuation { answer.wait($0) }
+        } onCancel: {
+            answer.settle(.unavailable)
+        }
+        fetchTask.cancel()
+        timeoutTask.cancel()
+        return state
+    }
+}
+
+/// The first of the fetch, the timeout, and cancellation to settle decides
+/// `DetailResumeState.load`'s answer; later ones are ignored.
+private final class FirstAnswer: Sendable {
+    private enum Slot {
+        case waiting(CheckedContinuation<DetailResumeState, Never>?)
+        case settled(DetailResumeState)
+    }
+
+    private let slot = Mutex<Slot>(.waiting(nil))
+
+    func wait(_ continuation: CheckedContinuation<DetailResumeState, Never>) {
+        let settled = slot.withLock { slot -> DetailResumeState? in
+            if case .settled(let state) = slot { return state }
+            slot = .waiting(continuation)
+            return nil
+        }
+        if let settled { continuation.resume(returning: settled) }
+    }
+
+    func settle(_ state: DetailResumeState) {
+        let waiter = slot.withLock { slot -> CheckedContinuation<DetailResumeState, Never>? in
+            guard case .waiting(let waiter) = slot else { return nil }
+            slot = .settled(state)
+            return waiter
+        }
+        waiter?.resume(returning: state)
     }
 }
