@@ -214,10 +214,11 @@ enum PlaybackReconnectPolicy {
 ///
 /// After a seek past the buffer over a dead source, Aether's clock runs on
 /// without a frame and can end at a parked position. The seek target stays
-/// the playhead until playback moves on from it while the source delivers.
+/// the playhead until playback moves on from it while the source delivers,
+/// or while the engine plays it from media buffered ahead of its clock.
 struct PlaybackSourceWatch: Equatable {
     /// How far past a seek target playback has to move, with the source
-    /// delivering, before the clock is trusted again.
+    /// delivering or media buffered ahead, before the clock is trusted again.
     static let confirmationSeconds: Double = 2
     static let confirmationWindowSeconds: Double = 30
 
@@ -243,8 +244,12 @@ struct PlaybackSourceWatch: Equatable {
         unconfirmedSeekTarget = max(0, target)
     }
 
-    mutating func observePlayhead(_ time: Double) {
-        guard let target = unconfirmedSeekTarget, !isStalled, time.isFinite else { return }
+    /// `hasMediaAhead` is whether the engine holds media ahead of its clock
+    /// (`PlayerStallPresentation.hasMediaAhead`). Over a stalled source it
+    /// tells a seek within the read-ahead buffer, which really plays, from a
+    /// seek past it, where the clock runs on without a frame.
+    mutating func observePlayhead(_ time: Double, hasMediaAhead: Bool = false) {
+        guard let target = unconfirmedSeekTarget, !isStalled || hasMediaAhead, time.isFinite else { return }
         // Playback moves through this window tick by tick. A clock that
         // jumps past it in one step (to a parked end of media) did not play
         // from the target.

@@ -1285,15 +1285,22 @@ class PlayerViewModel {
             stalledBufferEmptySince = nil
             return
         }
-        let engine = aetherPlaybackController.engine
-        if PlayerStallPresentation.hasMediaAhead(
-            bufferedPosition: engine.bufferedPosition,
-            clockTime: engine.currentTime
-        ) {
+        if engineHasMediaAhead {
             stalledBufferEmptySince = nil
         } else if stalledBufferEmptySince == nil {
             stalledBufferEmptySince = .now
         }
+    }
+
+    /// Whether the engine holds media ahead of its clock. Always false for
+    /// an audio-only load, whose buffered position mirrors the clock.
+    private var engineHasMediaAhead: Bool {
+        guard !isAudioOnlyAetherLoad else { return false }
+        let engine = aetherPlaybackController.engine
+        return PlayerStallPresentation.hasMediaAhead(
+            bufferedPosition: engine.bufferedPosition,
+            clockTime: engine.currentTime
+        )
     }
 
     /// A source outage leaves the player loading only once the buffer runs
@@ -1388,7 +1395,7 @@ class PlayerViewModel {
                 seekFilterTimeoutTask = nil
             }
             currentTime = movieTime
-            sourceWatch.observePlayhead(movieTime)
+            sourceWatch.observePlayhead(movieTime, hasMediaAhead: engineHasMediaAhead)
             updateNextUpPresentation(for: movieTime)
             syncIntroSkipPrompt()
             autoSkipCreditsIfNeeded(at: movieTime)

@@ -122,6 +122,31 @@ final class PlaybackEndOfStreamTests: XCTestCase {
         XCTAssertEqual(watch.playhead(currentTime: 2400), 2400)
     }
 
+    func testSeekWithinTheBufferOverAStalledSourcePlaysFromTheTarget() {
+        // The server is down, but the engine still plays from its read-ahead
+        // buffer. A seek inside that buffer plays, so a later reconnect
+        // resumes where playback got to, not at the seek target.
+        var watch = PlaybackSourceWatch()
+        watch.observe(.stalled(reconnecting: true))
+        watch.seekCommitted(to: 600)
+        watch.observePlayhead(601, hasMediaAhead: true)
+        XCTAssertEqual(watch.playhead(currentTime: 601), 600)
+        watch.observePlayhead(602, hasMediaAhead: true)
+        XCTAssertNil(watch.unconfirmedSeekTarget)
+        XCTAssertTrue(watch.isStalled)
+        XCTAssertEqual(watch.playhead(currentTime: 780), 780)
+    }
+
+    func testRunningClockWithNothingBufferedOverAStalledSourceKeepsTheTarget() {
+        var watch = PlaybackSourceWatch()
+        watch.observe(.stalled(reconnecting: true))
+        watch.seekCommitted(to: 2160)
+        for time in stride(from: 2160.0, through: 2200, by: 1) {
+            watch.observePlayhead(time, hasMediaAhead: false)
+        }
+        XCTAssertEqual(watch.playhead(currentTime: 2200), 2160)
+    }
+
     func testSourceDeliveringAgainClearsTheStall() {
         var watch = PlaybackSourceWatch()
         watch.observe(.stalled(reconnecting: true))
