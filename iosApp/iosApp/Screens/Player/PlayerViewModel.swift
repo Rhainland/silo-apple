@@ -259,6 +259,11 @@ class PlayerViewModel {
     }
     #endif
     var activeNotice: PlayerNotice?
+    /// False when the failure behind `error` is a `PlaybackV3TerminalFailure`
+    /// marked not retryable (the server's terminal outcome for an empty or
+    /// damaged source, for example), so the error view offers no Retry that
+    /// would only fail the same way again.
+    var errorIsRetryable = true
     var remoteDismissToken: UUID?
     var audioTracks: [PlayerTrack] = []
     var subtitleTracks: [PlayerTrack] = [] {
@@ -1483,6 +1488,7 @@ class PlayerViewModel {
     private func handleFileLoaded() {
         hasReachedEndOfFile = false
         error = nil
+        errorIsRetryable = true
         isLoading = false
         isPlaying = !aetherPlaybackController.isPaused
         applySettingsToPlayer()
@@ -2258,7 +2264,10 @@ class PlayerViewModel {
                    ) {
                     return
                 }
-                self.finalizeTerminalPlaybackError(error.localizedDescription)
+                self.finalizeTerminalPlaybackError(
+                    error.localizedDescription,
+                    retryable: Self.isRetryablePlaybackFailure(error)
+                )
             }
         }
         return true
@@ -3909,6 +3918,7 @@ class PlayerViewModel {
         isLoadingSubtitles = false
         isLoading = true
         error = nil
+        errorIsRetryable = true
         noticeDismissTask?.cancel()
         noticeDismissTask = nil
         remoteDismissTask?.cancel()
@@ -4560,7 +4570,7 @@ class PlayerViewModel {
 
         switch origin {
         case .userInitiated:
-            finalizeTerminalPlaybackError(message)
+            finalizeTerminalPlaybackError(message, retryable: Self.isRetryablePlaybackFailure(error))
         case .autoplay:
             let logMessage = MediaLogRedactor.sanitize(message)
             Self.logger.warning(
@@ -4608,7 +4618,16 @@ class PlayerViewModel {
         }
     }
 
-    private func finalizeTerminalPlaybackError(_ message: String) {
+    /// Whether retrying can help after `error`. Only a terminal failure
+    /// marked not retryable says otherwise: the server's terminal outcome, or
+    /// a server or profile that cannot play until it changes. Transport and
+    /// engine failures stay retryable, and so does a recovery replan that
+    /// ran out of attempts, because Retry starts a fresh session.
+    nonisolated static func isRetryablePlaybackFailure(_ error: Error) -> Bool {
+        (error as? PlaybackV3TerminalFailure)?.retryable ?? true
+    }
+
+    private func finalizeTerminalPlaybackError(_ message: String, retryable: Bool = true) {
         #if os(iOS) || os(tvOS)
         // Terminal outcome #1 of 2 (the other is `handleEndOfFile`). Every
         // Aether recovery path ends either here or in `handleEndOfFile`,
@@ -4646,6 +4665,7 @@ class PlayerViewModel {
         // reach it; a reload's stall froze its timer, so it would never leave.
         introSkipPrompt.withdraw()
         error = message
+        errorIsRetryable = retryable
         isLoading = false
         isPlaying = false
     }

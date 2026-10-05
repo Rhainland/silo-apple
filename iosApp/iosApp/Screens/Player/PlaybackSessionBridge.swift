@@ -90,6 +90,9 @@ enum PlaybackProgressReportResult: Equatable {
 struct PlaybackV3TerminalFailure: LocalizedError, Equatable {
     let reason: String
     let message: String
+    /// Whether starting playback again can help. False only when a fresh
+    /// session would fail the same way: the server's terminal outcome says
+    /// so, or the server or profile cannot play at all until it changes.
     let retryable: Bool
 
     var errorDescription: String? { message }
@@ -1737,7 +1740,7 @@ actor PlaybackSessionBridge {
 
     /// Ends a replan at a dead end: retires `retiring` when it names a session
     /// other than the current one, reports the terminal route event, and
-    /// returns the non-retryable failure for the caller to throw.
+    /// returns `replanDeadEnd(reason:message:)` for the caller to throw.
     @discardableResult
     private func failReplan(
         active: ActiveProtocolV3,
@@ -1755,7 +1758,15 @@ actor PlaybackSessionBridge {
             reason: reason,
             message: message
         )
-        return PlaybackV3TerminalFailure(reason: reason, message: message, retryable: false)
+        return Self.replanDeadEnd(reason: reason, message: message)
+    }
+
+    /// The failure for a replan dead end. It stays retryable: an exhausted
+    /// attempt ladder, a replan loop or an unusable replacement plan belongs
+    /// to this session's recovery, and Retry starts a fresh session with a
+    /// fresh ladder.
+    nonisolated static func replanDeadEnd(reason: String, message: String) -> PlaybackV3TerminalFailure {
+        PlaybackV3TerminalFailure(reason: reason, message: message, retryable: true)
     }
 
     func reportProtocolV3FirstFrame(

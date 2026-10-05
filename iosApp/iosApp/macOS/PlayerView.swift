@@ -256,12 +256,14 @@ private struct MacPlayerScreen: View {
                 .frame(maxWidth: 520)
 
             HStack(spacing: 12) {
-                Button("Retry") {
-                    viewModel.retry()
+                if viewModel.errorIsRetryable {
+                    Button("Retry") {
+                        viewModel.retry()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.siloOnSurface)
+                    .foregroundStyle(Color.siloBackground)
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(.siloOnSurface)
-                .foregroundStyle(Color.siloBackground)
 
                 Button("Close") {
                     dismiss()

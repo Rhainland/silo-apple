@@ -739,11 +739,13 @@ struct PlayerView: View {
                 .padding(.horizontal)
 
             HStack(spacing: 16) {
-                Button("Retry") {
-                    viewModel.retry()
+                if viewModel.errorIsRetryable {
+                    Button("Retry") {
+                        viewModel.retry()
+                    }
+                    .siloPrimaryButton()
+                    .frame(minWidth: 140)
                 }
-                .siloPrimaryButton()
-                .frame(minWidth: 140)
 
                 Button("Go Back") { dismissPlayer() }
                     .siloPrimaryButton()
