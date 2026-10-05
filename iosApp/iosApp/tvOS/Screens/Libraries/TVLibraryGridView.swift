@@ -183,8 +183,13 @@ struct TVLibraryGridView: View {
                 } else if let error = viewModel.error, viewModel.items.isEmpty {
                     ErrorView(state: error, onRetry: { Task { await viewModel.loadInitial() } })
                 } else if viewModel.items.isEmpty {
+                    // A full-width focus section: the centered Clear filters
+                    // button sits outside the straight-down path from the
+                    // left-aligned Sort/Filter pills, so Down only finds it
+                    // by entering this section.
                     emptyState
                         .frame(maxWidth: .infinity, minHeight: 400)
+                        .focusSection()
                 } else {
                     TVCatalogGrid(
                         items: viewModel.items,
@@ -228,7 +233,8 @@ struct TVLibraryGridView: View {
     /// An empty library has nothing to act on, so it stays inert; the
     /// control row and letter rail keep the page focusable. Filters that
     /// match nothing add one native Clear filters button, which Down from the
-    /// control row and Left from the letter rail both reach.
+    /// control row and Left from the letter rail both reach through the
+    /// focus engine.
     @ViewBuilder
     private var emptyState: some View {
         switch viewModel.emptyReason {
