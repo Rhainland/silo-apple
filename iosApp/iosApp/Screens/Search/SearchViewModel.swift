@@ -36,6 +36,19 @@ enum SearchMediaType: String, CaseIterable, Identifiable {
     }
 }
 
+/// What the Search screen shows under the filters.
+enum SearchContentState: Equatable {
+    /// No query yet.
+    case prompt
+    /// A new search has no titles or people yet: it is waiting for the
+    /// server (capabilities, titles, or people).
+    case loading
+    /// The search failed; Try Again reruns it.
+    case failed(ErrorState)
+    case noResults
+    case results
+}
+
 @MainActor
 @Observable
 class SearchViewModel {
@@ -73,6 +86,13 @@ class SearchViewModel {
     var hasSearched = false
     var hasMore = false
     var total = 0
+
+    var contentState: SearchContentState {
+        if (isSearching || isSearchingPeople) && results.isEmpty && people.isEmpty { return .loading }
+        if let error { return .failed(error) }
+        if results.isEmpty && people.isEmpty { return hasSearched ? .noResults : .prompt }
+        return .results
+    }
 
     private var searchTask: Task<Void, Never>?
     private var peopleTask: Task<Void, Never>?
@@ -160,7 +180,7 @@ class SearchViewModel {
             if let nextPage {
                 page = try await api.nextCatalogPage(nextPage)
             } else {
-                let mediaType = await mediaScope()
+                let mediaType = try await mediaScope()
                 guard !Task.isCancelled, myGeneration == generation else { return }
                 startPeopleSearch(for: trimmed, mediaScope: mediaType, generation: myGeneration)
                 page = try await api.catalogPage(.search(trimmed, type: mediaType, limit: pageSize))
@@ -196,20 +216,17 @@ class SearchViewModel {
 
     /// The `type` for a new search, also sent as the people `media_scope`.
     /// "All" without audiobooks covers episodes only when the server
-    /// advertises `video_with_episodes`; otherwise, or when the capability
-    /// read fails, it stays `video`.
-    private func mediaScope() async -> String? {
+    /// advertises `video_with_episodes`, and stays `video` when the server
+    /// answers without it. A capability read that fails (timeout, lost
+    /// connection, refused credentials) fails the search instead of quietly
+    /// narrowing it to `video`, which would report "No results" for an
+    /// episode.
+    private func mediaScope() async throws -> String? {
         let mediaType = selectedMediaType
         let audiobooksEnabled = audiobooksEnabled
         var includesEpisodes = false
         if self.includesEpisodes, mediaType == .all, !audiobooksEnabled {
-            do {
-                includesEpisodes = try await loadSearchFeatures().videoWithEpisodesScope
-            } catch {
-                if !Task.isCancelled {
-                    Self.logger.error("search capabilities failed: \(error.localizedDescription, privacy: .public)")
-                }
-            }
+            includesEpisodes = try await loadSearchFeatures().videoWithEpisodesScope
         }
         return mediaType.queryValue(audiobooksEnabled: audiobooksEnabled, includesEpisodes: includesEpisodes)
     }
