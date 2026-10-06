@@ -76,7 +76,7 @@ struct ShuffleItem: Decodable, Equatable, Sendable {
     @ArtworkURL var backdropUrl: String? = nil
     let backdropThumbhash: String?
 
-    var isEpisode: Bool { type == "episode" }
+    var isEpisode: Bool { SiloMediaType.isEpisode(type) }
 }
 
 /// Owner-visible shuffle failures. Other errors pass through unchanged.
