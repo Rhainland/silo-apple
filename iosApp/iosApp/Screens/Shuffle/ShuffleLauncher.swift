@@ -41,8 +41,20 @@ final class ShuffleLauncher {
                 let shuffle = try await api.createShuffle(scope: scope)
                 router.presentShuffle(shuffle)
             } catch {
+                // The server or profile changed while the shuffle started:
+                // the screen that asked belongs to the previous owner.
+                guard !Self.isOwnerChange(error) else { return }
                 failureMessage = Self.failureMessage(for: error)
             }
+        }
+    }
+
+    nonisolated static func isOwnerChange(_ error: Error) -> Bool {
+        switch error {
+        case is APIv2OwnerChangedBeforeDispatch, HTTPError.authorityChanged, HTTPError.requestIdentityChanged:
+            return true
+        default:
+            return false
         }
     }
 

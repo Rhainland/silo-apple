@@ -87,6 +87,39 @@ final class ShuffleV2Tests: XCTestCase {
         XCTAssertEqual(stub.requests.count, 2)
     }
 
+    func testAShuffleStartedForAReplacedProfileIsRefusedWithoutAnAlert() async throws {
+        stub.reply(201, shuffle(current: movie, next: episode))
+        let name = "ShuffleV2Tests.\(UUID().uuidString)"
+        let suite = try XCTUnwrap(UserDefaults(suiteName: name))
+        addTeardownBlock { UserDefaults().removePersistentDomain(forName: name) }
+        let tokens = TokenStore(keychain: SharedKeychain(service: name, accessGroup: nil),
+            defaults: SharedDefaults(suite: suite, standard: suite))
+        await tokens.switchActiveServer(serverId: "test-server")
+        await tokens.setServerUrl("https://shuffle.example")
+        await tokens.setProfileId("profile-one")
+        // The profile changes after the answer arrives, before it is used.
+        let api = SiloAPI(
+            http: HTTPClient(session: stub.makeSession(), tokenStore: tokens), tokenStore: tokens,
+            ownerRecheckBarrier: { await tokens.setProfileId("profile-two") }
+        )
+
+        do {
+            _ = try await api.createShuffle(scope: ShuffleScopeRequest(kind: .library, id: "1"))
+            XCTFail("One profile's shuffle must not open for the next")
+        } catch {
+            XCTAssertTrue(ShuffleLauncher.isOwnerChange(error), "unexpected \(error)")
+        }
+    }
+
+    func testOnlyCreateIsSentOnceAfterAnExpiredSession() {
+        // A resent create would start a second shuffle; advance, skip and
+        // stop name what they act on, so a replay changes nothing.
+        XCTAssertFalse(HTTPClient.shouldAttemptRefresh(path: "/api/v2/shuffles", method: "POST"))
+        XCTAssertTrue(HTTPClient.shouldAttemptRefresh(path: "/api/v2/shuffles/s1/advance", method: "POST"))
+        XCTAssertTrue(HTTPClient.shouldAttemptRefresh(path: "/api/v2/shuffles/s1/skip", method: "POST"))
+        XCTAssertTrue(HTTPClient.shouldAttemptRefresh(path: "/api/v2/shuffles/s1", method: "DELETE"))
+    }
+
     func testOtherFailuresAreNotClassified() {
         XCTAssertNil(ShuffleError.classify(APIv2Error.httpStatus(500)))
         XCTAssertNil(ShuffleError.classify(URLError(.timedOut)))

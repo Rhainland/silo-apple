@@ -450,28 +450,45 @@ actor SiloAPI {
 
     /// `non_retryable`: dispatched once. A lost answer leaves an unused
     /// shuffle that the server deletes with other abandoned ones.
+    ///
+    /// Shuffle answers are owner-scoped like other reads; see
+    /// ``requireCurrentOwner(_:)``. One that arrives after a server or
+    /// profile switch is refused, so it never opens a player or replaces a
+    /// pick for the new owner.
     func createShuffle(scope: ShuffleScopeRequest) async throws -> APIv2Shuffle {
-        try await apiV2Client.createShuffle(
-            scope: scope, imageSize: await imageSizeQuery["image_size"], auth: try await mutationAuth()
+        let auth = try await mutationAuth()
+        let shuffle = try await apiV2Client.createShuffle(
+            scope: scope, imageSize: await imageSizeQuery["image_size"], auth: auth
         )
+        try await requireCurrentOwner(auth)
+        return shuffle
     }
 
     func shuffle(id: String) async throws -> APIv2Shuffle {
-        try await apiV2Client.shuffle(id: id, imageSize: await imageSizeQuery["image_size"], auth: try await detailReadAuth())
+        let auth = try await detailReadAuth()
+        let shuffle = try await apiV2Client.shuffle(id: id, imageSize: await imageSizeQuery["image_size"], auth: auth)
+        try await requireCurrentOwner(auth)
+        return shuffle
     }
 
     func advanceShuffle(id: String, fromContentId: String) async throws -> APIv2Shuffle {
-        try await apiV2Client.advanceShuffle(
+        let auth = try await mutationAuth()
+        let shuffle = try await apiV2Client.advanceShuffle(
             id: id, fromContentId: fromContentId,
-            imageSize: await imageSizeQuery["image_size"], auth: try await mutationAuth()
+            imageSize: await imageSizeQuery["image_size"], auth: auth
         )
+        try await requireCurrentOwner(auth)
+        return shuffle
     }
 
     func skipShuffleItem(id: String, nextContentId: String) async throws -> APIv2Shuffle {
-        try await apiV2Client.skipShuffleItem(
+        let auth = try await mutationAuth()
+        let shuffle = try await apiV2Client.skipShuffleItem(
             id: id, nextContentId: nextContentId,
-            imageSize: await imageSizeQuery["image_size"], auth: try await mutationAuth()
+            imageSize: await imageSizeQuery["image_size"], auth: auth
         )
+        try await requireCurrentOwner(auth)
+        return shuffle
     }
 
     func deleteShuffle(id: String) async throws {
