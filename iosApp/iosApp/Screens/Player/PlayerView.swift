@@ -43,6 +43,7 @@ struct PlayerView: View {
     #if os(iOS)
     @State private var orientationCoordinator = PlayerOrientationCoordinator.shared
     @State private var pictureInPicture = PictureInPictureCoordinator.shared
+    @Environment(\.scenePhase) private var scenePhase
     #endif
     #if os(tvOS)
     @State private var remoteIdentityNotice: RemotePlaybackIdentityManager.ActiveIdentity?
@@ -397,6 +398,15 @@ struct PlayerView: View {
             guard pictureInPicture.ownsEngagedSession(viewModel) else { return }
             closePresentation()
         }
+        // Hand the user's brightness back while the app is away, and take the
+        // player's level again on return unless the user changed it.
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active {
+                PlayerScreenBrightness.shared.resume()
+            } else {
+                PlayerScreenBrightness.shared.suspend()
+            }
+        }
         #endif
         .onChange(of: viewModel.remoteDismissToken) { _, newValue in
             guard newValue != nil else { return }
@@ -497,6 +507,7 @@ struct PlayerView: View {
             #endif
             #if os(iOS)
             orientationCoordinator.deactivatePlayer()
+            PlayerScreenBrightness.shared.restore()
             #endif
             #if os(tvOS)
             // A detail/Home read launched synchronously from this disappear
@@ -1418,8 +1429,8 @@ struct PlayerNextUpScreen: View {
         if let airDate = episode.airDate, !airDate.isEmpty {
             parts.append(formatAirDate(airDate))
         }
-        if let runtime = episode.runtime, runtime > 0 {
-            parts.append(formatRuntime(runtime))
+        if let runtime = MediaTextFormatting.runtime(minutes: episode.runtime) {
+            parts.append(runtime)
         }
         return parts.joined(separator: " · ")
     }
@@ -1427,11 +1438,6 @@ struct PlayerNextUpScreen: View {
     private func formatAirDate(_ airDate: String) -> String {
         guard let date = try? Date(airDate, strategy: .iso8601) else { return airDate }
         return date.formatted(date: .abbreviated, time: .omitted)
-    }
-
-    private func formatRuntime(_ minutes: Int) -> String {
-        Duration.seconds(minutes * 60)
-            .formatted(.units(allowed: [.hours, .minutes], width: .abbreviated))
     }
 
     /// One centered column shared by the hero and On Deck, as wide as four

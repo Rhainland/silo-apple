@@ -374,6 +374,7 @@ struct ContentView: View {
             await diagnosticsModel.handleForeground()
             #endif
             #if os(iOS)
+            // Doesn't wait for the permission alert, so it can't delay onAppActive.
             await ApplePushRegistrationCoordinator.shared.prepareForAuthenticatedProfile()
             #endif
             #if !os(tvOS)
@@ -1290,15 +1291,6 @@ struct ContentView: View {
             #else
             ServerNeedsSetupView(router: router)
             #endif
-        case .onboardingTour:
-            #if os(tvOS)
-            EmptyStateView(icon: "sparkles", title: "Take the tour on your phone or the web", subtitle: nil)
-                .siloPageBackground()
-            #else
-            OnboardingTourView(router: router)
-            #endif
-        case .login:
-            loginRoot
         case .serverSetup:
             #if os(tvOS)
             TVServerSetupView(router: router)
@@ -1306,13 +1298,12 @@ struct ContentView: View {
             ServerSetupView(router: router)
             #endif
         default:
-            // Routes handled inside the authenticated tab view
-            EmptyStateView(
-                icon: "hammer.fill",
-                title: "Coming Soon",
-                subtitle: "This screen is under construction."
-            )
-            .siloPageBackground()
+            // Signed-out screens push only the routes above, and every
+            // auth-state change clears `router.path` first, so reaching this
+            // is a bug.
+            let _ = assertionFailure("No signed-out destination for \(route)")
+            EmptyStateView(icon: "questionmark.circle", title: "Unknown", subtitle: nil)
+                .siloPageBackground()
         }
     }
 
@@ -1332,12 +1323,6 @@ struct ContentView: View {
             TVServerSetupView(router: router)
             #else
             ServerSetupView(router: router)
-            #endif
-        case .login:
-            #if os(tvOS)
-            TVLoginView(router: router)
-            #else
-            LoginView(router: router)
             #endif
         case .serverNeedsSetup:
             #if os(tvOS)
@@ -2251,6 +2236,8 @@ struct MainTabLibrarySnapshot: Equatable {
     }
 }
 
+// iOS and macOS only: tvOS builds its shell in `TVMainTabView`.
+#if !os(tvOS)
 struct MainTabView: View {
     @Bindable var router: AppRouter
     @State private var selectedDestinationID: MainTabDestinationID = .app(.home)
@@ -2409,37 +2396,9 @@ struct MainTabView: View {
             else { return }
             librarySnapshot = .init(authority: authority, libraries: response.libraries)
         }
-        #if os(tvOS)
-        .fullScreenCover(isPresented: Binding(
-            get: { audioStore.isShowingFullPlayer },
-            set: { if !$0 { audioStore.dismissFullPlayer() } }
-        )) {
-            AudioFullPlayerView()
-        }
-        #endif
-        #if !os(macOS)
         #if os(iOS)
         .modifier(AudioPlayerPresentationModifier(router: router))
         .modifier(PlayerPresentationModifier(router: router))
-        #else
-        .fullScreenCover(item: $router.presentedPlayer) { payload in
-            PlayerView(
-                contentId: payload.contentId,
-                libraryId: payload.libraryId,
-                preferredFileId: payload.fileId,
-                preferredAudioTrackIndex: payload.audioTrackIndex,
-                preferredSubtitleTrackIndex: payload.subtitleTrackIndex,
-                startFromBeginning: payload.startFromBeginning,
-                resumePositionOverride: payload.resumePosition,
-                prefersLastUsedVersion: payload.prefersLastUsedVersion,
-                offlineDownloadId: payload.offlineDownloadId,
-                posterURLHint: payload.posterURL,
-                backdropURLHint: payload.backdropURL,
-                shuffle: payload.shuffle
-            )
-        }
-        #endif
-        #if os(iOS)
         .sheet(
             item: $router.presentedItemDetail,
             onDismiss: { router.itemDetailPresentationDidDismiss() }
@@ -2453,7 +2412,6 @@ struct MainTabView: View {
             SiloControlRemoteView(controller: siloControl)
                 .presentationDetents([.large])
         }
-        #endif
         #endif
         // Outside the presentation modifiers so presented covers (audio
         // player, video player) inherit the router — ErrorView requires
@@ -2539,12 +2497,10 @@ struct MainTabView: View {
             ),
             showAudiobooks: navPrefs.showAudiobooks
         )
-        #if !os(tvOS)
         if DownloadManager.shared.downloadsEnabled,
            !destinations.contains(where: { $0.id == .app(.downloads) }) {
             destinations.append(.app(.downloads))
         }
-        #endif
         return destinations
     }
 
@@ -2585,15 +2541,6 @@ struct MainTabView: View {
         NavigationStack(path: $router.path) {
             TabView(selection: $selectedDestinationID) {
                 ForEach(visibleDestinations) { destination in
-                    #if os(tvOS)
-                    // Text-only tabs on tvOS keep the top bar compact — adding an
-                    // icon blows up each tab's focus pill. The value-based `Tab`
-                    // initializer requires an image on tvOS, so this arm stays on
-                    // the `.tabItem { Text }` form to preserve the text-only look.
-                    destinationContent(for: destination)
-                        .tabItem { Text(destination.title) }
-                        .tag(destination.id)
-                    #else
                     Tab(
                         destination.title,
                         systemImage: selectedDestinationID == destination.id
@@ -2603,7 +2550,6 @@ struct MainTabView: View {
                     ) {
                         destinationContent(for: destination)
                     }
-                    #endif
                 }
             }
             .navigationDestination(for: Route.self) { route in
@@ -2748,10 +2694,8 @@ struct MainTabView: View {
                     routeContent(for: route)
                         #if os(iOS)
                         .toolbar {
-                            if routeNeedsSidebarToggle(route) {
-                                ToolbarItem(placement: .topBarLeading) {
-                                    SidebarToggleButton()
-                                }
+                            ToolbarItem(placement: .topBarLeading) {
+                                SidebarToggleButton()
                             }
                         }
                         #endif
@@ -2930,11 +2874,7 @@ struct MainTabView: View {
             CalendarView()
 
         case .downloads:
-            #if os(tvOS)
-            EmptyView()
-            #else
             DownloadsView()
-            #endif
 
         case .settings:
             SettingsView()
@@ -2948,8 +2888,6 @@ struct MainTabView: View {
     @ViewBuilder
     private func routeContent(for route: Route) -> some View {
         switch route {
-        case .library(let libraryId, let title):
-            LibraryDetailView(libraryId: libraryId, initialTitle: title)
         case .libraryCollection(let libraryId, let collectionId, let title, let kind):
             LibraryCollectionDetailView(
                 libraryId: libraryId,
@@ -3008,10 +2946,8 @@ struct MainTabView: View {
             CollectionsView()
         case .collectionDetail(let id):
             CollectionDetailView(collectionId: id)
-        case .browse(let libraryId):
-            BrowseView(libraryId: libraryId)
         case .watchParty:
-            #if os(iOS) || os(tvOS)
+            #if os(iOS)
             WatchPartyHubView(session: .shared)
             #else
             EmptyView()
@@ -3032,17 +2968,8 @@ struct MainTabView: View {
             #endif
         case .settings:
             SettingsView()
-        case .recommendations:
-            RecommendationsView()
         case .serverList:
             ServerListView()
-        case .downloads:
-            #if os(tvOS)
-            EmptyStateView(icon: "questionmark.circle", title: "Unknown", subtitle: nil)
-                .siloPageBackground()
-            #else
-            DownloadsView()
-            #endif
         case .offlinePlayer(let downloadId, let contentId, let startFromBeginning, let resumePosition):
             #if os(macOS)
             PlayerView(
@@ -3057,26 +2984,11 @@ struct MainTabView: View {
             EmptyView()
             #endif
         case .offlineSeriesBrowse(let seriesId):
-            #if os(tvOS)
-            EmptyStateView(icon: "questionmark.circle", title: "Unknown", subtitle: nil)
-                .siloPageBackground()
-            #else
             OfflineSeriesBrowseView(seriesId: seriesId)
-            #endif
         case .offlineDownloadDetail(let downloadId):
-            #if os(tvOS)
-            EmptyStateView(icon: "questionmark.circle", title: "Unknown", subtitle: nil)
-                .siloPageBackground()
-            #else
             OfflineDownloadDetailView(downloadId: downloadId)
-            #endif
         case .autoDownloads:
-            #if os(tvOS)
-            EmptyStateView(icon: "questionmark.circle", title: "Unknown", subtitle: nil)
-                .siloPageBackground()
-            #else
             AutoDownloadsView()
-            #endif
         default:
             EmptyStateView(icon: "questionmark.circle", title: "Unknown", subtitle: nil)
                 .siloPageBackground()
@@ -3084,15 +2996,6 @@ struct MainTabView: View {
     }
 
     #if os(iOS)
-    private func routeNeedsSidebarToggle(_ route: Route) -> Bool {
-        switch route {
-        case .downloads, .recommendations:
-            false
-        default:
-            true
-        }
-    }
-
     /// Search and Settings use the system navigation bar at the root. The
     /// other root screens draw their own header with a `SidebarToggleButton`.
     private func destinationNeedsSidebarToggle(_ destinationID: MainTabDestinationID) -> Bool {
@@ -3105,6 +3008,7 @@ struct MainTabView: View {
     }
     #endif
 }
+#endif
 
 #if os(iOS)
 /// Native bottom-presented catalog detail card. The sheet owns a small nested
