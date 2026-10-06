@@ -6,6 +6,7 @@ import SwiftUI
 /// and footers for the fine print.
 struct PlaybackSettingsView: View {
     @Bindable var viewModel: SettingsViewModel
+    @State private var showUseProfileSettingsConfirmation = false
 
     var body: some View {
         List {
@@ -28,26 +29,32 @@ struct PlaybackSettingsView: View {
         .navigationTitle("Playback")
         .siloNavigationTitleDisplayMode(.inline)
         .siloToolbarColorSchemeDark()
+        .alert(
+            SettingsViewModel.useProfileSettingsTitle,
+            isPresented: $showUseProfileSettingsConfirmation
+        ) {
+            Button("Use Profile Settings", role: .destructive) {
+                Task { await viewModel.resetPlaybackDeviceSettings() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(viewModel.useProfileSettingsMessage)
+        }
     }
 
     // MARK: - Streaming
 
     private var streamingSection: some View {
         Section {
-            Picker("Quality", selection: Binding(
-                get: { viewModel.preferredQualityPresetId ?? Self.customPresetTag },
-                set: { newValue in
-                    guard newValue != Self.customPresetTag else { return }
-                    viewModel.setQualityPreset(newValue)
-                }
-            )) {
+            Picker("Quality", selection: selection(.quality)) {
+                useProfileSettingOption
                 // A pair no preset covers — set through the API, or written by
                 // a client whose ladder has a rung this table does not — gets
                 // its own disabled entry describing what is actually stored,
                 // rather than the picker showing a preset the user never chose.
-                if viewModel.preferredQualityPresetId == nil {
+                if !viewModel.usesProfileSetting(.quality), viewModel.preferredQualityPresetId == nil {
                     Text(viewModel.preferredQualityLabel)
-                        .tag(Self.customPresetTag)
+                        .tag(SettingsViewModel.customQualityTag)
                 }
                 ForEach(SiloQualityPresets.all) { preset in
                     Text(preset.label).tag(preset.id)
@@ -56,11 +63,14 @@ struct PlaybackSettingsView: View {
             .foregroundStyle(Color.siloOnSurface)
             .settingsPickerStyle()
 
-            Picker("Audio Language", selection: $viewModel.preferredAudioLanguage) {
-                Text(
-                    SettingPresentationMetadata.definitions[.playbackAudioLanguage]?.unsetLabel
-                        ?? "No preference"
-                ).tag("")
+            Picker("Audio Language", selection: selection(.audioLanguage)) {
+                useProfileSettingOption
+                if viewModel.hasStoredNoAudioLanguagePreference {
+                    Text(
+                        SettingPresentationMetadata.definitions[.playbackAudioLanguage]?.unsetLabel
+                            ?? "No preference"
+                    ).tag("")
+                }
                 ForEach(viewModel.audioLanguageOptions) { option in
                     Text(option.label).tag(option.code)
                 }
@@ -142,30 +152,40 @@ struct PlaybackSettingsView: View {
 
     private var behaviorSection: some View {
         Section {
-            Toggle("Auto-Play Next Episode", isOn: $viewModel.autoPlayNext)
-                .foregroundStyle(Color.siloOnSurface)
-                .tint(.siloSwitchOn)
+            // On / Off pickers rather than switches: a switch has no third
+            // position for going back to the profile's choice.
+            Picker("Auto-Play Next Episode", selection: selection(.autoPlayNext)) {
+                useProfileSettingOption
+                onOffOptions
+            }
+            .foregroundStyle(Color.siloOnSurface)
+            .settingsPickerStyle()
 
-            Picker("Show Next Up", selection: $viewModel.nextUpPromptSeconds) {
+            Picker("Show Next Up", selection: selection(.nextUpPrompt)) {
+                useProfileSettingOption
                 ForEach(nextUpPromptOptions, id: \.0) { seconds, label in
-                    Text(label).tag(seconds)
+                    Text(label).tag(String(seconds))
                 }
             }
             .foregroundStyle(Color.siloOnSurface)
             .settingsPickerStyle()
 
             // Three-way (labels fixed by the contract).
-            Picker("Skip Intros", selection: $viewModel.introSkipMode) {
+            Picker("Skip Intros", selection: selection(.introSkipMode)) {
+                useProfileSettingOption
                 ForEach(IntroSkipMode.allCases) { mode in
-                    Text(mode.label).tag(mode)
+                    Text(mode.label).tag(mode.wireValue)
                 }
             }
             .foregroundStyle(Color.siloOnSurface)
             .settingsPickerStyle()
 
-            Toggle("Skip Credits", isOn: $viewModel.skipCredits)
-                .foregroundStyle(Color.siloOnSurface)
-                .tint(.siloSwitchOn)
+            Picker("Skip Credits", selection: selection(.autoSkipCredits)) {
+                useProfileSettingOption
+                onOffOptions
+            }
+            .foregroundStyle(Color.siloOnSurface)
+            .settingsPickerStyle()
         } header: {
             Text("Episodes")
                 .foregroundStyle(Color.siloSecondaryText)
@@ -190,15 +210,15 @@ struct PlaybackSettingsView: View {
         .listRowBackground(Color.siloGroupedCell)
     }
 
-    // MARK: - Reset
+    // MARK: - Use Profile Settings
 
     private var resetSection: some View {
         Section {
-            Button("Reset Playback Overrides", role: .destructive) {
-                Task { await viewModel.resetPlaybackDeviceSettings() }
+            Button("Use Profile Settings", role: .destructive) {
+                showUseProfileSettingsConfirmation = true
             }
         } footer: {
-            Text("Resets playback choices for this device and profile back to the server fallback.")
+            Text("Removes the settings changed on this device, so it uses your profile's settings again.")
                 .foregroundStyle(Color.siloSecondaryText)
         }
         .listRowBackground(Color.siloGroupedCell)
@@ -206,9 +226,23 @@ struct PlaybackSettingsView: View {
 
     // MARK: - Options
 
-    /// Tag for the "stored pair matches no preset" entry. Not a preset id, so
-    /// selecting it is a no-op rather than a write.
-    private static let customPresetTag = "__custom__"
+    private func selection(_ setting: ProfileBackedPlaybackSetting) -> Binding<String> {
+        Binding(
+            get: { viewModel.playbackSelectionTag(setting) },
+            set: { viewModel.selectPlayback($0, for: setting) }
+        )
+    }
+
+    private var useProfileSettingOption: some View {
+        Text(SettingsViewModel.useProfileSettingLabel)
+            .tag(SettingsViewModel.useProfileSettingTag)
+    }
+
+    @ViewBuilder
+    private var onOffOptions: some View {
+        Text("On").tag(SettingsViewModel.onTag)
+        Text("Off").tag(SettingsViewModel.offTag)
+    }
 
     private var nextUpPromptOptions: [(Int, String)] {
         [

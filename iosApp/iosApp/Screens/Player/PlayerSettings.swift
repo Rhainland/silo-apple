@@ -152,6 +152,31 @@ extension SettingKey {
     ]
 }
 
+/// A Playback setting the profile can hold as well as this device, so the
+/// device can either keep its own value or go back to the profile's. Quality
+/// is one setting stored as two keys, and the two are only ever cleared
+/// together: clearing one axis would mix the profile's cap with this device's
+/// resolution, a pair nobody chose.
+enum ProfileBackedPlaybackSetting: CaseIterable {
+    case quality
+    case audioLanguage
+    case introSkipMode
+    case autoSkipCredits
+    case autoPlayNext
+    case nextUpPrompt
+
+    var keys: [SettingKey] {
+        switch self {
+        case .quality: return [.playbackPreferredQuality, .playbackMaxBitrateKbps]
+        case .audioLanguage: return [.playbackAudioLanguage]
+        case .introSkipMode: return [.playbackIntroSkipMode]
+        case .autoSkipCredits: return [.playbackAutoSkipCredits]
+        case .autoPlayNext: return [.playbackAutoPlayNext]
+        case .nextUpPrompt: return [.playbackNextUpPromptSeconds]
+        }
+    }
+}
+
 private extension SettingKey {
     // Short names for the keys this file uses. The generated cases are named
     // after the full dotted key (playbackAutoSkipIntro); these aliases keep the
@@ -459,6 +484,22 @@ final class PlayerSettings {
         didSet { defaults.set(nextUpPromptSeconds, forKey: Self.cacheKey(Keys.nextUpPromptSeconds)) }
     }
 
+    /// Synced keys this device holds its own `profile_device` value for.
+    ///
+    /// Read from each resolved row's scope, and kept current by the setters
+    /// and clears below so the settings screens can tell "this device's own
+    /// value" from "the value it inherits" without waiting for a round trip.
+    /// Cached per scope like the values themselves, so an offline launch
+    /// shows the same answer the last refresh did.
+    private(set) var deviceOverriddenKeys: Set<SettingKey> {
+        didSet {
+            defaults.set(
+                deviceOverriddenKeys.map(\.rawValue).sorted(),
+                forKey: Self.cacheKey(Keys.deviceOverriddenKeys)
+            )
+        }
+    }
+
     private let defaults: UserDefaults
 
     /// Debounced writer for the canonical settings API. Owns the queue, the
@@ -572,6 +613,7 @@ final class PlayerSettings {
         nextUpPromptSeconds = Self.clampNextUpPromptSeconds(
             Self.cachedInt(defaults, key: Keys.nextUpPromptSeconds, defaultValue: 30)
         )
+        deviceOverriddenKeys = Self.cachedOverriddenKeys(defaults)
 
         flusher.observeHeldKeys { [weak self] keys in
             Task { @MainActor in self?.heldDeviceSettingKeys = keys }
@@ -711,14 +753,23 @@ final class PlayerSettings {
     private func setQualityAxes(resolution: String, bitrateKbps: Int?) {
         preferredQualityResolution = SiloQualityPresets.normalizeResolution(resolution)
         maxBitrateKbps = bitrateKbps.flatMap { $0 > 0 ? $0 : nil }
-        flusher.enqueue(.preferredQuality, value: .string(preferredQualityResolution))
-        flusher.enqueue(.maxBitrateKbps, value: maxBitrateKbps.map { .int($0) } ?? .null)
+        enqueueDeviceValue(.preferredQuality, value: .string(preferredQualityResolution))
+        enqueueDeviceValue(.maxBitrateKbps, value: maxBitrateKbps.map { .int($0) } ?? .null)
     }
 
+    /// The empty string is "no preference", which is not a value this device
+    /// stores: it clears the device's own language so the profile's applies
+    /// again. Storing it — as JSON null, since the contract's language_tag
+    /// rejects "" — would pin "no preference" here and hide the profile's
+    /// language from this device. The language the profile resolves to is
+    /// only known once the clear lands; ``useProfileSetting(_:)`` reads it.
     func setAudioLanguage(_ value: String) {
         audioLanguage = value
-        // The contract's language_tag rejects "": "no preference" is JSON null.
-        flusher.enqueue(.audioLanguage, value: value.isEmpty ? .null : .string(value))
+        if value.isEmpty {
+            enqueueDeviceClear(.audioLanguage)
+        } else {
+            enqueueDeviceValue(.audioLanguage, value: .string(value))
+        }
     }
 
     /// Writes only the enum, never the deprecated boolean beside it.
@@ -728,38 +779,38 @@ final class PlayerSettings {
     /// boolean's mirror land second and rewrite a `never` the viewer just chose.
     func setIntroSkipMode(_ mode: IntroSkipMode) {
         introSkipMode = mode
-        flusher.enqueue(.introSkipMode, value: .string(mode.wireValue))
+        enqueueDeviceValue(.introSkipMode, value: .string(mode.wireValue))
     }
 
     func setAutoSkipCredits(_ enabled: Bool) {
         autoSkipCredits = enabled
-        flusher.enqueue(.autoSkipCredits, value: .bool(enabled))
+        enqueueDeviceValue(.autoSkipCredits, value: .bool(enabled))
     }
 
     func setAutoPlayNextEpisode(_ enabled: Bool) {
         autoPlayNextEpisode = enabled
-        flusher.enqueue(.autoPlayNext, value: .bool(enabled))
+        enqueueDeviceValue(.autoPlayNext, value: .bool(enabled))
     }
 
     func setNextUpPromptSeconds(_ seconds: Int) {
         let normalized = Self.clampNextUpPromptSeconds(seconds)
         nextUpPromptSeconds = normalized
-        flusher.enqueue(.nextUpPromptSeconds, value: .int(normalized))
+        enqueueDeviceValue(.nextUpPromptSeconds, value: .int(normalized))
     }
 
     func setHDREnabled(_ enabled: Bool) {
         hdrEnabled = enabled
-        flusher.enqueue(.hdrEnabled, value: .bool(enabled))
+        enqueueDeviceValue(.hdrEnabled, value: .bool(enabled))
     }
 
     func setDolbyVisionEnabled(_ enabled: Bool) {
         dolbyVisionEnabled = enabled
-        flusher.enqueue(.dolbyVisionEnabled, value: .bool(enabled))
+        enqueueDeviceValue(.dolbyVisionEnabled, value: .bool(enabled))
     }
 
     func setSeekCacheEnabled(_ enabled: Bool) {
         seekCacheEnabled = enabled
-        flusher.enqueue(.seekCacheEnabled, value: .bool(enabled))
+        enqueueDeviceValue(.seekCacheEnabled, value: .bool(enabled))
     }
 
     /// Choose the bridge Aether uses for non-stream-copyable audio codecs.
@@ -801,22 +852,22 @@ final class PlayerSettings {
     func setPlaybackSpeed(_ rate: Double) {
         let normalized = Self.clampPlaybackSpeed(rate)
         playbackSpeed = normalized
-        flusher.enqueue(.playbackSpeed, value: .double(normalized))
+        enqueueDeviceValue(.playbackSpeed, value: .double(normalized))
     }
 
     func setVideoGravity(_ gravity: VideoGravity) {
         videoGravity = gravity
-        flusher.enqueue(.videoGravity, value: .string(gravity.rawValue))
+        enqueueDeviceValue(.videoGravity, value: .string(gravity.rawValue))
     }
 
     func setPlayerOrientationMode(_ mode: PlayerOrientationMode) {
         playerOrientationMode = mode
-        flusher.enqueue(.orientationMode, value: .string(mode.rawValue))
+        enqueueDeviceValue(.orientationMode, value: .string(mode.rawValue))
     }
 
     func setSubtitleSyncMs(_ milliseconds: Int) {
         subtitleSyncMs = max(-10000, min(milliseconds, 10000))
-        flusher.enqueue(.subtitleSyncMs, value: .int(subtitleSyncMs))
+        enqueueDeviceValue(.subtitleSyncMs, value: .int(subtitleSyncMs))
     }
 
     /// Applies a device appearance edit and queues it for the server; the
@@ -859,9 +910,80 @@ final class PlayerSettings {
             return
         }
 
-        flusher.enqueueDelete(.subtitleAppearance)
+        enqueueDeviceClear(.subtitleAppearance)
         await flushPendingDeviceSettings()
         await refreshFromServer()
+    }
+
+    /// Whether this device holds its own value for `setting`, rather than
+    /// inheriting the profile's (or the contract default when the profile has
+    /// none).
+    func hasDeviceOverride(_ setting: ProfileBackedPlaybackSetting) -> Bool {
+        setting.keys.contains { deviceOverriddenKeys.contains($0) }
+    }
+
+    /// How many settings "Use Profile Settings" would change: each synced
+    /// setting this device holds its own value for (quality's two keys count
+    /// once), plus each device-only preference away from its default.
+    var deviceChangedSettingCount: Int {
+        let synced = Set(deviceOverriddenKeys.map { $0 == .maxBitrateKbps ? .preferredQuality : $0 })
+        return synced.count + changedDeviceLocalPreferenceCount
+    }
+
+    /// Whether "Use Profile Settings" would reset something the profile has
+    /// no value for — a device-only synced key or a local preference — which
+    /// goes back to its default rather than to a profile value.
+    var deviceChangesIncludeDeviceOnlySettings: Bool {
+        let profileBacked = Set(ProfileBackedPlaybackSetting.allCases.flatMap(\.keys))
+        return changedDeviceLocalPreferenceCount > 0
+            || deviceOverriddenKeys.contains { !profileBacked.contains($0) }
+    }
+
+    private var changedDeviceLocalPreferenceCount: Int {
+        [
+            !losslessAudioEnabled,
+            !backgroundPlaybackEnabled,
+            bufferAhead != .automatic,
+            deinterlaceMode != .automatic,
+            deinterlaceFieldRate != .fullMotion,
+            !trueHDAtmosEnabled,
+        ].filter { $0 }.count
+    }
+
+    /// Clear this device's own value for one setting so the profile's applies
+    /// again, then read back the value it now inherits.
+    ///
+    /// The clears go through the same scoped queue as every other edit, so
+    /// offline they wait in this (server, profile, device) partition and are
+    /// sent by the next flush for it — never onto a profile switched to in
+    /// the meantime. Until the read succeeds the row keeps showing the last
+    /// known value; it no longer counts as this device's own.
+    @MainActor
+    func useProfileSetting(_ setting: ProfileBackedPlaybackSetting) async {
+        // The refresh below may be this scope's first successful one. Its
+        // one-time import would then push the cached value of the very key
+        // just cleared straight back as a device override, so the import is
+        // retired first — the same reason Reset retires it.
+        if let scopeID = Self.currentScopeIdentifier {
+            markMigrationComplete(for: scopeID)
+        }
+        for key in setting.keys {
+            enqueueDeviceClear(key)
+        }
+        await flushPendingDeviceSettings()
+        await refreshFromServer()
+    }
+
+    /// Queue this device's own value for `key`.
+    private func enqueueDeviceValue(_ key: SettingKey, value: SettingJSONValue) {
+        deviceOverriddenKeys.insert(key)
+        flusher.enqueue(key, value: value)
+    }
+
+    /// Queue clearing this device's own value for `key`, so it inherits again.
+    private func enqueueDeviceClear(_ key: SettingKey) {
+        deviceOverriddenKeys.remove(key)
+        flusher.enqueueDelete(key)
     }
 
     // Adopting a profile write. The onboarding tour stores these at profile
@@ -903,7 +1025,7 @@ final class PlayerSettings {
             markMigrationComplete(for: resetScopeID)
         }
         for key in SettingKey.playerDeviceSettings {
-            flusher.enqueueDelete(key)
+            enqueueDeviceClear(key)
         }
         await flushPendingDeviceSettings()
         if await refreshFromServer() == .serverUpgradeRequired {
@@ -923,7 +1045,7 @@ final class PlayerSettings {
     ///
     /// These are the ones deliberately kept off the contract — lossless
     /// multichannel audio, background playback, the buffer-ahead window and the
-    /// two deinterlacing choices. "Reset Playback Overrides" is a promise about
+    /// two deinterlacing choices. "Use Profile Settings" is a promise about
     /// the whole screen, not only the rows that happen to sync, so they are
     /// restored to the same values a fresh install would show.
     private func resetDeviceLocalPreferences() {
@@ -1018,7 +1140,7 @@ final class PlayerSettings {
             // be encoded, and the local value is already applied.
             return
         }
-        flusher.enqueue(.subtitleAppearance, value: value)
+        enqueueDeviceValue(.subtitleAppearance, value: value)
     }
 
     /// Adopt a batched resolution from the server.
@@ -1069,6 +1191,15 @@ final class PlayerSettings {
         ) ?? .landscapeLocked
 
         applyEffectiveSubtitleAppearance(effectiveByKey[.subtitleAppearance])
+
+        // A clear still on its way has not reached the server, whose answer
+        // therefore still shows the device value being removed.
+        let clearing = flusher.unsettledClears
+        deviceOverriddenKeys = Set(
+            effectiveByKey.compactMap { key, entry in
+                entry.scope == .profileDevice && !clearing.contains(key) ? key : nil
+            }
+        )
     }
 
     /// Split the resolved appearance between the device override and the
@@ -1254,6 +1385,7 @@ final class PlayerSettings {
         inheritedSubtitleAppearance = SubtitleAppearance.decode(
             from: defaults.string(forKey: Self.cacheKey(Keys.inheritedSubtitleAppearance))
         )
+        deviceOverriddenKeys = Self.cachedOverriddenKeys(defaults)
     }
 
     /// One-time push of this device's pre-contract local values to the server.
@@ -1378,6 +1510,7 @@ final class PlayerSettings {
             forKey: key(Keys.inheritedSubtitleAppearance)
         )
         defaults.set(false, forKey: key(Keys.subtitleUsesDeviceAppearanceOverride))
+        defaults.removeObject(forKey: key(Keys.deviceOverriddenKeys))
     }
 
     private static func cacheKey(_ baseKey: String) -> String {
@@ -1443,6 +1576,11 @@ final class PlayerSettings {
         return IntroSkipMode(
             legacyAutoSkip: cachedBool(defaults, key: Keys.autoSkipIntro, defaultValue: false)
         )
+    }
+
+    private static func cachedOverriddenKeys(_ defaults: UserDefaults) -> Set<SettingKey> {
+        let stored = defaults.stringArray(forKey: cacheKey(Keys.deviceOverriddenKeys)) ?? []
+        return Set(stored.compactMap(SettingKey.init(rawValue:)))
     }
 
     private static func cachedBufferAhead(_ defaults: UserDefaults) -> BufferAheadMode {
@@ -1532,5 +1670,6 @@ final class PlayerSettings {
         static let autoPlayNextEpisode = "autoPlayNext"
         static let legacyAutoPlayNextEpisode = "player.autoPlayNextEpisode"
         static let nextUpPromptSeconds = "player.nextUpPromptSeconds"
+        static let deviceOverriddenKeys = "player.deviceOverriddenKeys"
     }
 }
