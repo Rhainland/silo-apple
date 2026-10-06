@@ -1355,6 +1355,22 @@ final class PlayerSettingsFlushTests: XCTestCase {
         )
     }
 
+    /// The Playback screen's HDR switch: the local value flips at once — the
+    /// capability snapshot reads it at the next playback start — and exactly
+    /// one write of the device-only key goes to the server.
+    func testTheHDRSwitchStoresADeviceOverrideOfTheHDRKey() async throws {
+        let harness = try PlayerSettingsHarness()
+        XCTAssertTrue(harness.settings.hdrEnabled, "precondition: the contract default is on")
+
+        harness.settings.setHDREnabled(false)
+        XCTAssertFalse(harness.settings.hdrEnabled)
+        await harness.settings.flushPendingDeviceSettings()
+
+        XCTAssertEqual(harness.transport.writes().map(\.key), [.playerHdrEnabled])
+        XCTAssertEqual(harness.transport.writes().first?.value, .bool(false))
+        XCTAssertTrue(harness.transport.deletes().isEmpty)
+    }
+
     func testNoAudioLanguagePreferenceIsSentAsJSONNull() async throws {
         let harness = try PlayerSettingsHarness()
 

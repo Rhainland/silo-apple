@@ -68,6 +68,19 @@ final class SettingsViewModel {
         set { PlayerSettings.shared.setAutoSkipCredits(newValue) }
     }
 
+    var hdrEnabled: Bool {
+        get { PlayerSettings.shared.hdrEnabled }
+        set { PlayerSettings.shared.setHDREnabled(newValue) }
+    }
+
+    /// What turning HDR off does, stated as narrowly as it is true. The
+    /// setting only changes what this device tells the server its screen can
+    /// show: a video the server converts is then sent as SDR, but an original
+    /// file the player opens itself still plays in its own dynamic range.
+    static let hdrFooterText =
+        "With HDR off, videos the server converts for this device are sent in SDR."
+            + " Videos that play from the original file can still play in HDR."
+
     var dolbyVisionEnabled: Bool {
         get { PlayerSettings.shared.dolbyVisionEnabled }
         set { PlayerSettings.shared.setDolbyVisionEnabled(newValue) }

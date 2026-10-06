@@ -68,6 +68,10 @@ struct PlaybackSettingsView: View {
             .foregroundStyle(Color.siloOnSurface)
             .settingsPickerStyle()
 
+            Toggle("HDR", isOn: $viewModel.hdrEnabled)
+                .foregroundStyle(Color.siloOnSurface)
+                .tint(.siloSwitchOn)
+
             Toggle("Dolby Vision", isOn: $viewModel.dolbyVisionEnabled)
                 .foregroundStyle(Color.siloOnSurface)
                 .tint(.siloSwitchOn)
@@ -133,6 +137,7 @@ struct PlaybackSettingsView: View {
         if let preset = SiloQualityPresets.preset(id: viewModel.preferredQualityPresetId) {
             text = preset.description
         }
+        text += " " + SettingsViewModel.hdrFooterText
         text += " If surround plays as stereo, turn off Lossless Multichannel Audio."
         text += " TrueHD Atmos adds height channels but plays those tracks as compressed audio."
         return text

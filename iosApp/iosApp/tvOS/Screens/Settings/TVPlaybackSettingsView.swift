@@ -53,6 +53,14 @@ struct TVPlaybackSettingsPane: View {
         .focused(detailFocus, equals: .playbackAudioLanguage)
 
         TVSettingsToggleRow(
+            title: "HDR",
+            isOn: viewModel.hdrEnabled
+        ) {
+            let value = !viewModel.hdrEnabled
+            viewModel.hdrEnabled = value
+        }
+
+        TVSettingsToggleRow(
             title: "Dolby Vision",
             isOn: viewModel.dolbyVisionEnabled
         ) {
@@ -112,6 +120,7 @@ struct TVPlaybackSettingsPane: View {
         if let preset = SiloQualityPresets.preset(id: viewModel.preferredQualityPresetId) {
             text = preset.description
         }
+        text += " " + SettingsViewModel.hdrFooterText
         text += " If surround plays as stereo, turn off Lossless Multichannel Audio."
         text += " TrueHD Atmos adds height channels but plays those tracks as compressed audio."
         return text
