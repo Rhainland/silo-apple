@@ -381,6 +381,9 @@ class PlayerViewModel {
     /// offers the server's pick instead of the series' next episode, and
     /// every pick plays from its beginning.
     private(set) var shuffleState: PlayerShuffleState?
+    /// Stop shuffling clears `shuffleState` before the player closes; the
+    /// close still returns to the page the shuffle started from.
+    private var stoppedShuffling = false
     private(set) var isAdvancingShuffle = false
     private(set) var isPickingAnotherShufflePick = false
     /// A shuffle action that failed, shown on the up-next screen.
@@ -2708,6 +2711,7 @@ class PlayerViewModel {
            wasShowingBeforeEnd,
            settings.autoPlayNextEpisode,
            nextUpEpisode != nil,
+           !isPickingAnotherShufflePick,
            !nextUpAutoplayCancelled {
             playNextEpisodeNow()
             return
@@ -2748,8 +2752,11 @@ class PlayerViewModel {
     }
 
     private func updateNextUpCountdownForActivePlayback(at movieTime: Double) {
+        // A pending Pick Another replaces the pick this would start; its
+        // answer restarts the countdown.
         guard showNextUpScreen,
               !isNextUpTransitioning,
+              !isPickingAnotherShufflePick,
               !nextUpScreenVideoEnded,
               nextUpPresentationSource != .credits,
               settings.autoPlayNextEpisode,
@@ -3078,6 +3085,7 @@ class PlayerViewModel {
         nextUpAutoplayCancelled = true
         cancelNextUpCountdown()
         leaveShuffle()
+        stoppedShuffling = true
         Task { try? await SiloAPI.shared.deleteShuffle(id: shuffleId) }
     }
 
@@ -3117,10 +3125,14 @@ class PlayerViewModel {
             startFromBeginning: true
         )
         request.libraryId = libraryId
+        // An automatic hand-off like the next pick: bounded by the autoplay
+        // timeout, and a failure returns to the up-next screen instead of a
+        // full-screen error.
         beginFreshLoad(
             request: request,
             progressPosition: currentTime,
-            finalizeCurrentSession: true
+            finalizeCurrentSession: true,
+            origin: .autoplay
         )
     }
 
@@ -3161,7 +3173,7 @@ class PlayerViewModel {
     private func seriesPlaybackReturn(completed: Bool) -> SeriesPlaybackReturn? {
         // A shuffle returns to the page it started from, not to the series of
         // whichever episode played last.
-        guard shuffleState == nil else { return nil }
+        guard shuffleState == nil, !stoppedShuffling else { return nil }
         if let detail = currentWatchDetail {
             guard let seriesId = detail.seriesId?.trimmingCharacters(in: .whitespacesAndNewlines),
                   !seriesId.isEmpty else { return nil }
@@ -4859,9 +4871,12 @@ class PlayerViewModel {
             showNextUpScreen = true
             nextUpScreenVideoEnded = true
             // A shuffle keeps offering the pick that failed: Play Now
-            // retries it, since it never reached a first frame.
-            if shuffleState != nil {
-                shuffleActionError = "Couldn't start the next pick."
+            // retries it, since it never reached a first frame. A later part
+            // of an item that already played moves on to the next pick.
+            if let shuffleState {
+                shuffleActionError = lastLoadRequest?.contentId == shuffleState.advanceFromContentId
+                    ? "Couldn't play the next part."
+                    : "Couldn't start the next pick."
                 publishShuffleNextUp()
             }
             showNotice(
@@ -5791,8 +5806,11 @@ class PlayerViewModel {
     /// keep playing in its preview instead of stopping on a frozen frame.
     /// Returns false when the caller should finish the item at EOF instead.
     private func presentNextUpOverCredits() -> Bool {
+        // A shuffle plays every part of a multi-part item first: skipping
+        // credits finishes the part at EOF, which starts the next one.
         guard !isWatchPartyPlayback,
               canShowNextUpScreen,
+              nextShufflePart == nil,
               !hasReachedEndOfFile,
               !isNextUpTransitioning,
               let epoch = activeAetherLoadEpoch,
