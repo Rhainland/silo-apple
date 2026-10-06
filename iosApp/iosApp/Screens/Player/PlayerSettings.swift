@@ -962,10 +962,10 @@ final class PlayerSettings {
     func useProfileSetting(_ setting: ProfileBackedPlaybackSetting) async {
         // The refresh below may be this scope's first successful one. Its
         // one-time import would then push the cached value of the very key
-        // just cleared straight back as a device override, so the import is
-        // retired first — the same reason Reset retires it.
+        // just cleared straight back as a device override, so these keys are
+        // retired from it. The rest of the scope's import stays pending.
         if let scopeID = Self.currentScopeIdentifier {
-            markMigrationComplete(for: scopeID)
+            retireMigration(of: setting.keys, for: scopeID)
         }
         for key in setting.keys {
             enqueueDeviceClear(key)
@@ -1406,9 +1406,15 @@ final class PlayerSettings {
         // A key with its own change still owed (a held one included) is the
         // user's newer choice; the legacy value must not replace it.
         let unsettled = flusher.unsettledKeys
+        // Keys the user sent back to the profile's value before the import ran.
+        let retired = retiredMigrationKeys(for: scopeID)
 
-        for key in SettingKey.playerDeviceSettings where !unsettled.contains(key) {
+        for key in SettingKey.playerDeviceSettings where !unsettled.contains(key) && !retired.contains(key) {
             guard let legacyValue = legacySnapshot[key] else { continue }
+            // A stored "" audio language is "no preference", which is not a
+            // device value: importing it as JSON null would pin "no
+            // preference" here and hide the profile's language.
+            if key == .audioLanguage, case .null = legacyValue { continue }
             guard let entry = effectiveByKey[key], entry.scope != .profileDevice else { continue }
             // Nothing to migrate when the resolved value already equals what
             // this device holds — typed comparison now, so `1` and `1.0` are
@@ -1476,6 +1482,25 @@ final class PlayerSettings {
 
     private func markMigrationComplete(for scopeID: String) {
         defaults.set(true, forKey: migrationKey(for: scopeID))
+        defaults.removeObject(forKey: retiredMigrationKey(for: scopeID))
+    }
+
+    private func retiredMigrationKey(for scopeID: String) -> String {
+        "player.serverDeviceSettingsMigrationRetired.\(scopeID)"
+    }
+
+    private func retiredMigrationKeys(for scopeID: String) -> Set<SettingKey> {
+        let stored = defaults.stringArray(forKey: retiredMigrationKey(for: scopeID)) ?? []
+        return Set(stored.compactMap(SettingKey.init(rawValue:)))
+    }
+
+    /// Leave `keys` out of this scope's pending one-time import, without
+    /// cancelling the import for the others. Nothing to do once it has run.
+    // Internal so the focused migration tests can retire keys for a scope.
+    func retireMigration(of keys: [SettingKey], for scopeID: String) {
+        guard !isMigrationComplete(for: scopeID) else { return }
+        let retired = retiredMigrationKeys(for: scopeID).union(keys)
+        defaults.set(retired.map(\.rawValue).sorted(), forKey: retiredMigrationKey(for: scopeID))
     }
 
     /// Store the canonical reset state in one explicit cache partition.

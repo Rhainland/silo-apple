@@ -1419,10 +1419,12 @@ final class PlayerSettingsFlushTests: XCTestCase {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defer { UserDefaults().removePersistentDomain(forName: suiteName) }
         let scopeID = "server-a|profile-1|device"
+        let scope = LockedScopeValue(scopeID)
+        let profile = LockedScopeValue("profile-1")
         let journal = UserDefaultsSettingsWriteJournal(
             defaults: defaults,
-            profileProvider: { "profile-1" },
-            scopeProvider: { scopeID }
+            profileProvider: { profile.value },
+            scopeProvider: { scope.value }
         )
         let transport = FakeSettingsTransport()
         let settings = PlayerSettings(
@@ -1446,6 +1448,20 @@ final class PlayerSettingsFlushTests: XCTestCase {
         XCTAssertEqual(queued.operation, .delete)
         XCTAssertEqual(queued.scopeIdentifier, scopeID)
         XCTAssertEqual(queued.profileId, "profile-1")
+
+        // Back online but on another profile: the clear belongs to profile 1
+        // and must not be sent as profile 2's.
+        transport.reset()
+        transport.succeedFromNowOn()
+        scope.value = "server-a|profile-2|device"
+        profile.value = "profile-2"
+        await settings.flushPendingDeviceSettings()
+        XCTAssertTrue(transport.deletes().isEmpty, "no DELETE may go out under the other profile")
+        XCTAssertTrue(journal.load().isEmpty, "profile 2's queue does not inherit the clear")
+
+        scope.value = scopeID
+        profile.value = "profile-1"
+        transport.failNextDeletes(100, with: .transport(description: "offline"))
 
         // The server still holds the device value until the clear lands; a
         // refresh that reads it must not count it as this device's own again.
@@ -1475,6 +1491,65 @@ final class PlayerSettingsFlushTests: XCTestCase {
         XCTAssertNil(journal.load()[.playbackAutoSkipCredits], "the landed clear leaves the queue")
         XCTAssertFalse(settings.autoSkipCredits)
         XCTAssertFalse(settings.hasDeviceOverride(.autoSkipCredits))
+    }
+
+    /// Going back to the profile's value before the one-time import has run
+    /// retires only the keys cleared; the rest of the scope still imports.
+    func testUsingTheProfileSettingRetiresOnlyThoseKeysFromThePendingImport() async throws {
+        let harness = try PlayerSettingsHarness()
+        let scopeID = "server-a|profile-1|device"
+        harness.settings.retireMigration(of: ProfileBackedPlaybackSetting.quality.keys, for: scopeID)
+
+        let imported = await harness.settings.importLegacySettingsIfNeeded(
+            scopeID: scopeID,
+            legacySnapshot: [
+                .playbackPreferredQuality: .string("720p"),
+                .playbackMaxBitrateKbps: .int(2_000),
+                .playerHdrEnabled: .bool(false),
+            ],
+            effectiveByKey: [
+                .playbackPreferredQuality: .init(
+                    key: SettingKey.playbackPreferredQuality.rawValue,
+                    value: .string("1080p"),
+                    source: .scope(.profile),
+                    scope: .profile
+                ),
+                .playbackMaxBitrateKbps: .init(
+                    key: SettingKey.playbackMaxBitrateKbps.rawValue,
+                    value: .null,
+                    source: .contractDefault
+                ),
+                .playerHdrEnabled: .init(
+                    key: SettingKey.playerHdrEnabled.rawValue,
+                    value: .bool(true),
+                    source: .contractDefault
+                ),
+            ]
+        )
+
+        XCTAssertTrue(imported)
+        XCTAssertEqual(harness.transport.writes().map(\.key), [.playerHdrEnabled])
+    }
+
+    func testALegacyNoAudioLanguagePreferenceIsNotImportedAsADeviceValue() async throws {
+        let harness = try PlayerSettingsHarness()
+
+        let imported = await harness.settings.importLegacySettingsIfNeeded(
+            scopeID: "server-a|profile-1|device",
+            legacySnapshot: [.playbackAudioLanguage: .null],
+            effectiveByKey: [
+                .playbackAudioLanguage: .init(
+                    key: SettingKey.playbackAudioLanguage.rawValue,
+                    value: .string("ja"),
+                    source: .scope(.profile),
+                    scope: .profile
+                ),
+            ]
+        )
+
+        XCTAssertFalse(imported)
+        XCTAssertTrue(harness.transport.writes().isEmpty, "the profile's language must stay in charge")
+        XCTAssertFalse(harness.settings.hasDeviceOverride(.audioLanguage))
     }
 
     func testAResolvedRowsScopeSaysWhetherTheDeviceHasItsOwnValue() async throws {

@@ -366,6 +366,9 @@ final class SettingsViewModel {
 
     /// Apply a picker choice for a profile-backed Playback row.
     func selectPlayback(_ tag: String, for setting: ProfileBackedPlaybackSetting) {
+        // Choosing what is already checked changes nothing — in particular a
+        // stored "No preference" re-chosen must not fall back to the profile.
+        guard tag != playbackSelectionTag(setting) else { return }
         // "No preference" is not stored on a device either: it clears the
         // device's own language, exactly like "Use Profile Setting".
         if tag == Self.useProfileSettingTag || (setting == .audioLanguage && tag.isEmpty) {
