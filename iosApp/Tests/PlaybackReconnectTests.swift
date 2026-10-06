@@ -192,6 +192,22 @@ final class PlaybackReconnectTests: XCTestCase {
         XCTAssertEqual(cycle.position, 250)
     }
 
+    func testOtherContentStartsWithAFullBudget() {
+        // The previous item recovered on its last attempt; another item that
+        // drops right after must still get every attempt.
+        var cycle = PlaybackReconnectCycle()
+        _ = cycle.begin(position: 0, resume: true, freshBudget: false, now: start)
+        for _ in 0..<PlaybackReconnectPolicy.maxAttempts { cycle.beginAttempt() }
+        _ = cycle.beginHandoff(requestedPosition: 0, now: start)
+        _ = cycle.finishHandoff()
+        cycle.resetBudget()
+        XCTAssertEqual(
+            cycle.begin(position: 0, resume: true, freshBudget: false, now: start.addingTimeInterval(5)),
+            .attempt(after: PlaybackReconnectPolicy.baseDelay)
+        )
+        XCTAssertEqual(cycle.attempts, 0)
+    }
+
     // MARK: - Answers
 
     func testUnreachableOrOverloadedServerWaitsForTheNextAttempt() {

@@ -4420,6 +4420,9 @@ class PlayerViewModel {
             introSkipPrompt.reset()
             viewingHasPlayed = false
             reconnectLoadRequest = nil
+            // Other content starts with a full reconnect budget.
+            cancelReconnect()
+            reconnectCycle.resetBudget()
         }
         // Any other start takes the session over from a running reconnect.
         if origin != .reconnect {

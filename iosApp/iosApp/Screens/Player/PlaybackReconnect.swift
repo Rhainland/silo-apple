@@ -376,6 +376,15 @@ struct PlaybackReconnectCycle: Equatable {
         return abs(handoff.position - requested) > Self.seekToleranceSeconds ? handoff.position : nil
     }
 
+    /// Forgets the budget and the last recovery. Playing other content
+    /// starts with a full budget; the stream that kept dropping was another
+    /// item's. Only while no cycle runs.
+    mutating func resetBudget() {
+        guard !isActive else { return }
+        attempts = 0
+        recoveredAt = nil
+    }
+
     /// Ends the cycle and any handoff. `recovered` records when a plan came
     /// back, so a stream that drops again right away continues this cycle's
     /// budget.
