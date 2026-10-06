@@ -41,11 +41,16 @@ final class SeriesHeroSeasonCountTests: XCTestCase {
 
 #endif
 
+    /// Builds a season the way the seasons read does: the server's
+    /// snake_case JSON through the production decoder and projection.
     private func season(_ number: Int, isSpecials: Bool? = nil) throws -> Season {
-        let specials = isSpecials.map { ",\"isSpecials\":\($0)" } ?? ""
-        return try JSONDecoder().decode(Season.self, from: Data(
-            "{\"contentId\":\"season-\(number)\",\"seasonNumber\":\(number)\(specials)}".utf8
-        ))
+        var object: [String: Any] = [
+            "content_id": "season-\(number)", "season_number": number,
+            "title": "Season \(number)", "episode_count": 8,
+        ]
+        if let isSpecials { object["is_specials"] = isSpecials }
+        let data = try JSONSerialization.data(withJSONObject: object)
+        return try Season(catalog: HTTPClient.makeJSONDecoder().decode(APIv2CatalogRead.Season.self, from: data))
     }
 
     private func seriesDetail(seasonCount: Int) throws -> ItemDetail {
