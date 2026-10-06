@@ -9,6 +9,7 @@ struct BrowseView: View {
 
     @State private var viewModel = BrowseViewModel()
     @State private var showFilters = false
+    @State private var shuffleLauncher = ShuffleLauncher()
     @Environment(AppRouter.self) private var router
 
     @ViewBuilder
@@ -146,23 +147,34 @@ struct BrowseView: View {
         .padding(.horizontal, SiloTheme.padding)
     }
 
-    // MARK: - Control bar (Sort + Filter)
+    // MARK: - Control bar (Sort + Filter + Shuffle)
 
     private var controlBar: some View {
-        // At accessibility text sizes the two chips no longer fit side by
+        // At accessibility text sizes the chips no longer fit side by
         // side and SwiftUI broke their labels mid-word; stack them instead.
         ViewThatFits(in: .horizontal) {
             HStack(spacing: 9) {
                 sortMenu
                 filterButton
+                shuffleButton
                 Spacer(minLength: 0)
             }
             VStack(alignment: .leading, spacing: 9) {
                 sortMenu
                 filterButton
+                shuffleButton
             }
         }
         .padding(.horizontal, SiloTheme.padding)
+        .shuffleFailureAlert(shuffleLauncher)
+    }
+
+    /// The library a Shuffle chip plays from; nil where Shuffle isn't offered.
+    private var shuffleLibraryId: Int? {
+        guard let libraryId,
+              ShuffleAvailability.isShuffleLibraryType(libraryType),
+              ShuffleFeatureStore.shared.supports(.library) else { return nil }
+        return libraryId
     }
 
     private var filterButton: some View {
@@ -174,6 +186,20 @@ struct BrowseView: View {
             )
         }
         .buttonStyle(.plain)
+    }
+
+    @ViewBuilder
+    private var shuffleButton: some View {
+        if let shuffleLibraryId {
+            Button {
+                shuffleLauncher.start(ShuffleScopeRequest(kind: .library, id: String(shuffleLibraryId)), router: router)
+            } label: {
+                controlChip(icon: "shuffle", text: "Shuffle")
+            }
+            .buttonStyle(.plain)
+            .disabled(shuffleLauncher.isStarting)
+            .accessibilityIdentifier("library-shuffle")
+        }
     }
 
     private var sortMenu: some View {

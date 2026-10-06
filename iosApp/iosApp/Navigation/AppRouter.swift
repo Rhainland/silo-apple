@@ -144,6 +144,24 @@ final class AppRouter {
     /// Navigation path for push/pop within the current flow.
     var path = NavigationPath()
 
+    #if os(macOS)
+    /// Routes pushed through the router, mirrored because `NavigationPath` is
+    /// opaque. Entries past `path.count` are stale (the system Back button
+    /// pops the path directly), so read `visiblePushedRoutes` instead.
+    @ObservationIgnored private var pushedRoutes: [Route] = []
+
+    /// The routes currently on the stack, oldest first. The Mac sidebar reads
+    /// this to highlight the row that matches the page in view.
+    var visiblePushedRoutes: [Route] {
+        Array(pushedRoutes.prefix(path.count))
+    }
+
+    private func recordPush(_ route: Route, replacingTop: Bool = false) {
+        let kept = max(0, path.count - (replacingTop ? 1 : 0))
+        pushedRoutes = Array(pushedRoutes.prefix(kept)) + [route]
+    }
+    #endif
+
     // MARK: - Item Detail Presentation
 
     /// iPhone and iPad present catalog details as a native bottom sheet instead
@@ -213,6 +231,8 @@ final class AppRouter {
         /// attaching competing covers to the root and the sheet.
         var detailPresentationID: UUID? = nil
         var watchPartyContext: WatchPartyPlaybackContext? = nil
+        /// The shuffle this playback starts; its `current` is `contentId`.
+        var shuffle: APIv2Shuffle? = nil
         /// Hints supplied by the originating screen (e.g. the detail page,
         /// which has just loaded the catalog item) so the player's now-
         /// playing widget can publish artwork without re-fetching the
@@ -466,6 +486,35 @@ final class AppRouter {
         #endif
     }
 
+    /// Play a new shuffle's first pick from its beginning. The up-next screen
+    /// then offers the shuffle's picks until the viewer stops. A shuffle
+    /// always plays here: an engaged TV would play the first pick alone.
+    func presentShuffle(_ shuffle: APIv2Shuffle) {
+        #if os(iOS) || os(tvOS)
+        DiagnosticsCoordinator.recordBreadcrumb(
+            category: .focus,
+            tag: "Navigation",
+            message: "player presented",
+            attrs: ["target": .string("player"), "action": .string("shuffle")]
+        )
+        var presentation = PlayerPresentation(
+            contentId: shuffle.current.contentId,
+            fileId: nil,
+            audioTrackIndex: nil,
+            subtitleTrackIndex: nil,
+            startFromBeginning: true,
+            resumePosition: nil,
+            prefersLastUsedVersion: false,
+            returnToContentId: nil,
+            detailPresentationID: currentDetailPresentationID,
+            posterURL: shuffle.current.posterUrl,
+            backdropURL: shuffle.current.backdropUrl
+        )
+        presentation.shuffle = shuffle
+        presentedPlayer = presentation
+        #endif
+    }
+
     /// Present offline playback of a completed download. iOS/iPadOS use a
     /// full-window cover; macOS pushes the offline player route.
     func presentOfflinePlayer(
@@ -590,6 +639,9 @@ final class AppRouter {
         }
         #endif
 
+        #if os(macOS)
+        recordPush(route)
+        #endif
         path.append(route)
     }
 
@@ -660,6 +712,9 @@ final class AppRouter {
     /// stack up — Back exits the chain in one step.
     func replaceCurrent(with route: Route) {
         recordScreenBreadcrumb(target: route.diagnosticsTarget, action: "replace")
+        #if os(macOS)
+        recordPush(route, replacingTop: true)
+        #endif
         if !path.isEmpty {
             path.removeLast()
         }
