@@ -67,6 +67,9 @@ struct TVPlaybackSettingsPane: View {
             let value = !viewModel.dolbyVisionEnabled
             viewModel.dolbyVisionEnabled = value
         }
+        // Skipped by focus while HDR is off, like the skip-interval rows
+        // below when the server cannot store them.
+        .disabled(!viewModel.hdrEnabled)
 
         TVSettingsToggleRow(
             title: "Seek Cache",

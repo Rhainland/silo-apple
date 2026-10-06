@@ -75,6 +75,7 @@ struct PlaybackSettingsView: View {
             Toggle("Dolby Vision", isOn: $viewModel.dolbyVisionEnabled)
                 .foregroundStyle(Color.siloOnSurface)
                 .tint(.siloSwitchOn)
+                .disabled(!viewModel.hdrEnabled)
 
             Toggle("Seek Cache", isOn: $viewModel.seekCacheEnabled)
                 .foregroundStyle(Color.siloOnSurface)
