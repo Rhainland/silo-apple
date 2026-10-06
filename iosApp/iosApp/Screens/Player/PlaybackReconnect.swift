@@ -285,6 +285,20 @@ struct PlaybackReconnectCycle: Equatable {
     /// Whether playback resumes once a plan is adopted.
     private(set) var resume = true
     private var recoveredAt: Date?
+    /// Set from a plan's adoption until the new transport is installed. The
+    /// cycle has ended, but a seek in that window still belongs to the
+    /// handoff: the outgoing transport is dead, and the new one starts where
+    /// the attempt asked.
+    private(set) var handoff: Handoff?
+
+    struct Handoff: Equatable {
+        /// The position the attempt asked the server for.
+        let requested: Double?
+        /// Where the viewer wants to be.
+        var position: Double
+    }
+
+    var isHandingOff: Bool { handoff != nil }
 
     /// Starts a cycle. Nil while one is already running: a second loss
     /// report joins it. `freshBudget` is the viewer's Try again, which starts
@@ -294,6 +308,7 @@ struct PlaybackReconnectCycle: Equatable {
         guard !isActive else { return nil }
         isActive = true
         generation &+= 1
+        handoff = nil
         let recentlyRecovered = recoveredAt.map {
             now.timeIntervalSince($0) < PlaybackReconnectPolicy.stableInterval
         } ?? false
@@ -329,28 +344,43 @@ struct PlaybackReconnectCycle: Equatable {
         return .attempt(after: PlaybackReconnectPolicy.delay(afterAttempts: attempts))
     }
 
-    /// A seek while reconnecting is where the viewer wants to resume.
+    /// A seek while reconnecting, or while a plan is being handed over, is
+    /// where the viewer wants to resume.
     mutating func updatePosition(_ position: Double) {
-        guard isActive, position.isFinite else { return }
+        guard isActive || handoff != nil, position.isFinite else { return }
         self.position = max(0, position)
+        handoff?.position = self.position
     }
 
-    /// How far the saved position may differ from what an attempt asked for
+    /// How far the viewer may have moved from what an attempt asked for
     /// before the new transport has to seek.
     static let seekToleranceSeconds: Double = 0.5
 
-    /// Where the new transport has to seek when the saved position moved (a
-    /// seek while reconnecting) after an attempt asked for `requested`, or
-    /// nil when the plan already starts there.
-    func seekTarget(afterRequesting requested: Double?) -> Double? {
+    /// The server answered an attempt made at `requestedPosition` with a
+    /// plan: ends the cycle as recovered and starts the handoff. Returns
+    /// whether the new transport plays, or nil when no cycle was running.
+    mutating func beginHandoff(requestedPosition: Double?, now: Date) -> Bool? {
         guard isActive else { return nil }
-        guard let requested, requested.isFinite else { return position }
-        return abs(position - requested) > Self.seekToleranceSeconds ? position : nil
+        end(recovered: true, now: now)
+        handoff = Handoff(requested: requestedPosition, position: position)
+        return resume
     }
 
-    /// Ends the cycle. `recovered` records when a plan came back, so a stream
-    /// that drops again right away continues this cycle's budget.
+    /// The new transport is installed (or never will be): ends the handoff.
+    /// Returns where to seek the new transport when the viewer moved away
+    /// from the position the attempt asked for, otherwise nil.
+    mutating func finishHandoff() -> Double? {
+        guard let handoff else { return nil }
+        self.handoff = nil
+        guard let requested = handoff.requested, requested.isFinite else { return handoff.position }
+        return abs(handoff.position - requested) > Self.seekToleranceSeconds ? handoff.position : nil
+    }
+
+    /// Ends the cycle and any handoff. `recovered` records when a plan came
+    /// back, so a stream that drops again right away continues this cycle's
+    /// budget.
     mutating func end(recovered: Bool, now: Date) {
+        handoff = nil
         guard isActive else { return }
         isActive = false
         generation &+= 1

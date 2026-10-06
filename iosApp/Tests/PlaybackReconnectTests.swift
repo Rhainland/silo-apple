@@ -151,15 +151,45 @@ final class PlaybackReconnectTests: XCTestCase {
     func testSeekWhileAnAttemptIsOutMovesTheNewTransport() {
         var cycle = PlaybackReconnectCycle()
         _ = cycle.begin(position: 100, resume: true, freshBudget: false, now: start)
-        // The attempt asked for the saved position; nothing moved since.
-        XCTAssertNil(cycle.seekTarget(afterRequesting: 100))
-        XCTAssertNil(cycle.seekTarget(afterRequesting: 100.2))
         // The viewer seeked while the request was out.
         cycle.updatePosition(250)
-        XCTAssertEqual(cycle.seekTarget(afterRequesting: 100), 250)
-        XCTAssertNil(cycle.seekTarget(afterRequesting: 250))
-        cycle.end(recovered: true, now: start)
-        XCTAssertNil(cycle.seekTarget(afterRequesting: 100), "an ended cycle has nothing to hand over")
+        XCTAssertEqual(cycle.beginHandoff(requestedPosition: 100, now: start), true)
+        XCTAssertFalse(cycle.isActive)
+        XCTAssertEqual(cycle.finishHandoff(), 250)
+        XCTAssertFalse(cycle.isHandingOff)
+        XCTAssertNil(cycle.finishHandoff(), "a handoff is applied once")
+    }
+
+    func testSeekWhileTheNewTransportLoadsMovesIt() {
+        // The plan came back, so the cycle is over, but the new transport is
+        // not installed yet: a seek now still belongs to the reconnect.
+        var cycle = PlaybackReconnectCycle()
+        _ = cycle.begin(position: 100, resume: false, freshBudget: false, now: start)
+        XCTAssertEqual(cycle.beginHandoff(requestedPosition: 100, now: start), false)
+        XCTAssertTrue(cycle.isHandingOff)
+        cycle.updatePosition(400)
+        XCTAssertEqual(cycle.finishHandoff(), 400)
+    }
+
+    func testHandoffWithoutASeekNeedsNoSeek() {
+        var cycle = PlaybackReconnectCycle()
+        _ = cycle.begin(position: 100, resume: true, freshBudget: false, now: start)
+        _ = cycle.beginHandoff(requestedPosition: 100, now: start)
+        cycle.updatePosition(100.2)
+        XCTAssertNil(cycle.finishHandoff())
+    }
+
+    func testCancellingEndsTheHandoff() {
+        var cycle = PlaybackReconnectCycle()
+        XCTAssertNil(cycle.beginHandoff(requestedPosition: 100, now: start), "no cycle, no handoff")
+        _ = cycle.begin(position: 100, resume: true, freshBudget: false, now: start)
+        _ = cycle.beginHandoff(requestedPosition: 100, now: start)
+        cycle.updatePosition(250)
+        cycle.end(recovered: false, now: start)
+        XCTAssertFalse(cycle.isHandingOff)
+        XCTAssertNil(cycle.finishHandoff())
+        cycle.updatePosition(300)
+        XCTAssertEqual(cycle.position, 250)
     }
 
     // MARK: - Answers

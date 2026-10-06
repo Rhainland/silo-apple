@@ -1370,9 +1370,11 @@ class PlayerViewModel {
                 playheadSample = (playerSeconds, .now)
             }
             // While reconnecting the transport is dead; its clock can still
-            // tick or park, but the position is the reconnect's.
+            // tick or park, but the position is the reconnect's until the
+            // replacement transport is installed.
             guard !hasReachedEndOfFile,
                   !isReconnecting,
+                  !reconnectCycle.isHandingOff,
                   playerSeconds.isFinite,
                   let timeline = aetherPlaybackController.activeSpec?.timeline else { return }
             let movieTime = timeline.sourcePosition(forPlayerTime: playerSeconds)
@@ -2246,6 +2248,11 @@ class PlayerViewModel {
                 self.protocolV3ReplanTask = nil
                 defer { self.publishWatchPartySnapshot() }
                 if completesQualitySwitch { self.isQualitySwitching = false }
+                // A handoff this replan began but never installed: the
+                // viewer's last seek still applies to whatever plays next.
+                if let seekTarget = self.reconnectCycle.finishHandoff() {
+                    self.pendingProtocolV3SeekReanchorPosition = seekTarget
+                }
                 if let recovery = chainedLoadFailureRecovery {
                     self.attemptProtocolV3Replan(
                         position: recovery.position,
@@ -2313,13 +2320,9 @@ class PlayerViewModel {
                 }
                 // The server answered with a plan: any reconnect ends here,
                 // and the new transport plays only if the viewer was playing.
-                // A seek made while this request was out is queued for the
-                // new transport; this task's exit issues it.
-                let reconnectHandoff = self.adoptPlanEndingReconnect(requestedPosition: position)
-                let reconnectResume = reconnectHandoff?.resume
-                if let seekTarget = reconnectHandoff?.seekTarget {
-                    self.pendingProtocolV3SeekReanchorPosition = seekTarget
-                }
+                // Seeks keep landing on the reconnect until that transport
+                // is installed.
+                let reconnectResume = self.adoptPlanEndingReconnect(requestedPosition: position)
 
                 let previousSessionId = self.activePlaybackSessionId
                 self.activePlaybackSessionId = prepared.session.sessionId
@@ -2381,6 +2384,12 @@ class PlayerViewModel {
                     expectedStreamLoadGeneration: currentStreamLoadGeneration,
                     shouldPlayWhenReady: shouldPlayWhenReady
                 )
+                // A seek made while the reconnect's request was out, or while
+                // this transport loaded, is queued for it; this task's exit
+                // issues it.
+                if let seekTarget = self.reconnectCycle.finishHandoff() {
+                    self.pendingProtocolV3SeekReanchorPosition = seekTarget
+                }
                 guard await self.sessionBridge.commitPendingProtocolV3Transition(prepared) else {
                     throw CancellationError()
                 }
@@ -4473,6 +4482,8 @@ class PlayerViewModel {
             var uncommittedPrepared: PreparedPlayback?
             defer {
                 if self.freshLoadGeneration == currentFreshLoadGeneration {
+                    // A reconnect handoff this load began but never installed.
+                    _ = self.reconnectCycle.finishHandoff()
                     self.freshLoadTask = nil
                     self.freshLoadOwnsFailureHandling = false
                     self.publishWatchPartySnapshot()
@@ -4561,10 +4572,9 @@ class PlayerViewModel {
                 }
                 // A reconnect's new session ends the reconnect; it plays only
                 // if the viewer was playing when the connection dropped.
-                let reconnectHandoff = self.adoptPlanEndingReconnect(
+                let reconnectResume = self.adoptPlanEndingReconnect(
                     requestedPosition: resumePositionOverride
                 )
-                let reconnectResume = reconnectHandoff?.resume
                 if let preparedOfflineContext {
                     self.offlinePlaybackContext = preparedOfflineContext
                 }
@@ -4657,6 +4667,9 @@ class PlayerViewModel {
                     expectedStreamLoadGeneration: currentStreamLoadGeneration,
                     shouldPlayWhenReady: !self.isWatchPartyPlayback && (reconnectResume ?? true)
                 )
+                // Seeks made while the reconnect's start was out, or while
+                // this transport loaded, are applied once it is committed.
+                let reconnectSeekTarget = self.reconnectCycle.finishHandoff()
                 if prepared.protocolV3 != nil {
                     guard await self.sessionBridge.commitPendingProtocolV3Transition(prepared) else {
                         throw CancellationError()
@@ -4671,9 +4684,7 @@ class PlayerViewModel {
                     try self.requireCurrentStreamLoad(currentStreamLoadGeneration)
                     self.reapplyDeferredAutoSubtitlePolicyIfNeeded()
                 }
-                // The viewer seeked while the reconnect's start was out: move
-                // the new transport to where they want to be.
-                if let seekTarget = reconnectHandoff?.seekTarget {
+                if let seekTarget = reconnectSeekTarget {
                     try self.requireCurrentStreamLoad(currentStreamLoadGeneration)
                     self.commitSeek(to: seekTarget, source: "reconnectSeek")
                 }
@@ -5181,22 +5192,20 @@ class PlayerViewModel {
     }
 
     /// Ends a running reconnect because the server handed back a plan for a
-    /// request made at `requestedPosition`. Returns the play intent the new
-    /// transport takes and where to seek it when the viewer moved the saved
-    /// position after the request went out, or nil when no reconnect was
-    /// running.
-    private func adoptPlanEndingReconnect(
-        requestedPosition: Double?
-    ) -> (resume: Bool, seekTarget: Double?)? {
-        guard reconnectCycle.isActive else { return nil }
-        let resume = reconnectCycle.resume
-        let seekTarget = reconnectCycle.seekTarget(afterRequesting: requestedPosition)
+    /// request made at `requestedPosition`, and starts the handoff to the new
+    /// transport: until the caller installs it (`finishHandoff`), a seek
+    /// still moves the reconnect's position. Returns the play intent the new
+    /// transport takes, or nil when no reconnect was running.
+    private func adoptPlanEndingReconnect(requestedPosition: Double?) -> Bool? {
+        guard let resume = reconnectCycle.beginHandoff(
+            requestedPosition: requestedPosition,
+            now: Date()
+        ) else { return nil }
         reconnectTimerTask?.cancel()
         reconnectTimerTask = nil
-        reconnectCycle.end(recovered: true, now: Date())
         connectionState = .connected
         Self.logger.info("Playback reconnected resume=\(resume, privacy: .public)")
-        return (resume, seekTarget)
+        return resume
     }
 
     /// Stops a running reconnect without a plan: the viewer left, other
@@ -5764,9 +5773,9 @@ class PlayerViewModel {
             return true
         }
         let clampedTarget = duration > 0 ? min(max(0, target), duration) : max(0, target)
-        if isReconnecting {
-            // The transport is dead; the reconnect resumes where the viewer
-            // wants to be.
+        if isReconnecting || reconnectCycle.isHandingOff {
+            // The transport is dead, or its replacement is not installed
+            // yet; the reconnect resumes where the viewer wants to be.
             reconnectCycle.updatePosition(clampedTarget)
             currentTime = clampedTarget
             scrubPreviewTime = clampedTarget
