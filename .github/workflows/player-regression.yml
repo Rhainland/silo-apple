@@ -30,6 +30,10 @@ on:
         description: Build and validate only the iOS simulator app for an iOS-only change
         type: boolean
         default: false
+      export_simulator_tests:
+        description: Export compiled iOS simulator tests for focused local verification
+        type: boolean
+        default: false
       benchmark_source_ref:
         description: Optional immutable 40-character app commit for a controlled benchmark
         type: string
@@ -279,15 +283,13 @@ jobs:
         if: >-
           matrix.action == 'test' && matrix.platform == 'iOS' &&
           !inputs.baseline_ref && !inputs.release_gate &&
-          ((github.event_name == 'push' && github.ref == 'refs/heads/main') ||
-           github.event_name == 'workflow_dispatch')
+          inputs.export_simulator_tests && github.event_name == 'workflow_dispatch'
         run: ditto -c -k --keepParent "$SILO_DERIVED_DATA/Build/Products" /tmp/Silo-simulator-tests.zip
       - name: Upload compiled simulator tests
         if: >-
           matrix.action == 'test' && matrix.platform == 'iOS' &&
           !inputs.baseline_ref && !inputs.release_gate &&
-          ((github.event_name == 'push' && github.ref == 'refs/heads/main') ||
-           github.event_name == 'workflow_dispatch')
+          inputs.export_simulator_tests && github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v4
         with:
           name: Silo-simulator-tests
