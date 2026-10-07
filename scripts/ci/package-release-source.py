@@ -131,7 +131,7 @@ def package_sources(repo, output_directory):
             "\n".join(line for line in builder.splitlines() if line != "checkout") + "\n")
         (tree / "revisions.json").write_text(json.dumps(manifest, indent=2) + "\n")
         shutil.copyfile(ROOT / "scripts/ci/REBUILD-SOURCE.md", tree / "REBUILD.md")
-        with tarfile.open(output, "w:gz") as archive:
+        with tarfile.open(output, "w:gz", compresslevel=6) as archive:
             archive.add(tree, arcname=tree.name)
     return output
 
