@@ -13,6 +13,7 @@ import json
 import os
 from pathlib import Path
 import re
+import stat
 import subprocess
 
 
@@ -29,6 +30,14 @@ PROJECT = "iosApp/project.yml"
 BUILD_INPUTS_SHA256 = "c5dc2b025cd6e4510f512d2207e329d1443e88d898f027de005e81010e23aa55"
 SHA_PATTERN = re.compile(r"^[0-9a-fA-F]{40}$")
 ROOT_DOCUMENTATION = frozenset({"README.md", "CONTRIBUTING.md", "AGENTS.md", "SECURITY.md", "CHANGELOG.md"})
+# These 223 existing Swift inputs belong exclusively to the mobile test targets.
+# Refresh their ownership review after any other tracked input changes. Both Git
+# trees must retain every other path, mode and blob from the reviewed graph.
+TEST_SOURCE_OWNERSHIP = "scripts/ci/apple-test-source-ownership.json"
+TEST_SOURCE_OWNERSHIP_SHA256 = "cfbabb4be7fd3f3316cea06e14590dc347a5dce607ba39c9616046f642c6dfb7"
+TEST_SOURCE_INPUTS_SHA256 = "999dc9ed535d785b1a65b52c33b6482d9f7d389c440d6b868a59de295b05fdf1"
+SELECTOR_FILES = ("scripts/ci/select-apple-platforms.py", "scripts/ci/select-apple-platforms.test.py", TEST_SOURCE_OWNERSHIP)
+SELECTOR_CONTRACT = "scripts/ci/apple-test-selector-contract.json"
 
 
 class SelectionUnavailable(Exception):
@@ -112,6 +121,74 @@ def classify_path(path):
     return set(PLATFORMS), f"Changes touch a shared or unclassified input: {path}"
 
 
+def regular_controller_bytes(path):
+    mode = path.lstat().st_mode
+    if not stat.S_ISREG(mode) or mode & 0o111:
+        raise SelectionUnavailable("The reviewed test selector requires regular controller files.")
+    return path.read_bytes()
+
+
+def reviewed_test_sources():
+    raw = regular_controller_bytes(Path(__file__).resolve().parents[2] / TEST_SOURCE_OWNERSHIP)
+    if hashlib.sha256(raw).hexdigest() != TEST_SOURCE_OWNERSHIP_SHA256:
+        raise SelectionUnavailable("The test source ownership list needs a review.")
+    paths = json.loads(raw)
+    if (not isinstance(paths, list) or len(paths) != 223
+            or any(not isinstance(path, str) or not path.startswith("iosApp/Tests/") or not path.endswith(".swift") for path in paths)
+            or paths != sorted(set(paths))):
+        raise SelectionUnavailable("The reviewed test source list is malformed.")
+    return frozenset(paths)
+
+
+def controller_digest(files):
+    records = {path: {"mode": "100644", "sha256": hashlib.sha256(raw).hexdigest()} for path, raw in files.items()}
+    return hashlib.sha256(json.dumps(records, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def reviewed_test_controller():
+    root = Path(__file__).resolve().parents[2]
+    raw = regular_controller_bytes(root / SELECTOR_CONTRACT)
+    seal = json.loads(raw)
+    if (not isinstance(seal, dict) or set(seal) != {"schema_version", "controller_sha256"}
+            or type(seal["schema_version"]) is not int or seal["schema_version"] != 1
+            or not isinstance(seal["controller_sha256"], str) or not re.fullmatch(r"[0-9a-f]{64}", seal["controller_sha256"])):
+        raise SelectionUnavailable("The reviewed test selector seal is malformed.")
+    files = {path: regular_controller_bytes(root / path) for path in SELECTOR_FILES}
+    if controller_digest(files) != seal["controller_sha256"]:
+        raise SelectionUnavailable("The test selector changed and needs a complete review.")
+    return seal["controller_sha256"], raw
+
+
+def tree_entries(repo, commit):
+    raw = git(repo, "ls-tree", "-r", "--full-tree", "-z", commit)
+    records = [record for record in raw.split(b"\0") if record]
+    entries = {}
+    for record in records:
+        metadata, path = record.split(b"\t", 1)
+        mode, kind, blob = metadata.split(b" ")
+        entries[path.decode("utf-8", errors="surrogateescape")] = (mode, kind, blob)
+    return records, entries
+
+
+def test_source_guard(repo, base, head, known):
+    controller, seal = reviewed_test_controller()
+    excluded = known | set(SELECTOR_FILES) | {SELECTOR_CONTRACT}
+    for commit in (base, head):
+        records, entries = tree_entries(repo, commit)
+        retained = [record for record in records if record.split(b"\t", 1)[1].decode("utf-8", errors="surrogateescape") not in excluded]
+        if hashlib.sha256(b"\0".join(retained) + b"\0").hexdigest() != TEST_SOURCE_INPUTS_SHA256:
+            raise SelectionUnavailable("Other tracked inputs changed and need a test source ownership review.")
+        for path in known | set(SELECTOR_FILES) | {SELECTOR_CONTRACT}:
+            if entries.get(path, ())[:2] != (b"100644", b"blob"):
+                raise SelectionUnavailable("Known test modifications require the same regular file mode in both commits.")
+        if git(repo, "show", f"{commit}:{SELECTOR_CONTRACT}") != seal:
+            raise SelectionUnavailable("The fixed test selector seal must match both compared commits.")
+        files = {path: git(repo, "show", f"{commit}:{path}") for path in SELECTOR_FILES}
+        if controller_digest(files) != controller:
+            raise SelectionUnavailable("Both compared commits must retain the reviewed test selector bytes.")
+    return {"source_inputs_sha256": TEST_SOURCE_INPUTS_SHA256, "ownership_sha256": TEST_SOURCE_OWNERSHIP_SHA256, "controller_sha256": controller}
+
+
 def select_platforms(repo, event, event_name, *, github_sha=None, force_platforms=None):
     selection = {"platforms": list(PLATFORMS), "reasons": [], "head_sha": None, "base_sha": None, "mode": "all"}
     try:
@@ -163,6 +240,15 @@ def select_platforms(repo, event, event_name, *, github_sha=None, force_platform
         selection["build_inputs_sha256"] = fingerprint
         if fingerprint != BUILD_INPUTS_SHA256 or (repo / "iosApp/Signing/Local.xcconfig").exists():
             raise SelectionUnavailable("The project input configuration changed and needs an ownership review.")
+        # Only an entire comparison of existing, proven test modifications may
+        # omit Mac. Additions, resources and mixed changes use normal fallback.
+        if changes and all(status == "M" and paths[0].startswith("iosApp/Tests/") for status, paths in changes):
+            known = reviewed_test_sources()
+            changed_paths = {paths[0] for _, paths in changes}
+            if changed_paths <= known:
+                selection["test_source_guard"] = test_source_guard(repo, base, head, known)
+                selection.update(platforms=["ios", "tvos"], mode="test_sources", reasons=["Only reviewed existing mobile test sources were modified; both complete mobile suites are required."])
+                return selection
         platforms = set()
         reasons = []
         for status, paths in changes:
@@ -178,7 +264,7 @@ def select_platforms(repo, event, event_name, *, github_sha=None, force_platform
     except SelectionUnavailable as exc:
         selection["platforms"] = list(PLATFORMS)
         selection["reasons"] = [str(exc)]
-    except (subprocess.CalledProcessError, OSError, UnicodeError, AttributeError, TypeError):
+    except (subprocess.CalledProcessError, OSError, UnicodeError, AttributeError, TypeError, ValueError):
         selection["platforms"] = list(PLATFORMS)
         selection["reasons"] = ["The local comparison could not be verified; every platform is required."]
     return selection
@@ -231,7 +317,7 @@ def verify_result(needs, *, event_name, github_sha, cancelled=False, require_all
     elif mode == "manual":
         if event_name != "workflow_dispatch" or len(platforms) != 1:
             raise SelectionUnavailable("A manual selection is invalid for this workflow event.")
-    elif mode == "diff":
+    elif mode in {"diff", "test_sources"}:
         base = selection.get("base_sha")
         count = selection.get("changed_files")
         fingerprint = selection.get("diff_sha256")
@@ -242,6 +328,14 @@ def verify_result(needs, *, event_name, github_sha, cancelled=False, require_all
                 or not isinstance(fingerprint, str) or not re.fullmatch(r"[0-9a-f]{64}", fingerprint)
                 or selection.get("build_inputs_sha256") != BUILD_INPUTS_SHA256):
             raise SelectionUnavailable("The comparison proof is missing or malformed.")
+        if mode == "test_sources":
+            try:
+                controller, _ = reviewed_test_controller()
+            except (OSError, ValueError, TypeError) as exc:
+                raise SelectionUnavailable("The reviewed test selector contract could not be verified.") from exc
+            if (platforms != ["ios", "tvos"] or count < 1
+                    or selection.get("test_source_guard") != {"source_inputs_sha256": TEST_SOURCE_INPUTS_SHA256, "ownership_sha256": TEST_SOURCE_OWNERSHIP_SHA256, "controller_sha256": controller}):
+                raise SelectionUnavailable("The mobile test comparison proof is missing or differs from the reviewed controller.")
     else:
         raise SelectionUnavailable("The platform selection mode is unknown.")
     required_result = "success" if platforms else "skipped"

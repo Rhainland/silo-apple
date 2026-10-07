@@ -2,6 +2,7 @@
 """Exercise platform selection against real commits and merge checkouts."""
 
 import importlib.util
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -9,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 sys.dont_write_bytecode = True
@@ -318,6 +320,193 @@ class PlatformSelectionTests(unittest.TestCase):
         self.assertEqual(json.loads(values["matrix"]), {"include": []})
 
 
+class KnownTestSourceTests(unittest.TestCase):
+    """Use the complete qualified Git graph without compiling or copying app data."""
+
+    def setUp(self):
+        scratch = tempfile.TemporaryDirectory(prefix="apple-known-tests-")
+        self.addCleanup(scratch.cleanup)
+        self.repo = Path(scratch.name) / "repo"
+        self.repo.mkdir()
+        self.git("init", "-b", "main", "--quiet")
+        self.git("config", "user.name", "CI fixture")
+        self.git("config", "user.email", "fixture@example.invalid")
+        self.git("config", "commit.gpgsign", "false")
+        origin = SCRIPT.parents[2]
+        objects = subprocess.check_output(["git", "-C", str(origin), "rev-parse", "--path-format=absolute", "--git-path", "objects"]).decode().strip()
+        (self.repo / ".git/objects/info/alternates").write_text(objects + "\n")
+        current = subprocess.check_output(["git", "--no-replace-objects", "-C", str(origin), "rev-parse", "HEAD"]).decode().strip()
+        self.git("read-tree", current)
+        self.known = sorted(apple_platforms.reviewed_test_sources())
+        _, inputs = apple_platforms.tree_entries(self.repo, current)
+        for path in self.known:
+            if inputs.get(path, ())[:2] != (b"100644", b"blob"):
+                self.store(path, b"// known test fixture baseline\n")
+        # The new controller is excluded from the app graph and independently
+        # sealed. Keep its exact bytes in both complete comparison trees.
+        for path in apple_platforms.SELECTOR_FILES + (apple_platforms.SELECTOR_CONTRACT,):
+            self.store(path, (origin / path).read_bytes())
+        # A depth-one CI checkout has the complete current tree but may lack
+        # its parent. Start an independent, complete fixture history at that
+        # tree rather than borrowing unavailable controller ancestry.
+        tree = self.git("write-tree")
+        self.base = self.git("commit-tree", tree, "-m", "reviewed controller fixture")
+        self.git("update-ref", "HEAD", self.base)
+        # Positives test the guard against a complete fixture snapshot. App
+        # changes can disable production narrowing while these fixtures still
+        # exercise it. Never change the committed production fingerprint.
+        rows, _ = apple_platforms.tree_entries(self.repo, self.base)
+        excluded = set(self.known) | set(apple_platforms.SELECTOR_FILES) | {apple_platforms.SELECTOR_CONTRACT}
+        retained = [row for row in rows if row.split(b"\t", 1)[1].decode() not in excluded]
+        self.production_fingerprint = apple_platforms.TEST_SOURCE_INPUTS_SHA256
+        fingerprint = hashlib.sha256(b"\0".join(retained) + b"\0").hexdigest()
+        qualified_fixture = patch.object(apple_platforms, "TEST_SOURCE_INPUTS_SHA256", fingerprint)
+        qualified_fixture.start()
+        self.addCleanup(qualified_fixture.stop)
+        self.path = "iosApp/Tests/MediaAuthorizationPlaybackTests.swift"
+
+    def git(self, *args, input=None):
+        return subprocess.run(["git", "--no-replace-objects", "-C", str(self.repo), *args], input=input,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True).stdout.decode().strip()
+
+    def store(self, path, contents=b"// fixture modification\n", mode="100644"):
+        blob = self.git("hash-object", "-w", "--stdin", input=contents)
+        self.git("update-index", "--add", "--cacheinfo", mode, blob, path)
+
+    def commit(self, message="change"):
+        parent = self.git("rev-parse", "HEAD")
+        tree = self.git("write-tree")
+        head = self.git("commit-tree", tree, "-p", parent, "-m", message)
+        self.git("update-ref", "HEAD", head)
+        return head
+
+    def reset(self):
+        self.git("read-tree", self.base)
+        self.git("update-ref", "HEAD", self.base)
+
+    def selection(self, before=None, **kwargs):
+        head = self.git("rev-parse", "HEAD")
+        return apple_platforms.select_platforms(self.repo, {"before": before or self.base, "after": head}, "push", **kwargs)
+
+    def modify_test(self):
+        self.store(self.path)
+        return self.commit()
+
+    def test_shared_and_ios_only_known_sources_run_both_complete_mobile_suites(self):
+        for path in (self.path, "iosApp/Tests/ApplePushRegistrationTests.swift"):
+            with self.subTest(path=path):
+                self.reset()
+                self.store(path)
+                self.commit()
+                result = self.selection()
+                self.assertEqual(result["platforms"], ["ios", "tvos"])
+                self.assertEqual(result["mode"], "test_sources")
+                self.assertEqual(result["test_source_guard"]["source_inputs_sha256"], apple_platforms.TEST_SOURCE_INPUTS_SHA256)
+
+    def test_frozen_production_fingerprint_requires_all_after_an_app_change(self):
+        self.store("iosApp/iosApp/macOS/UnreviewedFixtureInput.swift")
+        changed_base = self.commit()
+        self.modify_test()
+        with patch.object(apple_platforms, "TEST_SOURCE_INPUTS_SHA256", self.production_fingerprint):
+            self.assertEqual(self.selection(before=changed_base)["platforms"], ALL)
+
+    def test_multiple_known_modifications_keep_both_mobile_suites(self):
+        for path in self.known:
+            self.store(path)
+        self.commit()
+        result = self.selection()
+        self.assertEqual(result["platforms"], ["ios", "tvos"])
+        self.assertEqual(result["changed_files"], 223)
+
+    def test_actual_pull_request_merge_selects_the_complete_mobile_matrix(self):
+        branch_head = self.modify_test()
+        tree = self.git("rev-parse", "HEAD^{tree}")
+        merge = self.git("commit-tree", tree, "-p", self.base, "-p", branch_head, "-m", "merge fixture")
+        self.git("update-ref", "HEAD", merge)
+        event = {"pull_request": {"base": {"sha": self.base}, "head": {"sha": branch_head}}}
+        result = apple_platforms.select_platforms(self.repo, event, "pull_request", github_sha=merge)
+        self.assertEqual(result["platforms"], ["ios", "tvos"])
+        self.assertEqual(result["mode"], "test_sources")
+
+    def test_qualified_guard_rejects_unknown_added_deleted_renamed_and_mode_changed_tests(self):
+        for change in ("add", "delete", "rename", "executable", "symlink", "resource"):
+            with self.subTest(change=change):
+                self.reset()
+                if change in {"delete", "rename"}:
+                    self.git("update-index", "--force-remove", self.path)
+                if change in {"add", "rename"}:
+                    self.store("iosApp/Tests/NewUnknown.swift")
+                elif change in {"executable", "symlink"}:
+                    self.store(self.path, mode="100755" if change == "executable" else "120000")
+                elif change == "resource":
+                    self.store("iosApp/Tests/Fixtures/APIv2/get_metadata_ai_capability_ok.json")
+                self.commit()
+                self.assertEqual(self.selection()["platforms"], ALL)
+
+    def test_other_changes_cannot_be_hidden_in_the_same_comparison(self):
+        for path in ("README.md", "iosApp/iosApp/macOS/Unknown.swift", ".github/workflows/player-regression.yml", "scripts/ci/unknown.py"):
+            with self.subTest(path=path):
+                self.reset()
+                self.store(path)
+                self.modify_test()
+                self.assertEqual(self.selection()["platforms"], ALL)
+
+    def test_prior_non_test_changes_invalidate_ownership_even_when_the_new_diff_only_touches_tests(self):
+        for path in ("README.md", "iosApp/iosApp/macOS/HiddenTestConsumer.swift", ".github/actions/install-xcodegen/action.yml", "scripts/ci/apple-build-metadata.py", "iosApp/Signing/SiloMac.xcconfig"):
+            with self.subTest(path=path):
+                self.reset()
+                self.store(path)
+                changed_base = self.commit("unreviewed input change")
+                self.modify_test()
+                self.assertEqual(self.selection(before=changed_base)["platforms"], ALL)
+
+    def test_reverting_an_unreviewed_base_to_the_qualified_head_still_runs_all(self):
+        path = ".github/actions/install-xcodegen/action.yml"
+        original = self.git("show", f"{self.base}:{path}").encode() + b"\n"
+        self.store(path)
+        changed_base = self.commit()
+        self.store(path, original)
+        self.modify_test()
+        self.assertEqual(self.selection(before=changed_base)["platforms"], ALL)
+        # Exercise the fingerprint guard directly: checking only the restored
+        # head must not qualify a comparison against an unreviewed base.
+        with self.assertRaisesRegex(apple_platforms.SelectionUnavailable, "Other tracked inputs"):
+            apple_platforms.test_source_guard(self.repo, changed_base, self.git("rev-parse", "HEAD"), frozenset(self.known))
+
+    def test_copied_test_sources_remain_additions_and_run_every_platform(self):
+        raw = subprocess.check_output(["git", "-C", str(self.repo), "show", f"{self.base}:{self.path}"])
+        self.store("iosApp/Tests/CopiedUnknown.swift", raw)
+        self.commit()
+        self.assertEqual(self.selection()["platforms"], ALL)
+
+    def test_unchanged_known_test_modes_are_checked_in_both_trees(self):
+        other = next(path for path in self.known if path != self.path)
+        self.store(other, mode="120000")
+        changed_base = self.commit()
+        self.modify_test()
+        self.assertEqual(self.selection(before=changed_base)["platforms"], ALL)
+
+    def test_missing_or_changed_committed_controller_seal_and_files_require_all(self):
+        for path in apple_platforms.SELECTOR_FILES + (apple_platforms.SELECTOR_CONTRACT,):
+            with self.subTest(path=path):
+                self.reset()
+                self.store(path)
+                changed_base = self.commit("controller changed")
+                self.modify_test()
+                self.assertEqual(self.selection(before=changed_base)["platforms"], ALL)
+        self.reset()
+        self.git("update-index", "--force-remove", apple_platforms.SELECTOR_CONTRACT)
+        missing_base = self.commit()
+        self.modify_test()
+        self.assertEqual(self.selection(before=missing_base)["platforms"], ALL)
+
+    def test_manual_reusable_and_release_requests_keep_the_full_matrix(self):
+        self.modify_test()
+        for event_name in ("workflow_dispatch", "workflow_call", "release"):
+            self.assertEqual(apple_platforms.select_platforms(self.repo, None, event_name)["platforms"], ALL)
+        self.assertEqual(self.selection(force_platforms="all")["platforms"], ALL)
+
+
 class AggregateResultTests(unittest.TestCase):
     HEAD = "a" * 40
     BASE = "b" * 40
@@ -443,6 +632,30 @@ class AggregateResultTests(unittest.TestCase):
         for platforms in (["ios"], []):
             with self.subTest(platforms=platforms), self.assertRaises(apple_platforms.SelectionUnavailable):
                 self.verify(self.fixture(platforms), require_all=True)
+
+    def test_guarded_mobile_test_result_requires_its_fixed_reviewed_controller(self):
+        controller, _ = apple_platforms.reviewed_test_controller()
+        guard = {"source_inputs_sha256": apple_platforms.TEST_SOURCE_INPUTS_SHA256, "ownership_sha256": apple_platforms.TEST_SOURCE_OWNERSHIP_SHA256, "controller_sha256": controller}
+        needs = self.fixture(["ios", "tvos"], mode="test_sources")
+        self.change_selection(needs, test_source_guard=guard)
+        self.verify(needs)
+        with self.assertRaises(apple_platforms.SelectionUnavailable):
+            self.verify(needs, require_all=True)
+        for result in ("failure", "cancelled", "skipped", "pending"):
+            with self.subTest(result=result), self.assertRaises(apple_platforms.SelectionUnavailable):
+                needs["validate"]["result"] = result
+                self.verify(needs)
+        needs["validate"]["result"] = "success"
+        for field in guard:
+            with self.subTest(field=field), self.assertRaises(apple_platforms.SelectionUnavailable):
+                changed = dict(guard, **{field: "0" * 64})
+                self.change_selection(needs, test_source_guard=changed)
+                self.verify(needs)
+        for changed in ({"test_source_guard": None}, {"changed_files": 0}):
+            with self.subTest(changed=changed), self.assertRaises(apple_platforms.SelectionUnavailable):
+                self.change_selection(needs, test_source_guard=guard, changed_files=1)
+                self.change_selection(needs, **changed)
+                self.verify(needs)
 
     def test_workflow_cancellation_after_successful_dependencies_still_fails(self):
         with self.assertRaises(apple_platforms.SelectionUnavailable):
