@@ -12,7 +12,6 @@ import subprocess
 LOCK = Path('iosApp/Silo.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved')
 SDKS = {'Silo': 'iphonesimulator', 'SiloTV': 'appletvsimulator', 'SiloMac': 'macosx'}
 
-
 def command(*args, cwd=None):
     try:
         return subprocess.check_output(args, cwd=cwd, text=True, timeout=60).strip()
@@ -27,6 +26,21 @@ def parse_xcode(text):
     return {'xcode_version': match[1], 'xcode_build': match[2]}
 
 
+def compilation_cache_profile(env):
+    enabled = env.get('SILO_COMPILATION_CACHE_ENABLED', 'false')
+    if enabled not in ('true', 'false'):
+        raise ValueError('Compilation cache opt-in must be true or false')
+    if enabled == 'true':
+        if env.get('GITHUB_EVENT_NAME') != 'workflow_dispatch':
+            raise ValueError('Compilation caching requires a manual benchmark')
+        if env.get('SILO_BENCH_VARIANT') != 'optimized':
+            raise ValueError('Compilation caching requires the optimized variant')
+        if env.get('SILO_CACHE_MODE') != 'derived_data':
+            raise ValueError('Compilation caching requires the derived_data cache mode')
+        return 'compilation-cache-v1'
+    return 'standard'
+
+
 def validate_controls(env):
     namespace = env.get('SILO_CACHE_NAMESPACE', 'v1')
     if not re.fullmatch(r'[a-z0-9_-]{1,32}', namespace):
@@ -34,6 +48,7 @@ def validate_controls(env):
     source_ref = env.get('SILO_BENCHMARK_SOURCE_REF', '')
     if source_ref and not re.fullmatch(r'[0-9a-f]{40}', source_ref):
         raise ValueError('Benchmark source must be an immutable 40-character commit SHA')
+    compilation_cache_profile(env)
     return namespace
 
 
@@ -60,6 +75,7 @@ def metadata(root, env):
     namespace = validate_controls(env)
     sha = command('git', 'rev-parse', 'HEAD', cwd=root)
     fingerprint = command('git', 'rev-parse', 'HEAD^{tree}', cwd=root)
+    dirty = bool(command('git', 'status', '--porcelain', '--untracked-files=no', cwd=root))
     lock = hashlib.sha256((root / LOCK).read_bytes()).hexdigest()
     tools = toolchains()
     # SDK build and architecture also scope caches; runtime changes are covered
@@ -73,7 +89,8 @@ def metadata(root, env):
         config.update(path.relative_to(root).as_posix().encode() + b'\0' + path.read_bytes() + b'\0')
     return {'source_sha': sha, 'fingerprint': fingerprint, 'lock_sha256': lock,
             'toolchain_key': key, 'build_config_sha256': config.hexdigest(), 'toolchain_json': json.dumps(tools, sort_keys=True, separators=(',', ':')),
-            'cache_namespace': namespace}
+            'cache_namespace': namespace, 'compilation_cache_profile': compilation_cache_profile(env),
+            'source_dirty': str(dirty).lower()}
 
 
 def emit_outputs(result, path):
@@ -93,12 +110,18 @@ def benchmark(result, env):
     derived_restored = derived_hit or env.get('SILO_DERIVED_CACHE_RESTORED') == 'true'
     derived_key = env.get('SILO_DERIVED_CACHE_KEY', '')
     xcodegen_hit = env.get('SILO_XCODEGEN_CACHE_HIT') == 'true'
+    profile = compilation_cache_profile(env)
+    dirty = result.get('source_dirty', 'false') == 'true'
     return {'source_sha': result['source_sha'], 'variant': env.get('SILO_BENCH_VARIANT', 'optimized'),
             'cache_regime': 'warm' if spm_hit or derived_restored else 'cold',
             'cache_namespace': result['cache_namespace'], 'platform': platform,
             'toolchain': tools[scheme], 'spm_cache_hit': spm_hit,
             'derived_cache_hit': derived_hit, 'derived_cache_restored': derived_restored,
             'derived_cache_key': derived_key,
+            'compilation_cache_profile': profile,
+            'source_dirty': dirty, 'timing_eligible': not dirty,
+            'compilation_cache_enabled': profile != 'standard',
+            'compilation_cache_diagnostic_remarks': profile != 'standard',
             'derived_cache_kind': 'exact' if derived_hit else 'prefix' if derived_restored else 'miss',
             'xcodegen_cache_hit': xcodegen_hit,
             'dependency_lock_sha256': result['lock_sha256'],
@@ -108,9 +131,13 @@ def benchmark(result, env):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--root', type=Path, default=Path('.'))
+    parser.add_argument('--validate-controls', action='store_true')
     parser.add_argument('--outputs', action='store_true')
     parser.add_argument('--benchmark', action='store_true')
     args = parser.parse_args()
+    if args.validate_controls:
+        validate_controls(os.environ)
+        return
     result = metadata(args.root.resolve(), os.environ)
     if args.outputs:
         emit_outputs(result, os.environ['GITHUB_OUTPUT'])

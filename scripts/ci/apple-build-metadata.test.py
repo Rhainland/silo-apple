@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 import importlib.util
 import json
+import os
+import sys
 from pathlib import Path
 import tempfile
 import subprocess
@@ -72,6 +74,54 @@ class MetadataTests(unittest.TestCase):
         self.assertTrue(partial['derived_cache_restored'])
         self.assertEqual(partial['derived_cache_kind'], 'prefix')
         self.assertEqual(partial['derived_cache_key'], 'prior-source-key')
+
+
+    def compilation_env(self):
+        return {'GITHUB_EVENT_NAME': 'workflow_dispatch', 'SILO_BENCH_VARIANT': 'optimized',
+                'SILO_CACHE_MODE': 'derived_data', 'SILO_COMPILATION_CACHE_ENABLED': 'true',
+                'SILO_BENCHMARK_PLATFORM': 'ios', 'PLATFORM': 'iOS'}
+
+    def test_compilation_cache_requires_manual_optimized_derived_data(self):
+        env = self.compilation_env()
+        self.assertEqual(metadata.compilation_cache_profile(env), 'compilation-cache-v1')
+        self.assertEqual(metadata.compilation_cache_profile({}), 'standard')
+        for key, values in {'GITHUB_EVENT_NAME': ('pull_request', 'push', 'workflow_call', ''),
+                            'SILO_BENCH_VARIANT': ('baseline', ''),
+                            'SILO_CACHE_MODE': ('off', 'dependencies', ''),
+                            'SILO_COMPILATION_CACHE_ENABLED': ('TRUE', '1', 'true\n')}.items():
+            for value in values:
+                with self.subTest(key=key, value=value), self.assertRaises(ValueError):
+                    metadata.validate_controls({**env, key: value})
+
+    def test_early_control_validation_does_not_inspect_or_build_source(self):
+        with patch.dict(os.environ, self.compilation_env(), clear=True), \
+                patch.object(sys, 'argv', ['metadata', '--validate-controls']), \
+                patch.object(metadata, 'metadata', side_effect=AssertionError('Source preparation started')):
+            metadata.main()
+        with patch.dict(os.environ, {**self.compilation_env(), 'SILO_CACHE_MODE': 'off'}, clear=True), \
+                patch.object(sys, 'argv', ['metadata', '--validate-controls']), \
+                patch.object(metadata, 'metadata', side_effect=AssertionError('Source preparation started')):
+            with self.assertRaisesRegex(ValueError, 'requires the derived_data'):
+                metadata.main()
+
+    def test_compilation_profile_reports_dirty_source_and_excludes_timing(self):
+        result = {'source_sha': 'a' * 40, 'cache_namespace': 'v1', 'source_dirty': 'true',
+                  'lock_sha256': 'b' * 64, 'build_config_sha256': 'c' * 64,
+                  'toolchain_json': json.dumps({'Silo': {'xcode_build': '27A266a'}})}
+        env = {**self.compilation_env(), 'SILO_DERIVED_CACHE_RESTORED': 'true'}
+        marker = metadata.benchmark(result, env)
+        self.assertTrue(marker['compilation_cache_enabled'])
+        self.assertTrue(marker['compilation_cache_diagnostic_remarks'])
+        self.assertEqual(marker['compilation_cache_profile'], 'compilation-cache-v1')
+        self.assertTrue(marker['source_dirty'])
+        self.assertFalse(marker['timing_eligible'])
+        self.assertEqual(marker['source_sha'], 'a' * 40)
+        clean = metadata.benchmark({**result, 'source_dirty': 'false'},
+                                   env)
+        self.assertTrue(clean['timing_eligible'])
+        normal = metadata.benchmark({**result, 'source_dirty': 'false'}, {'PLATFORM': 'iOS'})
+        self.assertFalse(normal['compilation_cache_enabled'])
+        self.assertEqual(normal['compilation_cache_profile'], 'standard')
 
     def test_actions_output_rejects_multiline_values(self):
         with tempfile.TemporaryDirectory() as folder:

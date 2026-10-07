@@ -53,6 +53,10 @@ on:
         type: choice
         default: all
         options: [all, ios, tvos, macos]
+      compilation_cache:
+        description: Enable Xcode compilation cache and diagnostics for an optimized derived_data benchmark
+        type: boolean
+        default: false
   # release.yml calls this to gate TestFlight uploads on the full suite.
   workflow_call:
     inputs:
@@ -93,12 +97,13 @@ jobs:
         shell: bash
         working-directory: source
     env:
-      SILO_BENCH_VARIANT: ${{ inputs.benchmark_variant || 'optimized' }}
+      SILO_BENCH_VARIANT: ${{ inputs.baseline_ref && 'baseline' || inputs.benchmark_variant || 'optimized' }}
       SILO_BENCHMARK_SOURCE_REF: ${{ inputs.benchmark_source_ref }}
-      SILO_CACHE_MODE: ${{ inputs.benchmark_variant == 'baseline' && 'off' || inputs.cache_mode || 'dependencies' }}
+      SILO_CACHE_MODE: ${{ (inputs.baseline_ref || inputs.benchmark_variant == 'baseline') && 'off' || inputs.cache_mode || 'dependencies' }}
       SILO_CACHE_NAMESPACE: ${{ inputs.cache_namespace || 'production' }}
+      SILO_COMPILATION_CACHE_ENABLED: ${{ inputs.compilation_cache && 'true' || 'false' }}
       SILO_SOURCE_PACKAGES_PATH: ${{ github.workspace }}/source/.ci-cache/packages
-      SILO_DERIVED_DATA: ${{ inputs.benchmark_variant == 'baseline' && '/tmp/silo-derived' || format('{0}/source/.ci-cache/derived/{1}', github.workspace, matrix.scheme) }}
+      SILO_DERIVED_DATA: ${{ (inputs.baseline_ref || inputs.benchmark_variant == 'baseline') && '/tmp/silo-derived' || format('{0}/source/.ci-cache/derived/{1}', github.workspace, matrix.scheme) }}
       PLATFORM: ${{ matrix.platform }}
       SCHEME: ${{ matrix.scheme }}
       DESTINATION: ${{ matrix.destination }}
@@ -112,6 +117,9 @@ jobs:
           persist-credentials: false
           path: ci
           ref: ${{ github.sha }}
+      - name: Validate benchmark controls before source preparation
+        working-directory: ci
+        run: python3 scripts/ci/apple-build-metadata.py --validate-controls
       - name: Checkout app source
         uses: actions/checkout@v4
         with:
@@ -123,6 +131,8 @@ jobs:
           xcode-version: '27.0'
       - name: Record build inputs
         id: metadata
+        # Historical baselines may resolve their lockfile during the original build.
+        if: env.SILO_BENCH_VARIANT != 'baseline'
         run: python3 ../ci/scripts/ci/apple-build-metadata.py --root . --outputs
       - name: Install XcodeGen
         id: xcodegen
@@ -148,6 +158,7 @@ jobs:
           project-key: ${{ steps.metadata.outputs.build_config_sha256 }}-xcodegen2.43.0
           source-sha: ${{ steps.metadata.outputs.source_sha }}
           scheme: ${{ matrix.scheme }}
+          derived-profile: ${{ steps.metadata.outputs.compilation_cache_profile }}
       - name: Resolve locked packages once
         if: env.SILO_BENCH_VARIANT != 'baseline'
         run: |
@@ -221,6 +232,11 @@ jobs:
         id: build
         run: |
           set -euo pipefail
+          compilation_args=()
+          if [ "$SILO_COMPILATION_CACHE_ENABLED" = true ]; then
+            compilation_args=(COMPILATION_CACHE_ENABLE_CACHING=YES
+              COMPILATION_CACHE_ENABLE_DIAGNOSTIC_REMARKS=YES)
+          fi
           package_args=()
           if [ "$SILO_BENCH_VARIANT" != baseline ]; then
             package_args=(-clonedSourcePackagesDirPath "$SILO_SOURCE_PACKAGES_PATH"
@@ -231,12 +247,12 @@ jobs:
             # required by Keychain. No certificate or release secret is used.
             xcodebuild build-for-testing -project iosApp/Silo.xcodeproj -scheme "$SCHEME" \
               -destination "$SILO_TEST_DESTINATION" -derivedDataPath "$SILO_DERIVED_DATA" \
-              ${package_args[@]+"${package_args[@]}"} -showBuildTimingSummary \
+              ${package_args[@]+"${package_args[@]}"} ${compilation_args[@]+"${compilation_args[@]}"} -showBuildTimingSummary \
               CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- | tee /tmp/player-build.log
           else
             xcodebuild build -project iosApp/Silo.xcodeproj -scheme "$SCHEME" \
               -destination "$DESTINATION" -derivedDataPath "$SILO_DERIVED_DATA" \
-              ${package_args[@]+"${package_args[@]}"} -showBuildTimingSummary \
+              ${package_args[@]+"${package_args[@]}"} ${compilation_args[@]+"${compilation_args[@]}"} -showBuildTimingSummary \
               -resultBundlePath /tmp/player-validation.xcresult \
               CODE_SIGNING_ALLOWED=NO | tee /tmp/player-validation.log
           fi
@@ -249,6 +265,7 @@ jobs:
         with:
           name: Silo-simulator-tests
           path: /tmp/Silo-simulator-tests.zip
+          compression-level: 0
           retention-days: 3
       # Xcode 27 can spend ten minutes collecting simulator diagnostics after the
       # tests finish, which would run past this step's timeout.
@@ -327,6 +344,7 @@ jobs:
           project-key: ${{ steps.metadata.outputs.build_config_sha256 }}-xcodegen2.43.0
           source-sha: ${{ steps.metadata.outputs.source_sha }}
           scheme: ${{ matrix.scheme }}
+          derived-profile: ${{ steps.metadata.outputs.compilation_cache_profile }}
           save-cache: 'true'
           # Binary artifacts can differ by platform, so each scheme saves its complete graph.
           save-dependencies: 'true'
