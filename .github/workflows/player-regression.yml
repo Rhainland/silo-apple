@@ -122,8 +122,8 @@ jobs:
       SILO_RELEASE_GATE: ${{ inputs.release_gate && 'true' || 'false' }}
       SILO_PULL_REQUEST_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
       SILO_SPM_CACHE_SAVE_OWNER: >-
-        ${{ (inputs.ios_only || inputs.baseline_ref || inputs.benchmark_platform == 'ios') && 'Silo' ||
-            inputs.benchmark_platform == 'tvos' && 'SiloTV' || 'SiloMac' }}
+        ${{ contains(fromJSON(needs.select.outputs.matrix).include.*.scheme, 'SiloMac') && 'SiloMac' ||
+            fromJSON(needs.select.outputs.matrix).include[0].scheme }}
       SILO_SOURCE_PACKAGES_PATH: ${{ github.workspace }}/source/.ci-cache/packages
       SILO_DERIVED_DATA: ${{ (inputs.baseline_ref || inputs.benchmark_variant == 'baseline') && '/tmp/silo-derived' || format('{0}/source/.ci-cache/derived/{1}', github.workspace, matrix.scheme) }}
       PLATFORM: ${{ matrix.platform }}
