@@ -3772,6 +3772,9 @@ class PlayerViewModel {
             )
         }
         let isServerPreparedFile = offlinePlaybackContext?.isServerPreparedFile == true
+        let serverOwnsAudio = ApplePlaybackV3PlanAdapter.serverOwnsAudioTracks(
+            activePreparedProtocolV3?.plan
+        )
         let pickerAudioTracks = ApplePlaybackV3PlanAdapter.audioPickerTracks(
             aetherTracks: aetherAudioTracks,
             plan: activePreparedProtocolV3?.plan,
@@ -3847,8 +3850,10 @@ class PlayerViewModel {
         }
         chapters = mediaChapters.isEmpty ? serverProvidedChapters : mediaChapters
 
+        // On server HLS the engine's active id names its packaged rendition,
+        // not a picker row, so only the plan's ordinal selects one.
         selectedAudioId = audioTracks.first(where: \.isSelected)?.trackId
-            ?? engine.activeAudioTrackIndex.map(Int64.init)
+            ?? (serverOwnsAudio ? nil : engine.activeAudioTrackIndex.map(Int64.init))
         // A locally-registered sidecar is selected client-side, so the plan —
         // which predates the track — must not republish over it. Once the
         // server publishes that ordinal the plan is authoritative again.
@@ -3875,8 +3880,10 @@ class PlayerViewModel {
         let loadIsEstablished = isAetherLoadEstablished
 
         // Catalog fallback rows are picker state for server-owned replans; only
-        // a track Aether actually published may drive its local selection API.
+        // a file track Aether actually published may drive its local selection
+        // API, which server HLS never has.
         if let wantedIndex = pendingAudioFfIndex,
+           !serverOwnsAudio,
            let match = aetherAudioTracks.first(where: {
                audioSelectionIndex(for: $0) == wantedIndex
            }) {
