@@ -544,6 +544,32 @@ final class TitleArtPreferencesTests: XCTestCase {
         XCTAssertFalse(store.isOffered)
     }
 
+    /// Kody: switching away and back reloads the profile with an unknown
+    /// support state, and a failed probe leaves it unknown. Neither may
+    /// forget the downgrade a refresh already found for that profile.
+    func testSwitchingAwayAndBackKeepsAKnownDowngradeForAChangeInFlight() async {
+        transport.effective = (false, "profile")
+        let gate = WriteGate()
+        transport.writeGate = gate
+        let store = makeStore()
+        await store.refresh()
+        store.setAppliesToAllDevices(false)
+        while !gate.hasWaiter { await Task.yield() }
+
+        transport.capabilities = .available(titleArtCapabilities(revision: 15))
+        await store.refresh()
+        identity = Self.profileB
+        await store.refresh()
+        identity = Self.profileA
+        transport.capabilities = .failed(.transport(description: "offline"))
+        await store.refresh()
+        gate.open()
+        await store.waitForPendingWrites()
+
+        XCTAssertEqual(transport.calls, [.put(.profileDevice, false)], "the clear never went out")
+        XCTAssertTrue(makeStore().showsTitleArt, "nothing was cached for the older server")
+    }
+
     func testAReadThatRacesAChangeDoesNotUndoIt() async {
         transport.effective = (true, "default")
         let store = makeStore()

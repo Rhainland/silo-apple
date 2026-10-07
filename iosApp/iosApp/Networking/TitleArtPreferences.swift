@@ -233,6 +233,11 @@ final class TitleArtPreferences {
     /// from the optimistic state the failure just disproved, so those changes
     /// are dropped rather than sent. Other profiles' changes are unaffected.
     @ObservationIgnored private var failureEpochs: [String: Int] = [:]
+    /// Profiles whose server a refresh last found without the key. Kept per
+    /// cache key rather than read from `syncState`, which a profile switch or
+    /// a later failed probe resets, so a change still being sent for that
+    /// profile stops before its next step.
+    @ObservationIgnored private var unsupportedCacheKeys: Set<String> = []
 
     private struct OperationContext: Equatable {
         let cacheKey: String
@@ -295,6 +300,7 @@ final class TitleArtPreferences {
         switch capabilities {
         case .available(let capabilities) where capabilities.supports(.uiTitleArt):
             syncState = .supported
+            unsupportedCacheKeys.remove(context.cacheKey)
         case .available, .serverUpgradeRequired:
             syncState = .serverUpgradeRequired
             clearServerValue(cacheKey: context.cacheKey)
@@ -499,7 +505,7 @@ final class TitleArtPreferences {
     }
 
     private func lostSupport(_ context: OperationContext) -> Bool {
-        isCurrent(context) && syncState == .serverUpgradeRequired
+        unsupportedCacheKeys.contains(context.cacheKey)
     }
 
     private func readBack(context: OperationContext) async {
@@ -525,7 +531,9 @@ final class TitleArtPreferences {
         }
     }
 
+    /// The server no longer knows the key for `cacheKey`'s profile.
     private func clearServerValue(cacheKey: String) {
+        unsupportedCacheKeys.insert(cacheKey)
         confirmed = nil
         setting = nil
         hasServerAnswer = false
