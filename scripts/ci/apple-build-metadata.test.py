@@ -13,8 +13,16 @@ spec = importlib.util.spec_from_file_location('metadata', Path(__file__).with_na
 metadata = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(metadata)
 
+QUALIFIED_SPM_LOCK = '40e3e0fbe264adac749a1f7db3f91a311e67f6419eeecad6bd4d88c07efd9410'
+QUALIFIED_SPM_PROJECT = 'b698ee86dc410c8ada9251778a655f5428b2ea663ccfc8ba1291f180aa472eca'
+QUALIFIED_SPM_TOOLCHAIN = '5e23d2022187a1fa502ad4a6'
+
 
 class MetadataTests(unittest.TestCase):
+    def spm_scope(self, env, lock, project, toolchain='', *, source_sha='a' * 40, source_dirty=False):
+        return metadata.spm_cache_scope(env, lock, project, toolchain,
+                                        source_sha=source_sha, source_dirty=source_dirty)
+
     def test_rejects_mutable_or_shell_source_and_unsafe_cache_namespace(self):
         for value in ('main', 'a' * 39, 'a' * 40 + '\n', '$(id)', '../other'):
             with self.subTest(value=value), self.assertRaises(ValueError):
@@ -23,6 +31,16 @@ class MetadataTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 metadata.validate_controls({'SILO_CACHE_NAMESPACE': value})
         self.assertEqual(metadata.validate_controls({'SILO_CACHE_NAMESPACE': 'bench-1'}), 'bench-1')
+
+    def test_shipping_metadata_rejects_diagnostic_probes_before_source_inspection(self):
+        metadata.validate_controls({'SILO_CACHE_PROBE': 'none'})
+        for probe in ('fail_test', 'graph_only', '', 'NONE', 'none\nother=value'):
+            with self.subTest(probe=probe), patch.dict(os.environ, {'SILO_CACHE_PROBE': probe}, clear=True), \
+                    patch.object(sys, 'argv', ['metadata', '--validate-controls']), \
+                    patch.object(metadata, 'metadata', side_effect=AssertionError('Source inspection started')), \
+                    patch.object(metadata, 'command', side_effect=AssertionError('Toolchain inspection started')):
+                with self.assertRaisesRegex(ValueError, 'Diagnostic cache probes'):
+                    metadata.main()
 
     def test_command_is_bounded_and_timeout_is_a_failure(self):
         with patch.object(metadata.subprocess, 'check_output',
@@ -58,12 +76,133 @@ class MetadataTests(unittest.TestCase):
         self.assertEqual(tools['SiloTV']['runtime_build'], '')
         self.assertNotIn('runtime_build', tools['SiloMac'])
 
+    def runtime_inventory(self, **changes):
+        return {'runtimes': [{'identifier': 'com.apple.CoreSimulator.SimRuntime.iOS-27-0',
+                             'version': '27.0', 'buildversion': '24A100',
+                             'isAvailable': True, **changes}]}
+
+    def live_tool_command(self, *args, cwd=None):
+        if args == ('xcodebuild', '-version'):
+            return 'Xcode 27.0\nBuild version 27A266a'
+        if args[0:2] == ('git', 'rev-parse'):
+            return ('a' if args[2] == 'HEAD' else 'b') * 40
+        if args[0:2] == ('git', 'status'):
+            return ''
+        if args == ('uname', '-m'):
+            return 'arm64'
+        if args[-1] == '--show-sdk-build-version':
+            return '24A100'
+        if args[-1] == '--show-sdk-version':
+            return '27.0'
+        raise AssertionError('Unexpected live tool command: ' + repr(args))
+
+    def test_prepared_runtime_uses_the_selected_entry_and_preserves_live_tool_reads(self):
+        selected = 'com.apple.CoreSimulator.SimRuntime.iOS-27-0-selected'
+        inventory = self.runtime_inventory()
+        inventory['runtimes'].append({**inventory['runtimes'][0], 'identifier': selected,
+                                      'buildversion': '24A200'})
+        with tempfile.TemporaryDirectory() as folder:
+            capture = Path(folder) / 'runtimes.json'
+            capture.write_text(json.dumps(inventory))
+            with patch.object(metadata, 'command', side_effect=self.live_tool_command) as run:
+                tools = metadata.toolchains(capture, 'Silo', selected)
+        self.assertEqual(tools['Silo']['runtime_build'], '24A200')
+        self.assertEqual(tools['Silo']['xcode_build'], '27A266a')
+        for sdk in metadata.SDKS.values():
+            self.assertIn(('xcrun', '--sdk', sdk, '--show-sdk-version'),
+                          [call.args for call in run.call_args_list])
+        self.assertNotIn(('xcrun', 'simctl', 'list', 'runtimes', '--json'),
+                         [call.args for call in run.call_args_list])
+
+    def test_prepared_runtime_rejects_missing_unavailable_ambiguous_and_stale_identity(self):
+        identifier = 'com.apple.CoreSimulator.SimRuntime.iOS-27-0'
+        invalid = [({}, 'Silo', identifier), ({'runtimes': {}}, 'Silo', identifier),
+                   ({'runtimes': [None]}, 'Silo', identifier),
+                   (self.runtime_inventory(isAvailable=False), 'Silo', identifier),
+                   (self.runtime_inventory(isAvailable=1), 'Silo', identifier),
+                   (self.runtime_inventory(version='26.0'), 'Silo', identifier),
+                   (self.runtime_inventory(buildversion=''), 'Silo', identifier),
+                   (self.runtime_inventory(buildversion='24A100\nother=value'), 'Silo', identifier),
+                   (self.runtime_inventory(), 'SiloTV', identifier),
+                   (self.runtime_inventory(), 'SiloMac', identifier),
+                   (self.runtime_inventory(), 'Silo', ''),
+                   (self.runtime_inventory(), 'Silo', identifier + '-other'),
+                   ({'runtimes': self.runtime_inventory()['runtimes'] * 2}, 'Silo', identifier)]
+        with tempfile.TemporaryDirectory() as folder:
+            capture = Path(folder) / 'runtimes.json'
+            with self.assertRaises(FileNotFoundError):
+                metadata.prepared_runtimes(capture, 'Silo', identifier, '27.0')
+            for inventory, scheme, selected in invalid:
+                with self.subTest(inventory=inventory, scheme=scheme, selected=selected):
+                    capture.write_text(json.dumps(inventory))
+                    with self.assertRaises(ValueError):
+                        metadata.prepared_runtimes(capture, scheme, selected, '27.0')
+            for text in ('{', '{"runtimes": [], "runtimes": []}'):
+                capture.write_text(text)
+                with self.subTest(text=text), self.assertRaises(ValueError):
+                    metadata.prepared_runtimes(capture, 'Silo', identifier, '27.0')
+
+    def test_changed_current_sdk_invalidates_the_prepared_runtime(self):
+        with tempfile.TemporaryDirectory() as folder:
+            capture = Path(folder) / 'runtimes.json'
+            capture.write_text(json.dumps(self.runtime_inventory()))
+            def changed_sdk(*args):
+                if args == ('xcrun', '--sdk', 'iphonesimulator', '--show-sdk-version'):
+                    return '27.1'
+                return self.live_tool_command(*args)
+            with patch.object(metadata, 'command', changed_sdk), self.assertRaises(ValueError):
+                metadata.toolchains(capture, 'Silo', 'com.apple.CoreSimulator.SimRuntime.iOS-27-0')
+
+    def test_final_metadata_recomputes_source_config_dirty_and_all_sdk_builds(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            lock = root / metadata.LOCK
+            lock.parent.mkdir(parents=True)
+            lock.write_text('original lock')
+            project = root / 'iosApp/project.yml'
+            project.write_text('original project')
+            capture = root / 'runtime.json'
+            capture.write_text(json.dumps(self.runtime_inventory()))
+            env = {'SCHEME': 'Silo', 'SILO_TEST_RUNTIME_IDENTIFIER':
+                   'com.apple.CoreSimulator.SimRuntime.iOS-27-0'}
+            with patch.object(metadata, 'command', side_effect=self.live_tool_command):
+                original = metadata.metadata(root, env, capture)
+            lock.write_text('changed lock')
+            project.write_text('changed project')
+            def changed_source(*args, cwd=None):
+                if args[0:2] == ('git', 'rev-parse'):
+                    return ('c' if args[2] == 'HEAD' else 'd') * 40
+                if args[0:2] == ('git', 'status'):
+                    return ' M iosApp/Tests/PlaybackTimelineMapperTests.swift'
+                return self.live_tool_command(*args, cwd=cwd)
+            with patch.object(metadata, 'command', side_effect=changed_source) as run:
+                changed = metadata.metadata(root, env, capture)
+            self.assertEqual(changed['source_sha'], 'c' * 40)
+            self.assertEqual(changed['fingerprint'], 'd' * 40)
+            self.assertEqual(changed['source_dirty'], 'true')
+            self.assertNotEqual(changed['lock_sha256'], original['lock_sha256'])
+            self.assertNotEqual(changed['build_config_sha256'], original['build_config_sha256'])
+            for sdk in metadata.SDKS.values():
+                self.assertIn(('xcrun', '--sdk', sdk, '--show-sdk-build-version'),
+                              [call.args for call in run.call_args_list])
+
+    def test_only_final_benchmark_accepts_the_prepared_inventory(self):
+        env = {'SILO_PREPARED_SIMULATOR_RUNTIMES': '/tmp/owned-runtime-inventory.json'}
+        for arguments, expected in (([], None), (['--benchmark'], Path(env['SILO_PREPARED_SIMULATOR_RUNTIMES']))):
+            with self.subTest(arguments=arguments), patch.dict(os.environ, env, clear=True), \
+                    patch.object(sys, 'argv', ['metadata', *arguments]), \
+                    patch.object(metadata, 'metadata', return_value={}) as inspect, \
+                    patch.object(metadata, 'benchmark', return_value={}), patch('builtins.print'):
+                metadata.main()
+            self.assertEqual(inspect.call_args.args[2], expected)
+
     def test_cache_hit_claim_requires_actual_restore_hit(self):
         result = {'source_sha': 'a' * 40, 'cache_namespace': 'v1',
                   'lock_sha256': 'b' * 64, 'build_config_sha256': 'c' * 64,
                   'toolchain_json': json.dumps({'Silo': {'xcode_build': '27A266a'}})}
         env = {'PLATFORM': 'iOS', 'SILO_SPM_CACHE_HIT': 'false', 'SILO_CACHE_MODE': 'dependencies'}
         self.assertEqual(metadata.benchmark(result, env)['cache_regime'], 'cold')
+        self.assertEqual(metadata.benchmark(result, env)['cache_probe'], 'none')
         env['SILO_SPM_CACHE_HIT'] = 'true'
         self.assertEqual(metadata.benchmark(result, env)['cache_regime'], 'warm')
         env.update(SILO_SPM_CACHE_HIT='false', SILO_DERIVED_CACHE_HIT='false',
@@ -74,6 +213,182 @@ class MetadataTests(unittest.TestCase):
         self.assertTrue(partial['derived_cache_restored'])
         self.assertEqual(partial['derived_cache_kind'], 'prefix')
         self.assertEqual(partial['derived_cache_key'], 'prior-source-key')
+
+    def shared_spm_env(self):
+        return {'SILO_SPM_CACHE_PROFILE': 'shared_qualified',
+                'GITHUB_EVENT_NAME': 'workflow_dispatch', 'GITHUB_REPOSITORY': 'Silo-Server/silo-apple',
+                'GITHUB_REF': 'refs/heads/fixture', 'SILO_BENCH_VARIANT': 'optimized',
+                'SILO_CACHE_MODE': 'dependencies', 'SCHEME': 'Silo', 'PLATFORM': 'iOS',
+                'SILO_SPM_CACHE_SAVE_OWNER': 'SiloMac'}
+
+    def test_shared_spm_scope_requires_qualified_inputs_and_keeps_the_explicit_owner(self):
+        for scheme in ('Silo', 'SiloTV', 'SiloMac'):
+            for cache_mode in ('dependencies', 'derived_data'):
+                for owner in ('Silo', 'SiloTV', 'SiloMac'):
+                    env = {**self.shared_spm_env(), 'SCHEME': scheme, 'SILO_CACHE_MODE': cache_mode,
+                           'SILO_SPM_CACHE_SAVE_OWNER': owner}
+                    with self.subTest(scheme=scheme, cache_mode=cache_mode, owner=owner):
+                        self.assertEqual(self.spm_scope(env, QUALIFIED_SPM_LOCK, QUALIFIED_SPM_PROJECT,
+                                                                  QUALIFIED_SPM_TOOLCHAIN),
+                            {'spm_cache_profile_requested': 'shared_qualified',
+                             'spm_cache_profile_effective': 'shared_qualified',
+                             'spm_cache_scope': 'shared-qualified-v1', 'spm_cache_save_owner': owner})
+
+    def test_unqualified_shared_requests_fall_back_to_the_current_scheme_and_owner(self):
+        cases = {'GITHUB_EVENT_NAME': ('pull_request', 'push', 'workflow_call', ''),
+                 'GITHUB_REPOSITORY': ('other/silo-apple', ''),
+                 'SILO_BENCH_VARIANT': ('baseline', ''), 'SILO_CACHE_MODE': ('off', ''),
+                 'SCHEME': ('SiloDevice', ''), 'SILO_SPM_CACHE_SAVE_OWNER': ('SiloDevice', 'silo', '')}
+        for key, values in cases.items():
+            for value in values:
+                env = {**self.shared_spm_env(), key: value}
+                current_scheme = env['SCHEME'] or 'Silo'
+                with self.subTest(key=key, value=value):
+                    self.assertEqual(self.spm_scope(env, QUALIFIED_SPM_LOCK, QUALIFIED_SPM_PROJECT,
+                                                              QUALIFIED_SPM_TOOLCHAIN),
+                        {'spm_cache_profile_requested': 'shared_qualified',
+                         'spm_cache_profile_effective': 'scheme', 'spm_cache_scope': current_scheme,
+                         'spm_cache_save_owner': current_scheme})
+        for omitted in ('GITHUB_EVENT_NAME', 'GITHUB_REPOSITORY', 'SILO_BENCH_VARIANT', 'SILO_CACHE_MODE',
+                        'SCHEME', 'SILO_SPM_CACHE_SAVE_OWNER'):
+            env = self.shared_spm_env()
+            del env[omitted]
+            with self.subTest(omitted=omitted):
+                self.assertEqual(self.spm_scope(env, QUALIFIED_SPM_LOCK, QUALIFIED_SPM_PROJECT,
+                                                          QUALIFIED_SPM_TOOLCHAIN),
+                    {'spm_cache_profile_requested': 'shared_qualified',
+                     'spm_cache_profile_effective': 'scheme', 'spm_cache_scope': 'Silo',
+                     'spm_cache_save_owner': 'Silo'})
+
+    def test_either_measured_graph_hash_mismatch_disables_shared_scope(self):
+        for lock, project in (('a' * 64, QUALIFIED_SPM_PROJECT),
+                              (QUALIFIED_SPM_LOCK, 'b' * 64),
+                              ('', QUALIFIED_SPM_PROJECT), (QUALIFIED_SPM_LOCK, '')):
+            with self.subTest(lock=lock, project=project):
+                result = self.spm_scope(self.shared_spm_env(), lock, project, QUALIFIED_SPM_TOOLCHAIN)
+                self.assertEqual(result['spm_cache_profile_requested'], 'shared_qualified')
+                self.assertEqual(result['spm_cache_profile_effective'], 'scheme')
+                self.assertEqual(result['spm_cache_scope'], 'Silo')
+                self.assertEqual(result['spm_cache_save_owner'], 'Silo')
+
+    def test_changed_or_missing_toolchain_key_disables_shared_scope(self):
+        for key in ('0' * 24, '', QUALIFIED_SPM_TOOLCHAIN.upper()):
+            with self.subTest(toolchain_key=key):
+                self.assertEqual(self.spm_scope(self.shared_spm_env(), QUALIFIED_SPM_LOCK,
+                                                          QUALIFIED_SPM_PROJECT, key),
+                    {'spm_cache_profile_requested': 'shared_qualified', 'spm_cache_profile_effective': 'scheme',
+                     'spm_cache_scope': 'Silo', 'spm_cache_save_owner': 'Silo'})
+        missing = self.spm_scope(self.shared_spm_env(), QUALIFIED_SPM_LOCK, QUALIFIED_SPM_PROJECT)
+        self.assertEqual(missing['spm_cache_profile_effective'], 'scheme')
+        self.assertEqual(missing['spm_cache_scope'], 'Silo')
+        self.assertEqual(missing['spm_cache_save_owner'], 'Silo')
+
+    def test_scheme_profile_defaults_follow_the_current_scheme_or_platform(self):
+        for env, scheme in (({}, 'SiloMac'), ({'PLATFORM': 'iOS'}, 'Silo'),
+                            ({'PLATFORM': 'tvOS'}, 'SiloTV'), ({'PLATFORM': 'macOS'}, 'SiloMac'),
+                            ({'SCHEME': 'SiloTV', 'PLATFORM': 'iOS',
+                              'SILO_SPM_CACHE_SAVE_OWNER': 'SiloMac'}, 'SiloTV')):
+            with self.subTest(env=env):
+                self.assertEqual(self.spm_scope(env, QUALIFIED_SPM_LOCK, QUALIFIED_SPM_PROJECT,
+                                                          QUALIFIED_SPM_TOOLCHAIN),
+                    {'spm_cache_profile_requested': 'scheme', 'spm_cache_profile_effective': 'scheme',
+                     'spm_cache_scope': scheme, 'spm_cache_save_owner': scheme})
+        env = {**self.shared_spm_env(), 'SILO_SPM_CACHE_PROFILE': 'scheme'}
+        self.assertEqual(self.spm_scope(env, QUALIFIED_SPM_LOCK, QUALIFIED_SPM_PROJECT,
+                                                  QUALIFIED_SPM_TOOLCHAIN)['spm_cache_scope'],
+                         'Silo')
+
+    def test_same_repository_pr_main_push_and_inherited_release_events_can_share(self):
+        events = ({'GITHUB_EVENT_NAME': 'pull_request', 'SILO_PULL_REQUEST_HEAD_REPOSITORY': 'Silo-Server/silo-apple'},
+                  {'GITHUB_EVENT_NAME': 'push', 'GITHUB_REF': 'refs/heads/main'},
+                  {'GITHUB_EVENT_NAME': 'push', 'GITHUB_REF': 'refs/heads/main', 'SILO_RELEASE_GATE': 'true'},
+                  {'GITHUB_EVENT_NAME': 'push', 'GITHUB_REF': 'refs/tags/v1.0', 'SILO_RELEASE_GATE': 'true'},
+                  {'GITHUB_EVENT_NAME': 'workflow_dispatch', 'SILO_RELEASE_GATE': 'true'})
+        for changes in events:
+            with self.subTest(changes=changes):
+                result = self.spm_scope({**self.shared_spm_env(), **changes}, QUALIFIED_SPM_LOCK,
+                                        QUALIFIED_SPM_PROJECT, QUALIFIED_SPM_TOOLCHAIN)
+                self.assertEqual(result['spm_cache_profile_effective'], 'shared_qualified')
+
+    def test_fork_pr_non_main_push_and_tag_without_release_gate_fall_back(self):
+        events = ({'GITHUB_EVENT_NAME': 'pull_request', 'SILO_PULL_REQUEST_HEAD_REPOSITORY': 'fork/silo-apple'},
+                  {'GITHUB_EVENT_NAME': 'pull_request', 'SILO_PULL_REQUEST_HEAD_REPOSITORY': ''},
+                  {'GITHUB_EVENT_NAME': 'push', 'GITHUB_REF': 'refs/heads/feature'},
+                  {'GITHUB_EVENT_NAME': 'push', 'GITHUB_REF': ''},
+                  {'GITHUB_EVENT_NAME': 'push', 'GITHUB_REF': 'refs/tags/v1.0'},
+                  {'GITHUB_EVENT_NAME': 'push', 'GITHUB_REF': 'refs/tags/v1.0', 'SILO_RELEASE_GATE': 'false'},
+                  {'GITHUB_EVENT_NAME': 'push', 'GITHUB_REF': 'refs/tags/v1.0', 'SILO_RELEASE_GATE': 'TRUE'})
+        for changes in events:
+            with self.subTest(changes=changes):
+                result = self.spm_scope({**self.shared_spm_env(), **changes}, QUALIFIED_SPM_LOCK,
+                                        QUALIFIED_SPM_PROJECT, QUALIFIED_SPM_TOOLCHAIN)
+                self.assertEqual(result['spm_cache_profile_effective'], 'scheme')
+                self.assertEqual(result['spm_cache_save_owner'], 'Silo')
+
+    def test_dirty_or_unverified_source_falls_back(self):
+        sources = (('', False), ('main', False), ('a' * 39, False), ('A' * 40, False), ('0' * 40, False),
+                   ('a' * 40 + '\n', False), ('a' * 40, True), ('a' * 40, 'false'), ('a' * 40, None))
+        for sha, dirty in sources:
+            with self.subTest(sha=sha, dirty=dirty):
+                result = self.spm_scope(self.shared_spm_env(), QUALIFIED_SPM_LOCK, QUALIFIED_SPM_PROJECT,
+                                        QUALIFIED_SPM_TOOLCHAIN, source_sha=sha, source_dirty=dirty)
+                self.assertEqual(result['spm_cache_profile_effective'], 'scheme')
+        missing = metadata.spm_cache_scope(self.shared_spm_env(), QUALIFIED_SPM_LOCK,
+                                            QUALIFIED_SPM_PROJECT, QUALIFIED_SPM_TOOLCHAIN)
+        self.assertEqual(missing['spm_cache_profile_effective'], 'scheme')
+
+    def test_metadata_qualifies_the_actual_commit_and_tracked_source_state(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / metadata.LOCK).parent.mkdir(parents=True)
+            (root / metadata.LOCK).write_text('fixture lock')
+            (root / 'iosApp/project.yml').write_text('fixture project')
+            for status, expected_dirty in (('', False), (' M iosApp/project.yml', True)):
+                def command(*args, cwd=None):
+                    if args == ('git', 'rev-parse', 'HEAD'):
+                        return 'a' * 40
+                    if args == ('git', 'rev-parse', 'HEAD^{tree}'):
+                        return 'b' * 40
+                    if args == ('git', 'status', '--porcelain', '--untracked-files=no'):
+                        return status
+                    return 'fixture toolchain'
+                with self.subTest(status=status), patch.object(metadata, 'command', command), \
+                        patch.object(metadata, 'toolchains', return_value={'Silo': {'xcode_build': '27A266a'}}), \
+                        patch.object(metadata, 'spm_cache_scope', wraps=metadata.spm_cache_scope) as scope:
+                    result = metadata.metadata(root, self.shared_spm_env())
+                self.assertEqual(scope.call_args.kwargs, {'source_sha': 'a' * 40, 'source_dirty': expected_dirty})
+                self.assertEqual(result['source_dirty'], str(expected_dirty).lower())
+
+    def test_unknown_spm_profile_fails_before_source_or_toolchain_inspection(self):
+        for profile in ('shared', 'SHARED_QUALIFIED', 'shared_qualified\nother=value', ''):
+            env = {**self.shared_spm_env(), 'SILO_SPM_CACHE_PROFILE': profile}
+            with self.subTest(profile=profile), patch.dict(os.environ, env, clear=True), \
+                    patch.object(sys, 'argv', ['metadata', '--validate-controls']), \
+                    patch.object(metadata, 'metadata', side_effect=AssertionError('Source inspection started')), \
+                    patch.object(metadata, 'command', side_effect=AssertionError('Toolchain inspection started')):
+                with self.assertRaises(ValueError):
+                    metadata.main()
+
+    def test_benchmark_marker_reports_the_measured_scope_even_after_requested_profile_falls_back(self):
+        result = {'source_sha': 'a' * 40, 'cache_namespace': 'v1', 'source_dirty': 'false',
+                  'lock_sha256': QUALIFIED_SPM_LOCK, 'build_config_sha256': 'c' * 64,
+                  'toolchain_key': QUALIFIED_SPM_TOOLCHAIN,
+                  'toolchain_json': json.dumps({'Silo': {'xcode_build': '27A266a'}}),
+                  'spm_cache_profile_requested': 'shared_qualified'}
+        profiles = (('shared_qualified', 'shared-qualified-v1', 'SiloMac', QUALIFIED_SPM_PROJECT,
+                     QUALIFIED_SPM_TOOLCHAIN),
+                    ('scheme', 'Silo', 'Silo', '0' * 64, QUALIFIED_SPM_TOOLCHAIN),
+                    ('scheme', 'Silo', 'Silo', QUALIFIED_SPM_PROJECT, '0' * 24))
+        for effective, scope, owner, project, toolchain in profiles:
+            fields = {'spm_cache_profile_effective': effective, 'spm_cache_scope': scope,
+                      'spm_cache_save_owner': owner}
+            with self.subTest(effective=effective, project=project, toolchain=toolchain):
+                marker = metadata.benchmark({**result, 'project_yml_sha256': project, 'toolchain_key': toolchain},
+                                            self.shared_spm_env())
+                self.assertEqual(marker['spm_cache_profile_requested'], 'shared_qualified')
+                for key, value in fields.items():
+                    self.assertEqual(marker[key], value)
+                self.assertTrue(marker['timing_eligible'])
 
 
     def compilation_env(self):

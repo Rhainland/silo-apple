@@ -57,6 +57,11 @@ on:
         description: Enable Xcode compilation cache and diagnostics for an optimized derived_data benchmark
         type: boolean
         default: false
+      spm_cache_profile:
+        description: Select the measured shared package graph or a per-scheme control
+        type: choice
+        default: shared_qualified
+        options: [scheme, shared_qualified]
   # release.yml calls this to gate TestFlight uploads on the full suite.
   workflow_call:
     inputs:
@@ -102,6 +107,12 @@ jobs:
       SILO_CACHE_MODE: ${{ (inputs.baseline_ref || inputs.benchmark_variant == 'baseline') && 'off' || inputs.cache_mode || 'dependencies' }}
       SILO_CACHE_NAMESPACE: ${{ inputs.cache_namespace || 'production' }}
       SILO_COMPILATION_CACHE_ENABLED: ${{ inputs.compilation_cache && 'true' || 'false' }}
+      SILO_SPM_CACHE_PROFILE: ${{ github.event_name == 'workflow_dispatch' && inputs.spm_cache_profile || 'shared_qualified' }}
+      SILO_RELEASE_GATE: ${{ inputs.release_gate && 'true' || 'false' }}
+      SILO_PULL_REQUEST_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+      SILO_SPM_CACHE_SAVE_OWNER: >-
+        ${{ (inputs.ios_only || inputs.baseline_ref || inputs.benchmark_platform == 'ios') && 'Silo' ||
+            inputs.benchmark_platform == 'tvos' && 'SiloTV' || 'SiloMac' }}
       SILO_SOURCE_PACKAGES_PATH: ${{ github.workspace }}/source/.ci-cache/packages
       SILO_DERIVED_DATA: ${{ (inputs.baseline_ref || inputs.benchmark_variant == 'baseline') && '/tmp/silo-derived' || format('{0}/source/.ci-cache/derived/{1}', github.workspace, matrix.scheme) }}
       PLATFORM: ${{ matrix.platform }}
@@ -157,7 +168,10 @@ jobs:
           lock-key: ${{ steps.metadata.outputs.lock_sha256 }}
           project-key: ${{ steps.metadata.outputs.build_config_sha256 }}-xcodegen2.43.0
           source-sha: ${{ steps.metadata.outputs.source_sha }}
+          source-dirty: ${{ steps.metadata.outputs.source_dirty }}
           scheme: ${{ matrix.scheme }}
+          spm-profile: ${{ steps.metadata.outputs.spm_cache_profile_effective }}
+          project-spec-key: ${{ steps.metadata.outputs.project_yml_sha256 }}
           derived-profile: ${{ steps.metadata.outputs.compilation_cache_profile }}
       - name: Resolve locked packages once
         if: env.SILO_BENCH_VARIANT != 'baseline'
@@ -200,10 +214,12 @@ jobs:
               ;;
           esac
           runtime_version=$(xcrun --sdk "$sdk" --show-sdk-version)
+          runtime_inventory="$RUNNER_TEMP/apple-simulator-runtimes.json"
           find_runtime() {
-            xcrun simctl list runtimes --json | jq -r --arg version "$runtime_version" --arg prefix "$runtime_prefix" \
+            xcrun simctl list runtimes --json > "$runtime_inventory"
+            jq -r --arg version "$runtime_version" --arg prefix "$runtime_prefix" \
               '[.runtimes[] | select(.isAvailable and .version == $version and
-                (.identifier | startswith($prefix)))][0].identifier // empty'
+                (.identifier | startswith($prefix)))][0].identifier // empty' "$runtime_inventory"
           }
           runtime_id=$(find_runtime)
           if [ -z "$runtime_id" ]; then
@@ -216,8 +232,11 @@ jobs:
           fi
           simulator_id=$(xcrun simctl create "Silo-Player-Regression-$PLATFORM" \
             "$device_type" "$runtime_id")
-          echo "SILO_SIMULATOR_ID=$simulator_id" >> "$GITHUB_ENV"
-          echo "SILO_TEST_DESTINATION=platform=$destination_platform,id=$simulator_id" >> "$GITHUB_ENV"
+          {
+            echo "SILO_SIMULATOR_ID=$simulator_id"
+            echo "SILO_TEST_RUNTIME_IDENTIFIER=$runtime_id"
+            echo "SILO_TEST_DESTINATION=platform=$destination_platform,id=$simulator_id"
+          } >> "$GITHUB_ENV"
           xcrun simctl boot "$simulator_id"
           xcrun simctl bootstatus "$simulator_id" -b
       - name: Generate Xcode project (baseline sequence)
@@ -351,18 +370,24 @@ jobs:
           lock-key: ${{ steps.metadata.outputs.lock_sha256 }}
           project-key: ${{ steps.metadata.outputs.build_config_sha256 }}-xcodegen2.43.0
           source-sha: ${{ steps.metadata.outputs.source_sha }}
+          source-dirty: ${{ steps.metadata.outputs.source_dirty }}
           scheme: ${{ matrix.scheme }}
+          spm-profile: ${{ steps.metadata.outputs.spm_cache_profile_effective }}
+          project-spec-key: ${{ steps.metadata.outputs.project_yml_sha256 }}
           derived-profile: ${{ steps.metadata.outputs.compilation_cache_profile }}
           save-cache: 'true'
-          # Binary artifacts can differ by platform, so each scheme saves its complete graph.
-          save-dependencies: 'true'
+          # The qualified shared graph has one selected save owner.
+          save-dependencies: ${{ steps.metadata.outputs.spm_cache_profile_effective != 'shared_qualified' || matrix.scheme == steps.metadata.outputs.spm_cache_save_owner }}
           spm-cache-hit: ${{ steps.cache.outputs.spm-cache-hit }}
           derived-cache-hit: ${{ steps.cache.outputs.derived-cache-hit }}
       - name: Record benchmark metadata
         if: always()
         env:
+          SILO_PREPARED_SIMULATOR_RUNTIMES: ${{ matrix.action == 'test' && env.SILO_BENCH_VARIANT != 'baseline' && format('{0}/apple-simulator-runtimes.json', runner.temp) || '' }}
           SILO_XCODEGEN_CACHE_HIT: ${{ steps.xcodegen.outputs.cache-hit }}
           SILO_SPM_CACHE_HIT: ${{ steps.cache.outputs.spm-cache-hit }}
+          SILO_SPM_CACHE_PROFILE_EFFECTIVE: ${{ steps.cache.outputs.spm-cache-profile }}
+          SILO_SPM_CACHE_SCOPE: ${{ steps.cache.outputs.spm-cache-scope }}
           SILO_DERIVED_CACHE_HIT: ${{ steps.cache.outputs.derived-cache-hit }}
           SILO_DERIVED_CACHE_RESTORED: ${{ steps.cache.outputs.derived-cache-restored }}
           SILO_DERIVED_CACHE_KEY: ${{ steps.cache.outputs.derived-cache-key }}

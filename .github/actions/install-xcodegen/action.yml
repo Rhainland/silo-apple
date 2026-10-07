@@ -26,7 +26,7 @@ runs:
         CACHE_NAMESPACE: ${{ inputs.namespace }}
       run: |
         set -euo pipefail
-        [[ "$CACHE_NAMESPACE" =~ ^[a-z0-9_-]{1,32}$ ]]
+        [[ "$CACHE_NAMESPACE" =~ ^[a-z0-9_-]{1,32}$ ]] || { echo "::error::Invalid cache namespace"; exit 1; }
         echo "path=$RUNNER_TEMP/xcodegen-2.43.0.zip" >> "$GITHUB_OUTPUT"
     - name: Restore pinned XcodeGen archive
       if: inputs.cache == 'true'
