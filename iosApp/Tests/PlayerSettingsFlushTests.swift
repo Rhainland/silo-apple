@@ -563,9 +563,12 @@ final class PlayerSettingsFlushTests: XCTestCase {
         let transport = FakeSettingsTransport()
         // One 500, then success.
         transport.failNextWrites(1, with: .server(status: 503, code: "unavailable", message: nil))
+        // Let the failure return, but hold its automatic retry until the
+        // pending-state assertion runs, even if the main actor resumes late.
+        await transport.writeGate.block(afterUnblockedEntries: 1)
         let flusher = PlayerSettingsFlusher(
             transport: transport,
-            debounce: .milliseconds(20),
+            debounce: .seconds(30),
             retryPolicy: .init(maximumAutomaticRetries: 3, base: .milliseconds(30), maximum: .milliseconds(60))
         )
 
@@ -575,6 +578,10 @@ final class PlayerSettingsFlushTests: XCTestCase {
         // The op survived its failure rather than being dropped.
         XCTAssertTrue(flusher.hasPendingWrites, "a 5xx must not discard the user's setting")
 
+        try await waitUntil("the automatic retry reaches the transport") {
+            await transport.writeGate.hasBlockedEntry
+        }
+        await transport.writeGate.release()
         try await waitUntil("the automatic retry lands") { transport.writes().count == 2 }
         let writes = transport.writes()
         XCTAssertEqual(writes[1].value, .bool(false))
@@ -2497,12 +2504,16 @@ final class FakeSettingsTransport: PlayerSettingsTransport, @unchecked Sendable 
 
 actor SettingsWriteGate {
     private var isBlocked = false
+    private var remainingUnblockedEntries = 0
+    private(set) var hasBlockedEntry = false
     private var hasEntered = false
     private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
     private var entryWaiters: [CheckedContinuation<Void, Never>] = []
 
-    func block() {
+    func block(afterUnblockedEntries: Int = 0) {
         isBlocked = true
+        remainingUnblockedEntries = afterUnblockedEntries
+        hasBlockedEntry = false
     }
 
     func waitIfBlocked() async {
@@ -2513,6 +2524,11 @@ actor SettingsWriteGate {
             observer.resume()
         }
         guard isBlocked else { return }
+        if remainingUnblockedEntries > 0 {
+            remainingUnblockedEntries -= 1
+            return
+        }
+        hasBlockedEntry = true
         await withCheckedContinuation { continuation in
             releaseWaiters.append(continuation)
         }
