@@ -1472,16 +1472,16 @@ final class PlayerSettings {
         return Data(raw.utf8).base64EncodedString()
     }
 
-    private func migrationKey(for scopeID: String) -> String {
+    private static func migrationKey(for scopeID: String) -> String {
         "player.serverDeviceSettingsMigration.\(scopeID)"
     }
 
     private func isMigrationComplete(for scopeID: String) -> Bool {
-        defaults.bool(forKey: migrationKey(for: scopeID))
+        defaults.bool(forKey: Self.migrationKey(for: scopeID))
     }
 
     private func markMigrationComplete(for scopeID: String) {
-        defaults.set(true, forKey: migrationKey(for: scopeID))
+        defaults.set(true, forKey: Self.migrationKey(for: scopeID))
         defaults.removeObject(forKey: retiredMigrationKey(for: scopeID))
     }
 
@@ -1535,7 +1535,7 @@ final class PlayerSettings {
             forKey: key(Keys.inheritedSubtitleAppearance)
         )
         defaults.set(false, forKey: key(Keys.subtitleUsesDeviceAppearanceOverride))
-        defaults.removeObject(forKey: key(Keys.deviceOverriddenKeys))
+        defaults.set([String](), forKey: key(Keys.deviceOverriddenKeys))
     }
 
     private static func cacheKey(_ baseKey: String) -> String {
@@ -1603,9 +1603,22 @@ final class PlayerSettings {
         )
     }
 
-    private static func cachedOverriddenKeys(_ defaults: UserDefaults) -> Set<SettingKey> {
-        let stored = defaults.stringArray(forKey: cacheKey(Keys.deviceOverriddenKeys)) ?? []
-        return Set(stored.compactMap(SettingKey.init(rawValue:)))
+    /// A scope a build from before this record already synced (its one-time
+    /// import has run) has no record of which values are this device's own.
+    /// Until its next refresh says, each synced key counts as the device's
+    /// own, so "Use Profile Setting" is offered and can clear it: clearing a
+    /// value the device never held changes nothing, while hiding one it does
+    /// hold leaves no way back.
+    // Internal so the focused tests can check an upgraded scope.
+    static func cachedOverriddenKeys(
+        _ defaults: UserDefaults,
+        scopeID: String? = currentScopeIdentifier
+    ) -> Set<SettingKey> {
+        if let stored = defaults.stringArray(forKey: cacheKey(Keys.deviceOverriddenKeys, scopeID: scopeID)) {
+            return Set(stored.compactMap(SettingKey.init(rawValue:)))
+        }
+        guard let scopeID, defaults.bool(forKey: migrationKey(for: scopeID)) else { return [] }
+        return Set(SettingKey.playerDeviceSettings)
     }
 
     private static func cachedBufferAhead(_ defaults: UserDefaults) -> BufferAheadMode {

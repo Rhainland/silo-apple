@@ -1576,6 +1576,41 @@ final class PlayerSettingsFlushTests: XCTestCase {
         XCTAssertEqual(harness.settings.deviceChangedSettingCount, 1)
     }
 
+    /// A build from before the override record synced this scope without
+    /// saying which values are the device's own. Until the next refresh,
+    /// every synced row counts as the device's own, so Use Profile Setting
+    /// stays available rather than looking already chosen.
+    func testAnUpgradedScopeWithoutAnOverrideRecordCountsEverySyncedKeyAsTheDevices() throws {
+        let suiteName = "settings-upgraded-scope-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { UserDefaults().removePersistentDomain(forName: suiteName) }
+        let scopeID = "server-a|profile-1|device"
+
+        XCTAssertEqual(PlayerSettings.cachedOverriddenKeys(defaults, scopeID: scopeID), [], "a scope never synced holds nothing")
+
+        defaults.set(true, forKey: "player.serverDeviceSettingsMigration.\(scopeID)")
+        XCTAssertEqual(
+            PlayerSettings.cachedOverriddenKeys(defaults, scopeID: scopeID),
+            Set(SettingKey.playerDeviceSettings)
+        )
+
+        defaults.set(
+            [SettingKey.playbackAudioLanguage.rawValue],
+            forKey: "player.serverDeviceSettings.\(scopeID).player.deviceOverriddenKeys"
+        )
+        XCTAssertEqual(
+            PlayerSettings.cachedOverriddenKeys(defaults, scopeID: scopeID),
+            [.playbackAudioLanguage],
+            "a recorded answer wins"
+        )
+    }
+
+    func testAFreshCacheStartsWithNoDeviceValues() throws {
+        let harness = try PlayerSettingsHarness()
+        XCTAssertFalse(harness.settings.hasDeviceOverride(.audioLanguage))
+        XCTAssertEqual(harness.settings.deviceChangedSettingCount, 0)
+    }
+
     func testSubtitleAppearanceIsSentAsAnObjectWithItsCamelCaseKeys() async throws {
         let harness = try PlayerSettingsHarness()
         await harness.settings.refreshFromServer()
