@@ -114,6 +114,7 @@ jobs:
         working-directory: source
     env:
       SILO_BENCH_VARIANT: ${{ inputs.baseline_ref && 'baseline' || inputs.benchmark_variant || 'optimized' }}
+      SILO_BASELINE_REF: ${{ inputs.baseline_ref }}
       SILO_BENCHMARK_SOURCE_REF: ${{ inputs.benchmark_source_ref }}
       SILO_CACHE_MODE: ${{ (inputs.baseline_ref || inputs.benchmark_variant == 'baseline') && 'off' || inputs.cache_mode || 'dependencies' }}
       SILO_CACHE_NAMESPACE: ${{ inputs.cache_namespace || 'production' }}

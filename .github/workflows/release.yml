@@ -111,6 +111,7 @@ jobs:
     if: ${{ !cancelled() && needs.regression-gate.result == 'success' && needs.setup.result == 'success' }}
     permissions:
       contents: write
+      actions: read
     uses: ./.github/workflows/release-source.yml
     with:
       release_tag: ${{ github.event_name == 'push' && github.ref_name || format('source-{0}', github.sha) }}

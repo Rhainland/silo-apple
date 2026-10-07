@@ -97,6 +97,47 @@ class MetadataTests(unittest.TestCase):
                 metadata.validate_controls({'SILO_CACHE_NAMESPACE': value})
         self.assertEqual(metadata.validate_controls({'SILO_CACHE_NAMESPACE': 'bench-1'}), 'bench-1')
 
+    def test_actual_cli_rejects_two_requested_refs_before_source_or_toolchain_work(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            for baseline, source in [('a' * 40, 'b' * 40), ('a' * 40, 'a' * 40),
+                                     ('refs/tags/historical-baseline', 'b' * 40)]:
+                for option in ('--validate-controls', '--outputs', '--benchmark'):
+                    with self.subTest(baseline=baseline, source=source, option=option):
+                        result = subprocess.run(
+                            [sys.executable, str(Path(metadata.__file__).resolve()),
+                             '--root', str(root / 'missing-source'), option],
+                            cwd=root, env={'PATH': str(root / 'no-tools'),
+                                           'SILO_BASELINE_REF': baseline,
+                                           'SILO_BENCHMARK_SOURCE_REF': source},
+                            capture_output=True, text=True)
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertIn('baseline_ref and benchmark_source_ref cannot be combined',
+                                      result.stderr)
+                        self.assertEqual(result.stdout, '')
+
+    def test_actual_control_cli_preserves_single_ref_and_explicit_variant_inputs(self):
+        valid = [{}, {'SILO_BASELINE_REF': 'refs/tags/historical-baseline',
+                      'SILO_BENCH_VARIANT': 'baseline', 'SILO_CACHE_MODE': 'off'},
+                 {'SILO_BENCHMARK_SOURCE_REF': 'a' * 40, 'SILO_BENCH_VARIANT': 'optimized'},
+                 {'SILO_BENCHMARK_SOURCE_REF': 'a' * 40, 'SILO_BENCH_VARIANT': 'baseline',
+                  'SILO_CACHE_MODE': 'off'},
+                 {'SILO_BASELINE_REF': 'historical', 'SILO_BENCHMARK_SOURCE_REF': ''},
+                 {'SILO_BASELINE_REF': '', 'SILO_BENCHMARK_SOURCE_REF': 'a' * 40},
+                 {'SILO_BASELINE_REF': '', 'SILO_BENCHMARK_SOURCE_REF': ''}]
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            for env in valid:
+                with self.subTest(env=env):
+                    result = subprocess.run(
+                        [sys.executable, str(Path(metadata.__file__).resolve()),
+                         '--root', str(root / 'missing-source'), '--validate-controls'],
+                        cwd=root, env={'PATH': str(root / 'no-tools'), **env},
+                        capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(result.stdout, '')
+                    self.assertEqual(result.stderr, '')
+
     def test_shipping_metadata_rejects_diagnostic_probes_before_source_inspection(self):
         metadata.validate_controls({'SILO_CACHE_PROBE': 'none'})
         for probe in ('fail_test', 'graph_only', '', 'NONE', 'none\nother=value'):

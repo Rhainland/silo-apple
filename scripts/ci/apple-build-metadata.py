@@ -80,6 +80,8 @@ def spm_cache_scope(env, lock_sha256, project_sha256, toolchain_key='', *,
 
 
 def validate_controls(env):
+    if env.get('SILO_BASELINE_REF') and env.get('SILO_BENCHMARK_SOURCE_REF'):
+        raise ValueError('baseline_ref and benchmark_source_ref cannot be combined')
     if env.get('SILO_CACHE_PROBE', 'none') != 'none':
         raise ValueError('Diagnostic cache probes are unavailable in this workflow')
     namespace = env.get('SILO_CACHE_NAMESPACE', 'v1')
