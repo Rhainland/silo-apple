@@ -257,10 +257,18 @@ jobs:
               CODE_SIGNING_ALLOWED=NO | tee /tmp/player-validation.log
           fi
       - name: Package simulator tests for focused visual verification
-        if: matrix.action == 'test' && matrix.platform == 'iOS' && !inputs.baseline_ref
+        if: >-
+          matrix.action == 'test' && matrix.platform == 'iOS' &&
+          !inputs.baseline_ref && !inputs.release_gate &&
+          ((github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+           github.event_name == 'workflow_dispatch')
         run: ditto -c -k --keepParent "$SILO_DERIVED_DATA/Build/Products" /tmp/Silo-simulator-tests.zip
       - name: Upload compiled simulator tests
-        if: matrix.action == 'test' && matrix.platform == 'iOS' && !inputs.baseline_ref
+        if: >-
+          matrix.action == 'test' && matrix.platform == 'iOS' &&
+          !inputs.baseline_ref && !inputs.release_gate &&
+          ((github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+           github.event_name == 'workflow_dispatch')
         uses: actions/upload-artifact@v4
         with:
           name: Silo-simulator-tests
