@@ -1084,6 +1084,9 @@ struct ContentView: View {
         #endif
         #if !os(tvOS)
         Task { await DownloadManager.shared.onAppActive() }
+        // Libraries hidden or shown again on another device. tvOS reloads
+        // its library tabs on its own return from background.
+        Task { _ = try? await StartupContentPrefetcher.fetchUserLibraries(reusingRecent: false) }
         #endif
     }
 
@@ -3021,12 +3024,13 @@ struct MainTabView: View {
     @ViewBuilder
     private func routeContent(for route: Route) -> some View {
         switch route {
-        case .libraryCollection(let libraryId, let collectionId, let title, let kind):
+        case .libraryCollection(let libraryId, let collectionId, let title, let kind, let mediaScope):
             LibraryCollectionDetailView(
                 libraryId: libraryId,
                 collectionId: collectionId,
                 title: title,
-                kind: kind
+                kind: kind,
+                mediaScope: mediaScope
             )
         case .itemDetail(let contentId, _, let libraryId, let context):
             ItemDetailView(contentId: contentId, libraryId: libraryId, resumeContext: context)

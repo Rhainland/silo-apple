@@ -630,6 +630,44 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
         XCTAssertEqual(spec.aetherStartPosition, 62.0)
     }
 
+    func testProgressiveRemuxStartsAetherAtTheStreamOrigin() throws {
+        var object = try PlaybackV3FixtureTestSupport.v2DecisionObject(bundleClass: Self.self)
+        var planObject = try XCTUnwrap(object["playback_plan"] as? [String: Any])
+        planObject["delivery"] = PlaybackProtocolV3.PlanDelivery.remuxProgressive
+        var timeline = try XCTUnwrap(planObject["timeline"] as? [String: Any])
+        timeline["source_start_seconds"] = 1004.8
+        timeline["stream_origin_seconds"] = 1002.0
+        timeline["player_start_seconds"] = 2.8
+        timeline["timeline_offset_seconds"] = 1002.0
+        planObject["timeline"] = timeline
+        object["playback_plan"] = planObject
+
+        let response = try PlaybackV3FixtureTestSupport.v2Decision(object)
+        guard case .playable(let plan, let sessionID) = response.validatedForApple() else {
+            return XCTFail("Expected a playable fixture")
+        }
+        let source = URL(string: "https://dev.example.test/api/v2/stream/session?seek=1004.8")
+        for resumeSourcePosition in [nil, 1100.0] {
+            let spec = try AetherLoadSpec(
+                validating: plan,
+                sessionID: sessionID,
+                matchContentEnabled: false,
+                sourceURLOverride: source,
+                requestHeaders: ["Authorization": "Bearer test"],
+                resumeSourcePosition: resumeSourcePosition,
+                panelIsInHDRMode: false
+            )
+
+            // The forward-only stream cannot serve Aether's start seek.
+            XCTAssertEqual(spec.aetherStartPosition, 0)
+            // Progress still reports the source position the stream begins at.
+            XCTAssertEqual(spec.timeline.sourcePosition(forPlayerTime: 0), 1002.0)
+            // The fragmented container reports seconds; the engine needs the
+            // runtime that remains or its next play() rewinds to zero.
+            XCTAssertEqual(spec.options.declaredDurationSeconds, 7200 - 1002.0)
+        }
+    }
+
     func testServerSubtitleArtifactsReachLoadSpecThroughProductionResolver() throws {
         let object = try PlaybackV3FixtureTestSupport.v2DecisionObject(bundleClass: Self.self)
         let originalPlan = try XCTUnwrap(object["playback_plan"] as? [String: Any])
@@ -1195,6 +1233,26 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
         controller.play()
         let player = controller.engine.currentAVPlayer
         let item = controller.engine.currentAVPlayerItem
+
+        // The initial packet harvest must finish before the switch checks start.
+        controller.selectSubtitleTrack(id: firstID)
+        XCTAssertFalse(controller.engine.isLoadingSubtitles, "Embedded startup must not start a file download")
+        try await waitUntil("the fixture's initial embedded cues are ready", timeout: .seconds(10)) {
+            controller.engine.subtitleCues.contains { $0.text?.contains("pos(20,30)") == true }
+        }
+        XCTAssertEqual(controller.engine.activeSubtitleTrackIndex, 2)
+        XCTAssertEqual(controller.activeLoadEpoch, epoch)
+        XCTAssertTrue(controller.engine.currentAVPlayer === player)
+        XCTAssertTrue(controller.engine.currentAVPlayerItem === item)
+
+        controller.selectSubtitleTrack(id: nil)
+        XCTAssertNil(controller.engine.activeSubtitleTrackIndex)
+        XCTAssertTrue(controller.engine.subtitleCues.isEmpty, "Startup cues must clear before switching")
+        XCTAssertFalse(controller.engine.isLoadingSubtitles)
+        XCTAssertEqual(controller.activeLoadEpoch, epoch)
+        XCTAssertTrue(controller.engine.currentAVPlayer === player)
+        XCTAssertTrue(controller.engine.currentAVPlayerItem === item)
+
         for (appID, streamIndex, marker) in [(firstID, 2, "pos(20,30)"), (secondID, 3, "pos(220,90)"),
                                             (firstID, 2, "pos(20,30)")] {
             let position = controller.engine.clock.currentTime

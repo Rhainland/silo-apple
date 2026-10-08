@@ -386,7 +386,15 @@ private struct ItemDetailPhoneContent: View {
                 Color.clear
             }
         }
+        #if os(macOS)
+        // The Mac's pages share one charcoal canvas, so a loading detail
+        // page must not flash black. The page shows its own title, and the
+        // toolbar would otherwise fall back to the window's name.
+        .siloPageBackground()
+        .toolbar(removing: .title)
+        #else
         .siloBackground()
+        #endif
         #if os(iOS)
         // Detail chrome and selector checks stay monochrome over per-title
         // artwork; the app accent blue looked unrelated to this visual system.
@@ -1062,13 +1070,7 @@ private struct ItemDetailPhoneContent: View {
 
     private func nextUpEpisode(for detail: ItemDetail) -> EpisodeListItem? {
         guard detail.type == "series" else { return nil }
-        if let inProgress = viewModel.episodes.first(where: { $0.userData?.isInProgress == true }) {
-            return inProgress
-        }
-        if let unwatched = viewModel.episodes.first(where: { !($0.userData?.played ?? false) }) {
-            return unwatched
-        }
-        return viewModel.episodes.first
+        return viewModel.episodes.preferredResumeEpisode()
     }
 
     private func takePlaybackReturn() -> SeriesPlaybackReturn? {
