@@ -641,7 +641,8 @@ final class PlayerSettingsFlushTests: XCTestCase {
         flusher.enqueue(.playerSubtitleSyncMs, value: .int(-250))
         await flusher.flushNow()
         try await waitUntil("both automatic retries run") { transport.writes().count == 3 }
-        try await waitUntil("the key is held") { flusher.heldKeys == [.playerSubtitleSyncMs] }
+        // The fake records an attempt before the drain settles its held state.
+        try await waitUntil("the key is held", timeout: .seconds(10)) { flusher.heldKeys == [.playerSubtitleSyncMs] }
 
         // Budget spent: the change is kept, on disk too, and nothing sends it
         // on its own — not even an explicit flush.
