@@ -1499,6 +1499,30 @@ final class PlayerSettingsFlushTests: XCTestCase {
         )
     }
 
+    /// The Playback screen's HDR switch, through the binding the screen uses:
+    /// the local value flips at once — the capability snapshot reads it at
+    /// the next playback start — and exactly one write of the device-only key
+    /// goes to the server. Dolby Vision reads Off while HDR is off, because
+    /// it is not offered then, and comes back with HDR.
+    func testTheHDRSwitchStoresADeviceOverrideOfTheHDRKey() async throws {
+        let harness = try PlayerSettingsHarness()
+        let viewModel = SettingsViewModel(playerSettings: harness.settings)
+        XCTAssertTrue(viewModel.hdrEnabled, "precondition: the contract default is on")
+        XCTAssertTrue(viewModel.dolbyVisionEnabled)
+
+        viewModel.hdrEnabled = false
+        XCTAssertFalse(harness.settings.hdrEnabled)
+        XCTAssertFalse(viewModel.dolbyVisionEnabled, "Dolby Vision is not offered while HDR is off")
+        await harness.settings.flushPendingDeviceSettings()
+
+        XCTAssertEqual(harness.transport.writes().map(\.key), [.playerHdrEnabled])
+        XCTAssertEqual(harness.transport.writes().first?.value, .bool(false))
+        XCTAssertTrue(harness.transport.deletes().isEmpty)
+
+        viewModel.hdrEnabled = true
+        XCTAssertTrue(viewModel.dolbyVisionEnabled, "the stored Dolby Vision choice is kept")
+    }
+
     func testNoAudioLanguagePreferenceClearsTheDeviceValueInsteadOfStoringNull() async throws {
         let harness = try PlayerSettingsHarness()
         harness.settings.setAudioLanguage("ja")
