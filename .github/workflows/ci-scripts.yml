@@ -2,40 +2,8 @@ name: CI scripts
 
 on:
   pull_request:
-    paths:
-      - 'scripts/ci/**'
-      - 'fastlane/Fastfile'
-      - '.github/workflows/release.yml'
-      - '.github/workflows/release-source.yml'
-      - '.github/workflows/sideload-ipa.yml'
-      - 'scripts/sync-apiv2-fixtures*.sh'
-      - '.github/workflows/ci-scripts.yml'
-      - '.github/workflows/player-regression.yml'
-      - 'iosApp/project.yml'
-      - 'iosApp/Signing/**'
-      - 'iosApp/iosApp/**'
-      - 'iosApp/TopShelf/**'
-      - 'iosApp/NotificationService/**'
-      - 'iosApp/DownloadsActivity/**'
-      - 'iosApp/Tests/**'
   push:
     branches: [main]
-    paths:
-      - 'scripts/ci/**'
-      - 'fastlane/Fastfile'
-      - '.github/workflows/release.yml'
-      - '.github/workflows/release-source.yml'
-      - '.github/workflows/sideload-ipa.yml'
-      - 'scripts/sync-apiv2-fixtures*.sh'
-      - '.github/workflows/ci-scripts.yml'
-      - '.github/workflows/player-regression.yml'
-      - 'iosApp/project.yml'
-      - 'iosApp/Signing/**'
-      - 'iosApp/iosApp/**'
-      - 'iosApp/TopShelf/**'
-      - 'iosApp/NotificationService/**'
-      - 'iosApp/DownloadsActivity/**'
-      - 'iosApp/Tests/**'
   workflow_dispatch:
 
 permissions:

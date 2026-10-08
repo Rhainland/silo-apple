@@ -35,7 +35,7 @@ ROOT_DOCUMENTATION = frozenset({"README.md", "CONTRIBUTING.md", "AGENTS.md", "SE
 # trees must retain every other path, mode and blob from the reviewed graph.
 TEST_SOURCE_OWNERSHIP = "scripts/ci/apple-test-source-ownership.json"
 TEST_SOURCE_OWNERSHIP_SHA256 = "cfbabb4be7fd3f3316cea06e14590dc347a5dce607ba39c9616046f642c6dfb7"
-TEST_SOURCE_INPUTS_SHA256 = "a0817e95b74c5f712cfb92f093a81523fc1a38a778a23aa2b590824c674522e6"
+TEST_SOURCE_INPUTS_SHA256 = "ccffff0f25127480afa371b6fdc7613b914efa532f5dcf51aa52a896fb49f91e"
 SELECTOR_FILES = ("scripts/ci/select-apple-platforms.py", "scripts/ci/select-apple-platforms.test.py", TEST_SOURCE_OWNERSHIP)
 SELECTOR_CONTRACT = "scripts/ci/apple-test-selector-contract.json"
 
