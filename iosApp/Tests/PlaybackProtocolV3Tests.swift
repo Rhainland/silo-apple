@@ -2072,6 +2072,8 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertEqual(tracks.filter(\.isSelected).map(\.trackId), [1])
     }
 
+    /// Direct play and the progressive remux run through Aether's own demux,
+    /// whose audio tracks are the file's, so they stay authoritative there.
     func testV3AudioPickerKeepsAetherInventoryWhenAvailable() {
         let aetherTrack = PlayerTrack(
             trackId: 7,
@@ -2096,14 +2098,81 @@ final class PlaybackProtocolV3Tests: XCTestCase {
             audioTracks: [makeAudio(index: 2, codec: "eac3", isDefault: true)]
         )
 
-        XCTAssertEqual(
-            ApplePlaybackV3PlanAdapter.audioPickerTracks(
-                aetherTracks: [aetherTrack],
-                plan: makePlan(selectedAudioIndex: 0),
-                version: version
-            ),
-            [aetherTrack]
+        for delivery in [
+            PlaybackProtocolV3.PlanDelivery.originalHTTP,
+            PlaybackProtocolV3.PlanDelivery.remuxProgressive,
+        ] {
+            XCTAssertEqual(
+                ApplePlaybackV3PlanAdapter.audioPickerTracks(
+                    aetherTracks: [aetherTrack],
+                    plan: makePlan(delivery: delivery, selectedAudioIndex: 0),
+                    version: version
+                ),
+                [aetherTrack],
+                delivery
+            )
+        }
+    }
+
+    /// Since AetherEngine 7.22 the remote-HLS bypass publishes AVPlayer's
+    /// packaged rendition as an audio track (ids from 400000). Server HLS
+    /// carries only the one stream the plan selected, so that row must not
+    /// replace the file's tracks or leak its id into a pick.
+    func testV3AudioPickerIgnoresBypassRenditionsOnServerHLS() {
+        let bypassRendition = PlayerTrack(
+            trackId: 400_000,
+            kind: .audio,
+            title: "EN (aac)",
+            lang: "en",
+            codec: "aac",
+            audioChannelCount: 2,
+            bitrate: nil,
+            isDefault: true,
+            isForced: false,
+            isHearingImpaired: false,
+            isExternal: false,
+            isSelected: true,
+            ffIndex: 400_000,
+            srcId: 0
         )
+        let version = makeVersion(
+            container: "mkv",
+            videoCodec: "hevc",
+            audioCodec: "truehd",
+            audioTracks: [
+                makeAudio(index: 1, codec: "truehd", isDefault: true),
+                makeAudio(index: 2, codec: "ac3", isDefault: false),
+            ]
+        )
+
+        for delivery in [
+            PlaybackProtocolV3.PlanDelivery.remuxHLS,
+            PlaybackProtocolV3.PlanDelivery.transcodeHLS,
+        ] {
+            let plan = makePlan(delivery: delivery, streamProtocol: "hls", selectedAudioIndex: 1)
+
+            let tracks = ApplePlaybackV3PlanAdapter.audioPickerTracks(
+                aetherTracks: [bypassRendition],
+                plan: plan,
+                version: version
+            )
+            XCTAssertEqual(tracks.map(\.trackId), [0, 1], delivery)
+            XCTAssertEqual(tracks.map(\.srcId), [0, 1], delivery)
+            XCTAssertEqual(tracks.map(\.ffIndex), [1, 2], delivery)
+            XCTAssertEqual(tracks.filter(\.isSelected).map(\.trackId), [1], delivery)
+
+            // Without a catalog version there is nothing server-addressable
+            // to offer, so the rendition is withheld rather than shown.
+            XCTAssertEqual(
+                ApplePlaybackV3PlanAdapter.audioPickerTracks(
+                    aetherTracks: [bypassRendition],
+                    plan: plan,
+                    version: nil
+                ),
+                [],
+                delivery
+            )
+        }
     }
 
     /// `convert` mounts an artifact exactly like `render` does, so every gate
