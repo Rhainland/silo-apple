@@ -125,9 +125,9 @@ enum StartupContentPrefetcher {
         let generation = profileScopedGeneration
         return {
             guard generation == profileScopedGeneration else { return }
-            invalidateHomeSectionsInFlight()
-            ResponseCache.shared.remove(CacheKey.homeSections)
-            NotificationCenter.default.post(name: .homeSectionsShouldRefresh, object: nil)
+            // Progress and watched state show on every derived list, not
+            // only Home: drop them all and refresh a mounted Home.
+            PersonalStateSync.invalidateDerivedLists()
         }
     }
 
@@ -335,6 +335,8 @@ enum StartupContentPrefetcher {
         }
     }
 
+    /// The libraries the active profile browses: every library it can open,
+    /// less the ones it hid from navigation (`ui.disabled_library_ids`).
     /// `reusingRecent: false` is for an explicit refresh by the user.
     static func fetchUserLibraries(reusingRecent: Bool = true) async throws -> LibrariesResponse {
         if reusingRecent, let recent = userLibraries.recentValue() { return recent }
@@ -342,7 +344,13 @@ enum StartupContentPrefetcher {
         #if os(iOS) || os(tvOS)
         let probe = PrefetchProbe.begin("user_libraries", isOriginator: !userLibraries.isInFlight)
         #endif
-        let task = userLibraries.join { try await SiloAPI.shared.libraries() }
+        let task = userLibraries.join {
+            async let hidden = HiddenLibraryPreference.hiddenLibraryIds()
+            let response = try await SiloAPI.shared.libraries()
+            return LibrariesResponse(
+                libraries: HiddenLibraryPreference.visibleLibraries(response.libraries, hiding: await hidden)
+            )
+        }
         let writeToken = userLibraries.writeToken
         do {
             let response = try await task.value
@@ -457,6 +465,11 @@ enum StartupContentPrefetcher {
     #endif
 
     static func fetchLibrarySections(libraryId: Int) async throws -> SectionsResponse {
+        try await fetchLibrarySectionsRead(libraryId: libraryId).response
+    }
+
+    /// Share the in-flight fetch while retaining its owner for follow-up section paging.
+    static func fetchLibrarySectionsRead(libraryId: Int) async throws -> APIv2LibrarySectionsRead {
         let generation = profileScopedGeneration
         let flight = librarySections[libraryId] ?? {
             let flight = SharedFetch<APIv2LibrarySectionsRead>()
@@ -488,7 +501,7 @@ enum StartupContentPrefetcher {
             #endif
             ResponseCache.shared.set(read.response, for: CacheKey.librarySections(libraryId), fetchedAt: writeToken)
             prefetchSectionArtwork(for: read.response, maxCount: maxSectionArtworkURLs)
-            return read.response
+            return read
         } catch {
             flight.finish(task, value: nil)
             #if os(iOS) || os(tvOS)
@@ -508,10 +521,11 @@ enum StartupContentPrefetcher {
     /// uses for page 2, so the prefetch and the live grid share one query.
     static func fetchBrowseFirstPage(
         libraryId: Int?,
-        state: CatalogFilterState = .none
+        state: CatalogFilterState = .none,
+        mediaScope: LibraryVideoScope? = nil
     ) async throws -> CatalogListPage {
         let generation = profileScopedGeneration
-        let key = CacheKey.browse(libraryId: libraryId, filterKey: state.cacheKeyFragment)
+        let key = CacheKey.browse(libraryId: libraryId, filterKey: state.cacheKeyFragment, mediaScope: mediaScope?.rawValue)
         let flight = browseFirstPages[key] ?? {
             let flight = SharedFetch<CatalogListPage>()
             browseFirstPages[key] = flight
@@ -527,14 +541,17 @@ enum StartupContentPrefetcher {
         )
         #endif
         let task = flight.join {
-            // iOS omits `type` (library_id already scopes the page); later
-            // pages follow this page's continuation.
+            // iOS omits `type` (library_id already scopes the page), except a
+            // mixed library's Movies/Series navigation scope, which is
+            // independent of optional filter groups. Later pages follow this
+            // page's continuation, which retains it.
             let query = CatalogQueryBuilder.build(
                 state,
                 libraryId: libraryId,
                 mediaType: .movie,
                 limit: browsePageSize,
-                includeType: false
+                includeType: false,
+                enforcedScope: mediaScope
             )
             return try await SiloAPI.shared.catalogPage(query)
         }

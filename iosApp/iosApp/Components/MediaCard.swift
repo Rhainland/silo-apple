@@ -59,6 +59,9 @@ struct MediaCard: View {
     let title: String
     let posterUrl: String
     var thumbhash: String? = nil
+    /// Catalog type ("movie", "series", "episode", …). Picks the glyph shown
+    /// when the poster cannot load.
+    var mediaType: String? = nil
     var year: Int? = nil
     /// Secondary caption line drawn in place of the year — episode cards pass
     /// "S01E02 · Pilot" so the code and episode title sit under the series
@@ -82,6 +85,9 @@ struct MediaCard: View {
     var focusedItemId: FocusState<String?>.Binding? = nil
 
     var contentId: String? = nil
+    /// An episode card's series and episode. When set, a tap opens the
+    /// series on that episode instead of loading the episode first.
+    var seriesContext: SeriesDetailContext? = nil
     var contextPlayTitle: String? = nil
     var contextDetailTitle: String? = nil
     var onOpenContextDetail: (() -> Void)? = nil
@@ -183,11 +189,19 @@ struct MediaCard: View {
         Group {
             if let contentId {
                 Button {
-                    router.presentItemDetail(
-                        contentId: contentId,
-                        libraryId: browseLibraryId,
-                        browseSource: detailBrowseSource
-                    )
+                    if let seriesContext {
+                        router.presentItemDetail(
+                            contentId: seriesContext.seriesContentId,
+                            libraryId: browseLibraryId,
+                            resumeContext: seriesContext
+                        )
+                    } else {
+                        router.presentItemDetail(
+                            contentId: contentId,
+                            libraryId: browseLibraryId,
+                            browseSource: detailBrowseSource
+                        )
+                    }
                 } label: {
                     cardContent
                 }
@@ -297,7 +311,8 @@ struct MediaCard: View {
                 url: posterUrl,
                 thumbhash: thumbhash,
                 targetSize: CGSize(width: cardWidth, height: cardHeight),
-                contentMode: .fill
+                contentMode: .fill,
+                placeholderSymbol: ArtworkPlaceholderSymbol.forMediaType(mediaType)
             )
                 .frame(width: cardWidth, height: cardHeight)
 
@@ -354,19 +369,27 @@ struct MediaCard: View {
 
     private var titleText: some View {
         Text(title)
-            .font(.siloSubheadline)
+            .font(.siloCardTitle)
             .foregroundColor(.siloOnSurface)
+            #if os(macOS)
+            // One truncated line, like Home's feed cards. Reserving a second
+            // line left a gap between most titles and their year, and made
+            // these rows taller than Home's.
+            .lineLimit(1)
+            .truncationMode(.tail)
+            #else
             // Reserve 2 lines of space so single- and multi-line titles
             // produce the same overall card height — keeps posters in a
             // row top-aligned when titles wrap.
             .lineLimit(2, reservesSpace: true)
+            #endif
     }
 
     @ViewBuilder
     private var yearText: some View {
         if let secondLine = subtitle ?? year.map(String.init) {
             Text(secondLine)
-                .font(.siloCaption)
+                .font(.siloCardMetadata)
                 .foregroundColor(.siloSecondaryText)
                 // One line, tail-truncated: an episode title must never wrap
                 // and push the row below it.

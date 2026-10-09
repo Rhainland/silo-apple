@@ -23,7 +23,6 @@ struct RequestDetailView: View {
     #endif
     #if os(iOS)
     @State private var scrollState = PhoneDetailScrollState()
-    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     #endif
 
     init(mediaType: RequestMediaType, tmdbId: Int, onClose: (() -> Void)? = nil) {
@@ -128,6 +127,7 @@ struct RequestDetailView: View {
                         factsLine: factTokens(detail).map { PhoneHeroFactToken.text($0) },
                         ratings: ratings(detail),
                         creditText: creditText(detail),
+                        overlayData: nil,
                         enablesArtworkParallax: true,
                         actions: { phoneActions },
                         belowOverview: { EmptyView() }
@@ -158,9 +158,7 @@ struct RequestDetailView: View {
         let showsBack = !showsClose && (!router.itemDetailPath.isEmpty || !router.path.isEmpty)
         return PhoneDetailTopChrome(
             title: viewModel.detail?.title ?? "",
-            isScrollGlassEnabled: UIDevice.current.userInterfaceIdiom == .phone
-                && horizontalSizeClass != .regular
-                && viewModel.detail != nil,
+            isScrollGlassEnabled: viewModel.detail != nil,
             scrollState: scrollState,
             leadingSystemName: showsClose ? "xmark" : (showsBack ? "chevron.left" : nil),
             leadingAccessibilityLabel: showsClose ? "Close details" : (showsBack ? "Back" : nil),

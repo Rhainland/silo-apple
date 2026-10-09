@@ -48,7 +48,11 @@ struct DownloadsView: View {
                 content
             }
         }
+        #if os(macOS)
+        .siloPageBackground()
+        #else
         .background(Color.siloBackground.ignoresSafeArea())
+        #endif
         .navigationTitle(isSelecting ? "\(selectedCount) Selected" : "Downloads")
         #if os(iOS)
         .navigationBarTitleDisplayMode(.large)
@@ -97,7 +101,11 @@ struct DownloadsView: View {
     private var noDownloadsHint: String {
         let base = "Downloaded movies and episodes appear here for offline viewing."
         guard manager.canMonitorSeries else { return base }
+        #if os(macOS)
+        return base + " To get new episodes automatically, open a series, click Download, and choose Monitor."
+        #else
         return base + " To get new episodes automatically, open a series, tap Download, and choose Monitor."
+        #endif
     }
 
     private var noDownloadsState: some View {

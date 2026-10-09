@@ -63,7 +63,7 @@ packages:
   # reviewed revision; Package.resolved also freezes its binary dependencies.
   AetherEngine:
     url: https://github.com/Silo-Server/AetherEngine
-    revision: 2fa0670a5eb150ae013529e61f9d32bae1da1ead
+    revision: 5f40ca27ca0cde95fbcb540bce67d22978066967
   SwiftAssRenderer:
     url: https://github.com/mihai8804858/swift-ass-renderer
     exactVersion: 1.3.1

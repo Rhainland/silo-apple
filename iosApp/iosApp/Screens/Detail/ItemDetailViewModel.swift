@@ -1056,26 +1056,7 @@ class ItemDetailViewModel {
            let requested = seasons.first(where: { $0.seasonNumber == initialResumeSeasonNumber }) {
             return requested
         }
-        if let inProgress = seasons.first(where: { ($0.userData?.inProgressCount ?? 0) > 0 }) {
-            return inProgress
-        }
-        if let partial = seasons.first(where: {
-            guard let ud = $0.userData else { return false }
-            let watched = ud.watchedCount ?? 0
-            return watched > 0 && watched < $0.episodeCount
-        }) {
-            return partial
-        }
-        // Specials sort first for display, but a fresh series should open on
-        // its first numbered season rather than the specials bucket. Once
-        // every numbered season is played, an unplayed Specials still wins
-        // over a fully watched one.
-        let regular = seasons.filter { !($0.isSpecials == true || $0.seasonNumber == 0) }
-        let isUnplayed: (Season) -> Bool = { !($0.userData?.played ?? false) }
-        if let firstUnplayed = regular.first(where: isUnplayed) ?? seasons.first(where: isUnplayed) {
-            return firstUnplayed
-        }
-        return regular.first ?? seasons.first
+        return seasons.preferredResumeSeason()
     }
 
     func selectSeason(
@@ -1728,6 +1709,8 @@ class ItemDetailViewModel {
     /// the card watched toggle uses. The next visit fetches fresh; painted content
     /// keeps showing in the meantime via the existing `detail` binding. An
     /// episode page's series is the fallback parent.
+    /// The shared call also makes a mounted Home re-read its Continue
+    /// Watching and Next Up rows.
     private func invalidateRelatedCaches(contentId: String, seriesId: String? = nil) {
         PersonalStateSync.invalidateItemState(contentId: contentId, seriesId: seriesId ?? detail?.seriesId)
     }

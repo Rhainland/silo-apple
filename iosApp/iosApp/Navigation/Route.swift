@@ -8,7 +8,7 @@ enum Route: Hashable {
 
     // Main tabs
     case search
-    case libraryCollection(libraryId: Int, collectionId: String, title: String?, kind: LibraryCollectionKind?)
+    case libraryCollection(libraryId: Int, collectionId: String, title: String?, kind: LibraryCollectionKind?, mediaScope: LibraryVideoScope? = nil)
     case itemDetail(
         contentId: String,
         tvSeed: TVItemDetailRouteSeed? = nil,
@@ -176,6 +176,12 @@ extension Route {
     /// Builds the platform-appropriate route from a catalog card. The seed is
     /// display-only and is ignored entirely on iOS/macOS.
     static func itemDetail(browseItem: BrowseItem, libraryId: Int? = nil) -> Route {
+        // An episode card (a search result) opens its Series on that episode,
+        // as Home's episode cards do, without first loading the episode.
+        let card = SectionItem(browseItem: browseItem)
+        if SeriesDetailContext(item: card) != nil {
+            return itemDetail(destinationContentId: browseItem.contentId, sectionItem: card, libraryId: libraryId)
+        }
         #if os(tvOS)
         return .itemDetail(
             contentId: browseItem.contentId,

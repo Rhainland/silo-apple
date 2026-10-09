@@ -6,6 +6,20 @@ struct BrowseItem: Codable, Identifiable, Hashable {
     let contentId: String
     let type: String
     let title: String
+    /// Episode context; the server sends it on episode rows (text search
+    /// with the `video_with_episodes` or `episode` scope) and on
+    /// section-sourced catalog pages (e.g. a Continue Watching shelf paged
+    /// through `source=section`), with progress on the latter, and omits it
+    /// elsewhere. Defaulted so the memberwise init and synthesized decoder
+    /// stay intact.
+    var seriesId: String? = nil
+    var seriesTitle: String? = nil
+    var seasonNumber: Int? = nil
+    var episodeNumber: Int? = nil
+    var itemSource: String? = nil
+    var positionSeconds: Double? = nil
+    var durationSeconds: Double? = nil
+    var progressUpdatedAt: String? = nil
     let year: Int?
     let genres: [String]?
     let contentRating: String?
@@ -137,10 +151,10 @@ struct SectionItem: Codable, Identifiable, Hashable {
         contentId = item.contentId
         type = item.type
         title = item.title
-        seriesId = nil
-        seriesTitle = nil
-        seasonNumber = nil
-        episodeNumber = nil
+        seriesId = item.seriesId
+        seriesTitle = item.seriesTitle
+        seasonNumber = item.seasonNumber
+        episodeNumber = item.episodeNumber
         year = item.year
         genres = item.genres
         status = item.status
@@ -157,10 +171,10 @@ struct SectionItem: Codable, Identifiable, Hashable {
         networks = item.networks
         showStatus = item.showStatus
         overview = item.overview
-        itemSource = nil
-        self.positionSeconds = positionSeconds
-        self.durationSeconds = durationSeconds
-        progressUpdatedAt = nil
+        itemSource = item.itemSource
+        self.positionSeconds = positionSeconds ?? item.positionSeconds
+        self.durationSeconds = durationSeconds ?? item.durationSeconds
+        progressUpdatedAt = item.progressUpdatedAt
         posterUrl = item.posterUrl
         posterThumbhash = item.posterThumbhash
         backdropUrl = item.backdropUrl
@@ -203,12 +217,21 @@ enum SiloMediaType {
         }
     }
 
+    static func isEpisode(_ type: String) -> Bool {
+        switch normalized(type) {
+        case "episode", "episodes":
+            return true
+        default:
+            return false
+        }
+    }
+
     /// Leaf media that can be handed directly to the player. Container
     /// types such as series and seasons still open their detail screen.
     static func isDirectlyPlayable(_ type: String) -> Bool {
         isMovieLibrary(type)
             || isAudiobook(type)
-            || normalized(type) == "episode"
+            || isEpisode(type)
     }
 
     static func isAudiobookLibrary(_ type: String) -> Bool {
@@ -261,6 +284,14 @@ extension BrowseItem {
             contentId: item.contentId,
             type: item.type,
             title: item.title,
+            seriesId: item.seriesId,
+            seriesTitle: item.seriesTitle,
+            seasonNumber: item.seasonNumber,
+            episodeNumber: item.episodeNumber,
+            itemSource: item.itemSource,
+            positionSeconds: item.positionSeconds,
+            durationSeconds: item.durationSeconds,
+            progressUpdatedAt: item.progressUpdatedAt,
             year: item.year,
             genres: item.genres,
             contentRating: item.contentRating,
@@ -692,6 +723,13 @@ struct Season: Codable, Identifiable, Hashable {
 }
 
 extension Array where Element == Season {
+    /// Seasons the library holds, not counting Specials. The series' own
+    /// `seasonCount` is the metadata provider's total, which can name
+    /// seasons the library does not have.
+    var librarySeasonCount: Int {
+        filter { $0.isSpecials != true && $0.seasonNumber != 0 }.count
+    }
+
     /// Specials lead, then numbered seasons ascending.
     func sortedForDisplay() -> [Season] {
         sorted { lhs, rhs in
@@ -702,6 +740,43 @@ extension Array where Element == Season {
             if (lhs.title ?? "") != (rhs.title ?? "") { return (lhs.title ?? "") < (rhs.title ?? "") }
             return lhs.contentId < rhs.contentId
         }
+    }
+
+    /// The season a viewer resumes in: one with an episode in progress, then
+    /// the first partially watched season, then the first unplayed numbered
+    /// season (Specials only once every numbered season is played), then the
+    /// first season.
+    func preferredResumeSeason() -> Season? {
+        if let inProgress = first(where: { ($0.userData?.inProgressCount ?? 0) > 0 }) {
+            return inProgress
+        }
+        if let partial = first(where: {
+            guard let ud = $0.userData else { return false }
+            let watched = ud.watchedCount ?? 0
+            return watched > 0 && watched < $0.episodeCount
+        }) {
+            return partial
+        }
+        // Specials sort first for display, but a fresh series should open on
+        // its first numbered season rather than the specials bucket. Once
+        // every numbered season is played, an unplayed Specials still wins
+        // over a fully watched one.
+        let regular = filter { !($0.isSpecials == true || $0.seasonNumber == 0) }
+        let isUnplayed: (Season) -> Bool = { !($0.userData?.played ?? false) }
+        if let firstUnplayed = regular.first(where: isUnplayed) ?? first(where: isUnplayed) {
+            return firstUnplayed
+        }
+        return regular.first ?? first
+    }
+}
+
+extension Array where Element == EpisodeListItem {
+    /// The episode a viewer resumes with: the one in progress, then the first
+    /// unwatched, then the first.
+    func preferredResumeEpisode() -> EpisodeListItem? {
+        first { $0.userData?.isInProgress == true }
+            ?? first { !($0.userData?.played ?? false) }
+            ?? first
     }
 }
 

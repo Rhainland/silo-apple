@@ -22,6 +22,7 @@ private struct PhoneRequestsHubView: View {
     @State private var uiCustomization = UICustomizationPreferences.shared
     @State private var gridWidth: CGFloat = 0
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
     @Environment(AppRouter.self) private var router
 
     var body: some View {
@@ -123,23 +124,56 @@ private struct PhoneRequestsHubView: View {
     private static let gridRowSpacing: CGFloat = 12
 
     private var searchColumns: [GridItem] {
-        AdaptiveColumns.posters(
+        if let fit = widePhonePosterFit {
+            return fit.columns
+        }
+        return AdaptiveColumns.posters(
             for: horizontalSizeClass,
             posterSize: uiCustomization.cardPresentation.posterSize,
             spacing: Self.gridSpacing
         )
     }
 
+    /// A phone window too wide for the standard counts (the iPhone Duo's
+    /// inner display) adds columns rather than stretching posters.
+    private var widePhonePosterFit: AdaptiveColumns.PosterGridFit? {
+        #if os(iOS)
+        guard UIDevice.current.userInterfaceIdiom == .phone else { return nil }
+        return AdaptiveColumns.widePhonePosterFit(
+            containerWidth: gridWidth,
+            posterSize: uiCustomization.cardPresentation.posterSize,
+            verticalSizeClass: verticalSizeClass
+        )
+        #else
+        return nil
+        #endif
+    }
+
     private var searchCardWidth: CGFloat {
+        #if os(macOS)
+        // The Mac grid is one adaptive column that repeats to fit, so the
+        // column count says nothing about the cell. Work the cell out the
+        // way the grid does. Before the first measurement the fit is nil
+        // and the card takes the cell's minimum width.
+        let minimumWidth = SiloTheme.posterCardWidth * uiCustomization.cardPresentation.posterSize.scale
+        return AdaptiveColumns.widthFittedPosters(
+            containerWidth: gridWidth,
+            minimumCardWidth: minimumWidth,
+            spacing: Self.gridSpacing,
+            minimumColumns: 1
+        )?.cardWidth ?? minimumWidth
+        #else
         // Before the first measurement, a standard poster: the uncapped fit
         // below would return its infinite maximum.
         guard gridWidth > 0 else { return SiloTheme.posterCardWidth }
+        if let fit = widePhonePosterFit { return fit.cardWidth }
         return AdaptiveColumns.fittedPosterWidth(
             containerWidth: gridWidth,
             columnCount: searchColumns.count,
             spacing: Self.gridSpacing,
             maximumWidth: .greatestFiniteMagnitude
         )
+        #endif
     }
 
     /// Results, or quiet placeholders in the same cells while a search runs.

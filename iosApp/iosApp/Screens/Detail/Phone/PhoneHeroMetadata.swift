@@ -64,10 +64,13 @@ enum PhoneHeroMetadata {
         return tokens
     }
 
-    static func seriesFactsLine(from detail: ItemDetail) -> [PhoneHeroFactToken] {
+    /// `seasons` is the season list the page loaded from the library; the
+    /// count stays off the line until it arrives.
+    static func seriesFactsLine(from detail: ItemDetail, seasons: [Season]) -> [PhoneHeroFactToken] {
         var tokens: [PhoneHeroFactToken] = []
         if let year = detail.year, year > 0 { tokens.append(.text(String(year))) }
-        if let count = detail.seasonCount, count > 0 {
+        let count = seasons.librarySeasonCount
+        if count > 0 {
             tokens.append(.text("\(count) Season\(count == 1 ? "" : "s")"))
         }
         tokens.append(contentsOf: qualityTokens(from: detail))
@@ -83,9 +86,12 @@ enum PhoneHeroMetadata {
                 return seriesTitle
             }
         }
-        if let status = detail.status?
-            .trimmingCharacters(in: .whitespaces), !status.isEmpty,
-           detail.type == "series" {
+        // A series' airing state is `show_status`; `status` is the catalog
+        // item's own state and is usually empty for series.
+        if detail.type == "series",
+           let status = [detail.showStatus, detail.status]
+            .compactMap({ $0?.trimmingCharacters(in: .whitespaces) })
+            .first(where: { !$0.isEmpty }) {
             switch status.lowercased() {
             case "continuing", "returning series", "returning":
                 return "Continuing Series"

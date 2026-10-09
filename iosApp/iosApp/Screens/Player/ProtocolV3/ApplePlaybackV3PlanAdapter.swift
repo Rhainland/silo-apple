@@ -252,25 +252,40 @@ enum ApplePlaybackV3PlanAdapter {
                 isExternal: item.source != "embedded",
                 isSelected: item.combinedIndex == selectedIndex,
                 ffIndex: ffIndex,
-                srcId: item.combinedIndex
+                srcId: item.combinedIndex,
+                isDownloaded: item.source == "downloaded"
             )
         }
     }
 
-    /// Keeps Aether authoritative when it publishes audio tracks, but fills
-    /// the picker from the selected catalog version when a remote V3 route
-    /// exposes only its packaged rendition. Audio changes on that route are
-    /// already server-owned replans, so each fallback row carries the catalog
-    /// ordinal in `srcId` and the plan's selected ordinal drives the checkmark.
+    /// Server HLS carries only the audio the server packaged for the plan.
+    /// Whatever Aether publishes there (AVPlayer's renditions on the remote
+    /// bypass, under synthetic ids) is not the file's track list, and its
+    /// local selection API cannot switch it, so audio is server-owned.
+    static func serverOwnsAudioTracks(_ plan: PlaybackV3Plan?) -> Bool {
+        guard let plan else { return false }
+        return [
+            PlaybackProtocolV3.PlanDelivery.remuxHLS,
+            PlaybackProtocolV3.PlanDelivery.transcodeHLS,
+        ].contains(plan.delivery)
+    }
+
+    /// Keeps Aether authoritative when it publishes the file's audio tracks,
+    /// but fills the picker from the selected catalog version on server HLS,
+    /// or when a remote V3 route publishes no audio at all. Audio changes on
+    /// those routes are server-owned replans, so each fallback row carries the
+    /// catalog ordinal in `srcId` and the plan's selected ordinal drives the
+    /// checkmark.
     static func audioPickerTracks(
         aetherTracks: [PlayerTrack],
         plan: PlaybackV3Plan?,
         version: FileVersion?
     ) -> [PlayerTrack] {
-        guard aetherTracks.isEmpty,
+        let serverOwned = serverOwnsAudioTracks(plan)
+        guard serverOwned || aetherTracks.isEmpty,
               let plan,
               let version else {
-            return aetherTracks
+            return serverOwned ? [] : aetherTracks
         }
         let selectedOrdinal = plan.selectedTracks.audio?.index
         return (version.audioTracks ?? []).enumerated().map { ordinal, track in

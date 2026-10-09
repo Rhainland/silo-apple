@@ -39,8 +39,34 @@ struct APIv2CatalogSearchCapabilities: Decodable {
     let peopleMediaScope: Bool?
     /// Person reads accept `prefetch=true` without queueing a refresh.
     let personPrefetch: Bool?
+    /// Text search accepts `type=video_with_episodes` (movies, series, and
+    /// episodes) on the query source, and people search accepts it as
+    /// `media_scope`. Older servers omit it and ignore or reject the value.
+    let videoWithEpisodesScope: Bool?
 
     var isAvailable: Bool { allowed && state == "available" }
+}
+
+/// What the Search screen may ask of this server, read once from
+/// ``APIv2CatalogSearchCapabilities``. An absent flag means unsupported.
+struct CatalogSearchFeatures: Equatable {
+    /// People search accepts `media_scope` and filters credits by access.
+    /// Without it search offers no people at all.
+    var peopleMediaScope = false
+    /// Search accepts the `video_with_episodes` media scope.
+    var videoWithEpisodesScope = false
+
+    init(peopleMediaScope: Bool = false, videoWithEpisodesScope: Bool = false) {
+        self.peopleMediaScope = peopleMediaScope
+        self.videoWithEpisodesScope = videoWithEpisodesScope
+    }
+
+    init(_ capabilities: APIv2CatalogSearchCapabilities) {
+        self.init(
+            peopleMediaScope: capabilities.peopleMediaScope == true,
+            videoWithEpisodesScope: capabilities.videoWithEpisodesScope == true
+        )
+    }
 }
 
 enum APIv2CatalogRuleValue: Encodable, Hashable {
@@ -103,7 +129,9 @@ struct APIv2CatalogQuery: Encodable, Hashable {
         guard (1...100).contains(limit),
               sort.map({ !$0.hasPrefix("-") && !$0.contains(",") }) ?? true,
               order == "asc" || order == "desc" else { throw APIv2Error.invalidCatalogQuery }
-        var query = ["source": source, "limit": String(limit), "match": match]
+        var query = ["source": source, "limit": String(limit)]
+        // Sections own their filters. Even the default match overlay is rejected.
+        if source != "section" { query["match"] = match }
         for (key, value) in [
             ("scope", scope), ("section_id", sectionId), ("collection_id", collectionId),
             ("person_id", personId), ("library_id", libraryId), ("q", q), ("type", type),
@@ -183,6 +211,7 @@ extension APIv2CatalogQuery {
 /// continuation keeps the original query and owner, so a screen pages by
 /// handing it back rather than rebuilding the request.
 struct CatalogListPage {
+    let auth: CapturedOrdinaryRequestAuth
     let response: CatalogResponse
     let continuation: APIv2CatalogContinuation?
     /// This is a fresh first page read in place of a rejected cursor, so the
@@ -190,6 +219,7 @@ struct CatalogListPage {
     let startsOver: Bool
 
     init(_ result: APIv2CatalogResult, startsOver: Bool = false) {
+        auth = result.auth
         response = CatalogResponse(catalogPage: result.value)
         continuation = result.continuation
         self.startsOver = startsOver

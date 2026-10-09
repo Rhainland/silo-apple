@@ -283,7 +283,11 @@ struct InterfaceCustomizationView: View {
                 if isDefaultMenuApplied {
                     Text("Default menu applied. Add shortcuts to customize.")
                 } else {
+                    #if os(macOS)
+                    Text("Home is required. Use the arrows to reorder items. This menu is shared with your other devices. On this Mac the sidebar always lists every library, so pinning or removing a library here changes only those devices; the order of For You and Calendar applies here too.")
+                    #else
                     Text("Home is required. Use the arrows to reorder items. Libraries stay grouped under their media type and can only move within that group. Removing a library unpins it from your profile. Downloads (when available), Search, and Profile stay automatic.")
+                    #endif
                 }
             }
             .disabled(
@@ -327,7 +331,11 @@ struct InterfaceCustomizationView: View {
                 )
             }
         }
+        #if os(macOS)
+        .settingsListChrome()
+        #else
         .siloGroupedListStyle()
+        #endif
         .navigationTitle("Interface")
         .task {
             await preferences.refresh()
@@ -620,7 +628,11 @@ private struct HomeSectionsCustomizationView: View {
                 }
             }
         }
+        #if os(macOS)
+        .settingsListChrome()
+        #else
         .siloGroupedListStyle()
+        #endif
         .navigationTitle("Home Sections")
         #if os(iOS)
         .toolbar {

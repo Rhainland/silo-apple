@@ -304,12 +304,21 @@ actor SiloAPI {
         return person
     }
 
-    /// Whether the server can search people by media scope. The same
-    /// capability guarantees results only carry credits the profile can see,
-    /// so without it search offers no people at all.
-    func peopleSearchSupported() async throws -> Bool {
+    /// The search features this server offers; see ``CatalogSearchFeatures``.
+    /// A server without the capabilities read (v1-only, or answering 404)
+    /// offers none. Any other failure throws: a server that timed out or
+    /// refused the credentials has not said what it supports.
+    func catalogSearchFeatures() async throws -> CatalogSearchFeatures {
         let auth = try await detailReadAuth()
-        return try await apiV2Client.catalogSearchCapabilities(auth: auth).peopleMediaScope == true
+        do {
+            return CatalogSearchFeatures(try await apiV2Client.catalogSearchCapabilities(auth: auth))
+        } catch let error as APIv2Error {
+            switch error {
+            case .serverUpdateRequired, .httpStatus(404): return CatalogSearchFeatures()
+            case .problem(let problem) where problem.status == 404: return CatalogSearchFeatures()
+            default: throw error
+            }
+        }
     }
 
     /// People matching `query` for the acting profile, exact names first.
@@ -440,6 +449,59 @@ actor SiloAPI {
     /// Ungrouped). Returns the updated collection.
     func moveCollection(_ version: CollectionEditVersion, toGroupId groupId: String?) async throws -> UserCollection {
         try await apiV2Client.moveCollection(version, toGroupId: groupId)
+    }
+
+    // --- Shuffle ---
+
+    func shuffleCapability() async throws -> APIv2ShuffleCapability {
+        try await apiV2Client.shuffleCapability(auth: try await detailReadAuth())
+    }
+
+    /// `non_retryable`: dispatched once. A lost answer leaves an unused
+    /// shuffle that the server deletes with other abandoned ones.
+    ///
+    /// Shuffle answers are owner-scoped like other reads; see
+    /// ``requireCurrentOwner(_:)``. One that arrives after a server or
+    /// profile switch is refused, so it never opens a player or replaces a
+    /// pick for the new owner.
+    func createShuffle(scope: ShuffleScopeRequest) async throws -> APIv2Shuffle {
+        let auth = try await mutationAuth()
+        let shuffle = try await apiV2Client.createShuffle(
+            scope: scope, imageSize: await imageSizeQuery["image_size"], auth: auth
+        )
+        try await requireCurrentOwner(auth)
+        return shuffle
+    }
+
+    func shuffle(id: String) async throws -> APIv2Shuffle {
+        let auth = try await detailReadAuth()
+        let shuffle = try await apiV2Client.shuffle(id: id, imageSize: await imageSizeQuery["image_size"], auth: auth)
+        try await requireCurrentOwner(auth)
+        return shuffle
+    }
+
+    func advanceShuffle(id: String, fromContentId: String) async throws -> APIv2Shuffle {
+        let auth = try await mutationAuth()
+        let shuffle = try await apiV2Client.advanceShuffle(
+            id: id, fromContentId: fromContentId,
+            imageSize: await imageSizeQuery["image_size"], auth: auth
+        )
+        try await requireCurrentOwner(auth)
+        return shuffle
+    }
+
+    func skipShuffleItem(id: String, nextContentId: String) async throws -> APIv2Shuffle {
+        let auth = try await mutationAuth()
+        let shuffle = try await apiV2Client.skipShuffleItem(
+            id: id, nextContentId: nextContentId,
+            imageSize: await imageSizeQuery["image_size"], auth: auth
+        )
+        try await requireCurrentOwner(auth)
+        return shuffle
+    }
+
+    func deleteShuffle(id: String) async throws {
+        try await apiV2Client.deleteShuffle(id: id, auth: try await mutationAuth())
     }
 
     // --- Collection groups (personal) ---

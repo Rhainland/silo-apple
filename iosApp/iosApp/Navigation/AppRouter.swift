@@ -114,6 +114,9 @@ final class AppRouter {
             // leave a stale reason to be misattributed to the next transition.
             let reason = pendingAuthStateReason ?? "external"
             pendingAuthStateReason = nil
+            // Re-read even when the state is unchanged: a server switch can
+            // commit `.authenticated` over `.authenticated` under a new owner.
+            authenticatedOwner = authState == .authenticated ? sessionOwner() : nil
             guard oldValue != authState else { return }
             recordAuthStateBreadcrumb(from: oldValue, to: authState, reason: reason)
             // Leaving the authenticated state is an identity boundary: a video
@@ -136,6 +139,18 @@ final class AppRouter {
     /// `external`; the destination state still tells the story.
     @ObservationIgnored private var pendingAuthStateReason: String?
 
+    // MARK: - Return After Re-Authentication
+
+    /// Who the app is signed in as while it shows the main screens. Read once
+    /// on entering `.authenticated`, because by the time a session expires
+    /// its account and profile have already been cleared.
+    @ObservationIgnored private var authenticatedOwner: SessionOwner?
+    /// Where the person was when their session expired. Consumed by the next
+    /// `resetToHome()`.
+    @ObservationIgnored private var sessionReturnPoint: SessionReturnPoint?
+    /// The signed-in server, account and profile. Tests replace it.
+    @ObservationIgnored var sessionOwner: () -> SessionOwner? = { SessionOwner.current() }
+
     // MARK: - Navigation Stack
 
     @ObservationIgnored private var isSigningOut = false
@@ -143,6 +158,24 @@ final class AppRouter {
 
     /// Navigation path for push/pop within the current flow.
     var path = NavigationPath()
+
+    #if os(macOS)
+    /// Routes pushed through the router, mirrored because `NavigationPath` is
+    /// opaque. Entries past `path.count` are stale (the system Back button
+    /// pops the path directly), so read `visiblePushedRoutes` instead.
+    @ObservationIgnored private var pushedRoutes: [Route] = []
+
+    /// The routes currently on the stack, oldest first. The Mac sidebar reads
+    /// this to highlight the row that matches the page in view.
+    var visiblePushedRoutes: [Route] {
+        Array(pushedRoutes.prefix(path.count))
+    }
+
+    private func recordPush(_ route: Route, replacingTop: Bool = false) {
+        let kept = max(0, path.count - (replacingTop ? 1 : 0))
+        pushedRoutes = Array(pushedRoutes.prefix(kept)) + [route]
+    }
+    #endif
 
     // MARK: - Item Detail Presentation
 
@@ -159,6 +192,11 @@ final class AppRouter {
         /// Set when the card opens on a request detail (a TMDB title) rather
         /// than a catalog item; `contentId` is then only a page identity.
         let request: RequestRoot?
+        /// Presented as a full-window cover instead of a sheet. Fixed when
+        /// the detail opens (see `presentsItemDetailFullWindow`), so folding
+        /// or rotating never swaps the presentation, and the player above it,
+        /// out from under the user.
+        var fillsWindow = false
 
         struct RequestRoot: Equatable {
             let mediaType: RequestMediaType
@@ -186,6 +224,22 @@ final class AppRouter {
     #if os(iOS)
     var presentedItemDetail: ItemDetailPresentation?
     var itemDetailPath = NavigationPath()
+    /// Kept current by the tab view: true while its phone window would split
+    /// a detail page (see `PhoneDetailHeroLayout.usesSplitLayout`), as on the
+    /// iPhone Duo's open display held in landscape. A sheet there is capped at
+    /// a centered card about two-thirds of the width, so details opened then
+    /// cover the window.
+    var presentsItemDetailFullWindow = false
+
+    /// Opens or restores the detail card in the presentation the window calls
+    /// for now. Request details stay sheets: their page has no split layout.
+    private func openItemDetail(_ presentation: ItemDetailPresentation?) {
+        presentedItemDetail = presentation.map { presentation in
+            var presentation = presentation
+            presentation.fillsWindow = presentsItemDetailFullWindow && presentation.request == nil
+            return presentation
+        }
+    }
     #endif
 
     // MARK: - Player Presentation
@@ -213,6 +267,8 @@ final class AppRouter {
         /// attaching competing covers to the root and the sheet.
         var detailPresentationID: UUID? = nil
         var watchPartyContext: WatchPartyPlaybackContext? = nil
+        /// The shuffle this playback starts; its `current` is `contentId`.
+        var shuffle: APIv2Shuffle? = nil
         /// Hints supplied by the originating screen (e.g. the detail page,
         /// which has just loaded the catalog item) so the player's now-
         /// playing widget can publish artwork without re-fetching the
@@ -466,6 +522,35 @@ final class AppRouter {
         #endif
     }
 
+    /// Play a new shuffle's first pick from its beginning. The up-next screen
+    /// then offers the shuffle's picks until the viewer stops. A shuffle
+    /// always plays here: an engaged TV would play the first pick alone.
+    func presentShuffle(_ shuffle: APIv2Shuffle) {
+        #if os(iOS) || os(tvOS)
+        DiagnosticsCoordinator.recordBreadcrumb(
+            category: .focus,
+            tag: "Navigation",
+            message: "player presented",
+            attrs: ["target": .string("player"), "action": .string("shuffle")]
+        )
+        var presentation = PlayerPresentation(
+            contentId: shuffle.current.contentId,
+            fileId: nil,
+            audioTrackIndex: nil,
+            subtitleTrackIndex: nil,
+            startFromBeginning: true,
+            resumePosition: nil,
+            prefersLastUsedVersion: false,
+            returnToContentId: nil,
+            detailPresentationID: currentDetailPresentationID,
+            posterURL: shuffle.current.posterUrl,
+            backdropURL: shuffle.current.backdropUrl
+        )
+        presentation.shuffle = shuffle
+        presentedPlayer = presentation
+        #endif
+    }
+
     /// Present offline playback of a completed download. iOS/iPadOS use a
     /// full-window cover; macOS pushes the offline player route.
     func presentOfflinePlayer(
@@ -566,9 +651,9 @@ final class AppRouter {
             recordScreenBreadcrumb(target: route.diagnosticsTarget, action: "present")
             if presentedItemDetail == nil {
                 itemDetailPath = NavigationPath()
-                presentedItemDetail = ItemDetailPresentation(
+                openItemDetail(ItemDetailPresentation(
                     request: .init(mediaType: mediaType, tmdbId: tmdbId)
-                )
+                ))
             } else {
                 itemDetailPath.append(route)
             }
@@ -590,6 +675,9 @@ final class AppRouter {
         }
         #endif
 
+        #if os(macOS)
+        recordPush(route)
+        #endif
         path.append(route)
     }
 
@@ -608,12 +696,12 @@ final class AppRouter {
                 source.contentIDs.contains(contentId) ? source : nil
             }
             itemDetailPath = NavigationPath()
-            presentedItemDetail = ItemDetailPresentation(
+            openItemDetail(ItemDetailPresentation(
                 contentId: contentId,
                 libraryId: libraryId,
                 browseSource: source,
                 resumeContext: resumeContext
-            )
+            ))
         } else {
             itemDetailPath.append(Route.itemDetail(contentId: contentId, libraryId: libraryId, seriesContext: resumeContext))
         }
@@ -660,6 +748,9 @@ final class AppRouter {
     /// stack up — Back exits the chain in one step.
     func replaceCurrent(with route: Route) {
         recordScreenBreadcrumb(target: route.diagnosticsTarget, action: "replace")
+        #if os(macOS)
+        recordPush(route, replacingTop: true)
+        #endif
         if !path.isEmpty {
             path.removeLast()
         }
@@ -680,10 +771,17 @@ final class AppRouter {
     }
 
     /// Why the sign-in screen is showing, when it isn't the user's own
-    /// choice. The TV sign-in screen explains an expired session instead of
+    /// choice. The sign-in screen explains an expired session instead of
     /// just appearing. Cleared once the user signs in or leaves sign-in.
     enum LoginNotice: Equatable {
         case sessionExpired
+
+        /// The line the sign-in screen shows for this notice.
+        func message(serverName: String) -> String {
+            switch self {
+            case .sessionExpired: "You were signed out of \(serverName). Sign in again."
+            }
+        }
     }
 
     private(set) var loginNotice: LoginNotice?
@@ -702,6 +800,7 @@ final class AppRouter {
     /// Return to the login screen (e.g., on sign-out).
     func resetToLogin() {
         loginNotice = nil
+        sessionReturnPoint = nil
         recordScreenBreadcrumb(target: "login", action: "reset")
         path = NavigationPath()
         setAuthState(.needsLogin, reason: "resetToLogin")
@@ -729,16 +828,27 @@ final class AppRouter {
         }
     }
 
-    /// Transition to the authenticated home screen.
+    /// Transition to the authenticated home screen. After a session expiry,
+    /// the same profile of the same account returns to the screens it was on.
     func resetToHome() {
         recordScreenBreadcrumb(target: "home", action: "reset")
+        let returnPoint = sessionReturnPoint
+        sessionReturnPoint = nil
         path = NavigationPath()
         setAuthState(.authenticated, reason: "resetToHome")
+        guard let returnPoint, returnPoint.restores(for: authenticatedOwner) else { return }
+        recordScreenBreadcrumb(target: "previous", action: "restoreAfterSessionExpired")
+        path = returnPoint.path
+        #if os(iOS)
+        itemDetailPath = returnPoint.itemDetailPath
+        openItemDetail(returnPoint.itemDetail)
+        #endif
     }
 
     /// Return to server setup (e.g., to change servers).
     func resetToServerSetup() {
         loginNotice = nil
+        sessionReturnPoint = nil
         recordScreenBreadcrumb(target: "serverSetup", action: "reset")
         path = NavigationPath()
         skipsSingleProfilePicker = false
@@ -749,6 +859,7 @@ final class AppRouter {
     /// Every previous screen belongs to the old server/session boundary.
     func resetAfterServerResolution(to state: AuthState) {
         loginNotice = nil
+        sessionReturnPoint = nil
         recordScreenBreadcrumb(target: state.diagnosticsState, action: "reset")
         PlayerIdentityBoundary.endEngagedVideoPictureInPicture()
         presentedPlayer = nil
@@ -910,6 +1021,7 @@ final class AppRouter {
     /// login screen so the user can re-enter credentials. If no server
     /// is active at all (e.g. all removed), fall back to server setup.
     func expiredSession() {
+        sessionReturnPoint = currentReturnPoint()
         path = NavigationPath()
         if ServerRegistry.shared.hasActiveServer {
             recordScreenBreadcrumb(target: "login", action: "sessionExpired")
@@ -919,6 +1031,20 @@ final class AppRouter {
             recordScreenBreadcrumb(target: "serverSetup", action: "sessionExpired")
             setAuthState(.needsServerSetup, reason: "sessionExpiredNoServer")
         }
+    }
+
+    /// The open screens, if there is anything beyond Home to return to.
+    /// Captured before the auth-state change closes the detail card.
+    private func currentReturnPoint() -> SessionReturnPoint? {
+        guard authState == .authenticated, let authenticatedOwner else { return nil }
+        #if os(iOS)
+        guard !path.isEmpty || presentedItemDetail != nil else { return nil }
+        return SessionReturnPoint(owner: authenticatedOwner, path: path,
+                                  itemDetail: presentedItemDetail, itemDetailPath: itemDetailPath)
+        #else
+        guard !path.isEmpty else { return nil }
+        return SessionReturnPoint(owner: authenticatedOwner, path: path)
+        #endif
     }
 
     private func recordScreenBreadcrumb(target: String, action: String) {
@@ -975,6 +1101,42 @@ final class AppRouter {
             ]
         )
         #endif
+    }
+}
+
+/// The server, verified account and profile the app is signed in as.
+/// Profile ids are unique only within an account, so all three must match.
+struct SessionOwner: Equatable {
+    let serverID: String
+    let accountID: String
+    let profileID: String
+
+    /// Nil for a legacy session that never recorded its account, so it never
+    /// restores another session's screens.
+    static func current() -> SessionOwner? {
+        guard let serverID = ServerRegistry.shared.activeServerId,
+              let accountID = AuthService.shared.accountID,
+              let profileID = AuthService.shared.profileId,
+              !serverID.isEmpty, !profileID.isEmpty else { return nil }
+        return SessionOwner(serverID: serverID, accountID: accountID, profileID: profileID)
+    }
+}
+
+/// The screens open when a session expired, kept in memory until the next
+/// sign-in reaches Home.
+struct SessionReturnPoint {
+    let owner: SessionOwner
+    let path: NavigationPath
+    #if os(iOS)
+    let itemDetail: AppRouter.ItemDetailPresentation?
+    let itemDetailPath: NavigationPath
+    #endif
+
+    /// Only the same profile of the same account on the same server goes
+    /// back. Anyone else starts at Home, so one profile's pages never open
+    /// for another.
+    func restores(for owner: SessionOwner?) -> Bool {
+        owner == self.owner
     }
 }
 

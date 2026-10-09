@@ -11,7 +11,12 @@ struct MovieDetailContent<BelowOverview: View>: View {
     let selectedVersionFileId: Int?
     let selectedAudioTrackIndex: Int?
     let selectedSubtitleTrackIndex: Int?
-    let onPlay: (_ startFromBeginning: Bool) -> Void
+    /// `resumePosition` is the point the user was offered (nil for a
+    /// restart or a title without progress).
+    let onPlay: (_ startFromBeginning: Bool, _ resumePosition: Double?) -> Void
+    /// Reads the title's current watch state from the server, so the resume
+    /// prompt never offers a position another device has moved past.
+    let refreshResumeState: () async -> DetailResumeState
     let onSelectVersion: (Int?) -> Void
     let onSelectAudioTrack: (Int?) -> Void
     let onSelectSubtitleTrack: (Int?) -> Void
@@ -40,7 +45,10 @@ struct MovieDetailContent<BelowOverview: View>: View {
     @ViewBuilder let belowOverview: () -> BelowOverview
 
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
-    @State private var showResumeDialog = false
+    /// The position the resume prompt offers; non-nil while it is shown.
+    @State private var pendingResumePosition: Double?
+    /// The Play tap's in-flight watch-state read. A second tap replaces it.
+    @State private var resumeLookupTask: Task<Void, Never>?
     /// The download options sheet, opened from the More menu.
     @State private var showDownloadOptions = false
 
@@ -48,27 +56,41 @@ struct MovieDetailContent<BelowOverview: View>: View {
         PhoneDetailPageSurface(
             backdropURL: detail.backdropUrl,
             backdropThumbhash: detail.backdropThumbhash,
-            enablesArtworkGlass: SiloMediaType.isMovieLibrary(detail.type)
+            enablesArtworkGlass: SiloMediaType.isMovieLibrary(detail.type),
+            keepsSideSafeArea: true
         ) {
-            ScrollView(.vertical, showsIndicators: false) {
+            PhoneDetailPageLayout(scrollState: scrollState) {
                 VStack(alignment: .leading, spacing: heroToContentSpacing) {
-                    hero
+                    hero()
+                    belowFold
+                }
+                .padding(.bottom, 40)
+            } paneHero: { height in
+                hero(paneHeight: height)
+            } paneContent: {
+                VStack(alignment: .leading, spacing: 32) {
+                    heroExtras
+                        .padding(.horizontal, SiloTheme.safePadding)
                     belowFold
                 }
                 .padding(.bottom, 40)
             }
-            .ignoresSafeArea(edges: .top)
-            .coordinateSpace(name: PhoneDetailScrollCoordinateSpace.name)
-            .detailScrollDismissal()
-            .phoneDetailScrollTracking(scrollState)
         }
         .siloResumePlaybackAlert(
-            isPresented: $showResumeDialog,
+            isPresented: Binding(
+                get: { pendingResumePosition != nil },
+                set: { if !$0 { pendingResumePosition = nil } }
+            ),
             stoppedAt: resumeTimestamp
         ) {
-            onPlay(false)
+            guard let pendingResumePosition else { return }
+            onPlay(false, pendingResumePosition)
         } onRestart: {
-            onPlay(true)
+            onPlay(true, nil)
+        }
+        .onDisappear {
+            resumeLookupTask?.cancel()
+            resumeLookupTask = nil
         }
     }
 
@@ -78,7 +100,7 @@ struct MovieDetailContent<BelowOverview: View>: View {
 
     // MARK: - Hero
 
-    private var hero: some View {
+    private func hero(paneHeight: CGFloat? = nil) -> some View {
         PhoneDetailHero(
             title: detail.title,
             logoUrl: detail.logoUrl,
@@ -93,17 +115,22 @@ struct MovieDetailContent<BelowOverview: View>: View {
             factsLine: PhoneHeroMetadata.movieFactsLine(from: detail, version: effectiveVersion),
             ratings: detail.displayRatings,
             creditText: PhoneHeroMetadata.creditText(from: detail),
+            overlayData: OverlayData.from(detail),
             enablesArtworkParallax: SiloMediaType.isMovieLibrary(detail.type),
+            paneHeight: paneHeight,
             actions: { actionStack },
-            belowOverview: {
-                VStack(spacing: 14) {
-                    belowOverview()
-                    if let effectiveVersion {
-                        playbackSelectors(for: effectiveVersion)
-                    }
-                }
-            }
+            belowOverview: { heroExtras }
         )
+    }
+
+    /// Under the overview in one column; atop the content pane in a split.
+    private var heroExtras: some View {
+        VStack(spacing: 14) {
+            belowOverview()
+            if let effectiveVersion {
+                playbackSelectors(for: effectiveVersion)
+            }
+        }
     }
 
     /// Play, the named secondary actions, then the trailer status pill.
@@ -112,7 +139,7 @@ struct MovieDetailContent<BelowOverview: View>: View {
         VStack(spacing: 14) {
             PhonePrimaryPillButton(
                 icon: "play.fill",
-                title: "Play",
+                title: DetailPlayLabel.item(detail.userData),
                 action: handlePlayTap,
                 fullWidth: true
             )
@@ -187,10 +214,16 @@ struct MovieDetailContent<BelowOverview: View>: View {
     }
 
     private func handlePlayTap() {
-        if hasResumeProgress {
-            showResumeDialog = true
-        } else {
-            onPlay(false)
+        resumeLookupTask?.cancel()
+        resumeLookupTask = Task {
+            let state = await refreshResumeState()
+            guard !Task.isCancelled else { return }
+            resumeLookupTask = nil
+            if let position = state.resumePosition(cached: detail.userData) {
+                pendingResumePosition = position
+            } else {
+                onPlay(false, nil)
+            }
         }
     }
     /// Download is offered for movies once the
@@ -298,17 +331,8 @@ struct MovieDetailContent<BelowOverview: View>: View {
 
     // MARK: - Resume / play helpers
 
-    private var resumePositionSeconds: Double? {
-        PlaybackResumePoint.position(
-            detail.userData?.positionSeconds,
-            duration: detail.userData?.durationSeconds
-        )
-    }
-
-    private var hasResumeProgress: Bool { resumePositionSeconds != nil }
-
     private var resumeTimestamp: String {
-        guard let pos = resumePositionSeconds else { return "0:00" }
+        guard let pos = pendingResumePosition else { return "0:00" }
         return PlayerTimeFormatter.formatHMS(pos)
     }
 
