@@ -700,10 +700,17 @@ class PlayerViewModel {
     /// A marker update can finish after the playback session starts but before
     /// the realtime websocket has connected. Reconcile once after the socket
     /// is live so that event-delivery race cannot hide intro/credits prompts
-    /// for the current Aether load.
+    /// for the current Aether load. A `markers_updated` event that lands
+    /// while a reconcile read is in flight replaces that read with a fresh
+    /// one, so the event is never overwritten by an older snapshot and the
+    /// marker kinds it omits still get reconciled.
     private var markerReconcileRequestId: UUID?
-    private var markerEventGeneration = 0
     private var markerReconcileTask: Task<Void, Never>?
+    /// Reads the file-specific markers for a reconcile. Tests replace it.
+    @ObservationIgnored
+    var markerDetailLoader: @MainActor (_ contentId: String, _ libraryId: Int?) async throws -> WatchDetail = {
+        try await SiloAPI.shared.watchDetail(contentId: $0, libraryId: $1)
+    }
 
     /// Whether the realtime websocket can currently receive live AI-subtitle
     /// cues. The preparing/pause flow starts on submit for both live and
@@ -4563,7 +4570,6 @@ class PlayerViewModel {
         introRange = nil
         creditsRange = nil
         recapRange = nil
-        markerEventGeneration = 0
         markerReconcileTask?.cancel()
         markerReconcileTask = nil
         markerReconcileRequestId = nil
@@ -6346,7 +6352,14 @@ class PlayerViewModel {
         autoSkipCreditsIfNeeded(at: currentTime)
     }
 
-    private func reconcileMarkersAfterRealtimeConnect() {
+    /// Test seam: the playback identity a marker reconcile is fenced on.
+    func bindMarkerReconciliationForTesting(sessionId: String, detail: WatchDetail, version: FileVersion) {
+        activePlaybackSessionId = sessionId
+        currentWatchDetail = detail
+        currentSelectedVersion = version
+    }
+
+    func reconcileMarkersAfterRealtimeConnect() {
         guard offlinePlaybackContext == nil,
               let sessionId = activePlaybackSessionId,
               let contentId = currentWatchDetail?.contentId,
@@ -6355,8 +6368,8 @@ class PlayerViewModel {
         }
 
         let requestId = UUID()
+        let libraryId = self.libraryId
         markerReconcileRequestId = requestId
-        let generation = markerEventGeneration
         markerReconcileTask?.cancel()
         markerReconcileTask = Task { @MainActor [weak self] in
             guard let self else { return }
@@ -6367,11 +6380,12 @@ class PlayerViewModel {
                 }
             }
             do {
-                let detail = try await SiloAPI.shared.watchDetail(contentId: contentId, libraryId: libraryId)
+                // The read is owner-fenced: it is sent for the owner captured
+                // at dispatch and refused if that owner changed in flight.
+                let detail = try await self.markerDetailLoader(contentId, libraryId)
                 guard !Task.isCancelled,
                       self.markerReconcileRequestId == requestId,
                       self.activePlaybackSessionId == sessionId,
-                      self.markerEventGeneration == generation,
                       self.currentSelectedVersion?.fileId == fileId,
                       let version = detail.versions.first(where: { $0.fileId == fileId }) else {
                     return
@@ -7585,7 +7599,6 @@ class PlayerViewModel {
         introRange = nil
         creditsRange = nil
         recapRange = nil
-        markerEventGeneration = 0
         markerReconcileTask?.cancel()
         markerReconcileTask = nil
         markerReconcileRequestId = nil
@@ -7762,7 +7775,7 @@ class PlayerViewModel {
         await realtimeClient.bind(sessionId: sessionId, authority: authority)
     }
 
-    private func handleRealtimeEvent(_ event: PlaybackRealtimeEventEnvelope) async {
+    func handleRealtimeEvent(_ event: PlaybackRealtimeEventEnvelope) async {
         guard event.sessionId == activePlaybackSessionId else { return }
         switch event.name {
         case .markersUpdated:
@@ -7776,12 +7789,17 @@ class PlayerViewModel {
             guard payload.fileId == currentSelectedVersion?.fileId else {
                 return
             }
-            markerEventGeneration += 1
             applyMarkerRanges(
                 intro: payload.introUpdate.resolving(current: introRange),
                 credits: payload.creditsUpdate.resolving(current: creditsRange),
                 recap: payload.recapUpdate.resolving(current: recapRange)
             )
+            // An in-flight reconcile snapshot may predate this event. Replace
+            // it rather than drop it: the event can omit a kind whose update
+            // was missed while the socket was down.
+            if markerReconcileRequestId != nil {
+                reconcileMarkersAfterRealtimeConnect()
+            }
         case .chapterThumbnailReady:
             break
         case .subtitleTimingChanged:
