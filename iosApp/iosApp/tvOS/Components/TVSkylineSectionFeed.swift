@@ -352,11 +352,61 @@ struct TVSkylineMarquee: View {
     let model: TVFocusMarqueeModel
     let scale: TVFocusMarquee.Scale
 
+    /// How long a card must hold focus before its description is translated
+    /// on view, so rolling across a row starts no jobs.
+    private static let translationDwell: Duration = .milliseconds(1500)
+
+    private struct TranslationTrigger: Hashable {
+        let contentId: String
+        let language: String
+        let mode: MetadataAIStatus.OnViewMode
+    }
+
     var body: some View {
         TVFocusMarquee(
-            content: model.content,
+            content: displayedContent,
             enrichment: model.enrichment,
             scale: scale
+        )
+        .task(id: translationTrigger) {
+            // The marquee has no focusable controls, so `button` mode leaves
+            // the action to the detail page's More menu.
+            guard let trigger = translationTrigger, trigger.mode == .auto else { return }
+            try? await Task.sleep(for: Self.translationDwell)
+            guard !Task.isCancelled else { return }
+            CardDescriptionTranslation.shared.cardDidAppear(
+                contentId: trigger.contentId,
+                pendingLanguage: trigger.language,
+                libraryId: model.libraryId
+            )
+        }
+    }
+
+    /// The focused card with any landed translation and its status.
+    private var displayedContent: TVMarqueeContent? {
+        guard var content = model.content else { return nil }
+        let presentation = translationPresentation(for: content)
+        content.synopsis = presentation.overview
+        content.translationStatus = presentation.status
+        return content
+    }
+
+    private var translationTrigger: TranslationTrigger? {
+        guard let content = model.content, let contentId = content.contentId,
+              let language = translationPresentation(for: content).pendingLanguage else { return nil }
+        return TranslationTrigger(
+            contentId: contentId,
+            language: language,
+            mode: AICapabilities.shared.metadataOnView
+        )
+    }
+
+    private func translationPresentation(for content: TVMarqueeContent) -> CardDescriptionTranslation.Presentation {
+        CardDescriptionTranslation.shared.presentation(
+            contentId: content.contentId,
+            overview: content.synopsis,
+            pendingLanguage: content.pendingTranslationLanguage,
+            machineTranslatedFields: content.machineTranslatedFields
         )
     }
 }

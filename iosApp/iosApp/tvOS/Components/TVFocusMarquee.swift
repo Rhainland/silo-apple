@@ -97,7 +97,7 @@ struct TVMarqueeContent: Equatable {
     /// Runtime already supplied by the section payload, if present. Kept
     /// separately so a detail fallback can be added without duplicating it.
     let runtimeText: String?
-    let synopsis: String?
+    var synopsis: String?
     /// A genuine landscape backdrop from the section payload. This must stay
     /// separate from the poster fallback so the hero can wait for detail
     /// enrichment without briefly painting a portrait poster first.
@@ -130,6 +130,13 @@ struct TVMarqueeContent: Equatable {
     /// sentence drawn under the synopsis. Nil for catalog items.
     var requestProgress: RequestProgress? = nil
     var requestStatusText: String? = nil
+    /// The card's on-view translation inputs (`pending_translation_language`
+    /// and `machine_translated_fields`). Nil for previews without a card.
+    var pendingTranslationLanguage: String? = nil
+    var machineTranslatedFields: [String]? = nil
+    /// Display-only status the marquee draws in its detail line; set by
+    /// `TVSkylineMarquee` from ``CardDescriptionTranslation``.
+    var translationStatus: DescriptionTranslationStatus? = nil
 }
 
 extension TVMarqueeContent {
@@ -207,7 +214,9 @@ extension TVMarqueeContent {
                 : (isEpisode && isContinueWatching ? item.seriesId : nil),
             seriesContextSeasonNumber: isEpisode && isContinueWatching
                 ? item.seasonNumber
-                : nil
+                : nil,
+            pendingTranslationLanguage: item.pendingTranslationLanguage,
+            machineTranslatedFields: item.machineTranslatedFields
         )
     }
 
@@ -1182,6 +1191,7 @@ struct TVFocusMarquee: View {
         parts.append(content.rating?.accessibilityText ?? "")
         parts += content.trailingMetaParts
         parts.append(content.synopsis ?? "")
+        parts.append(content.translationStatus?.text ?? "")
         parts.append(enrichment?.detailLine ?? "")
         parts.append(requestStatus)
         return parts
@@ -1262,6 +1272,7 @@ private struct TVMarqueeBlock: View {
                     .foregroundStyle(Color.siloSecondaryText)
                     .lineLimit(synopsisLineLimit)
                     .frame(maxWidth: SiloTheme.Skyline.marqueeSynopsisMaxWidth, alignment: .leading)
+                    .opacity(content.translationStatus == .translating ? 0.5 : 1)
             }
 
             detailLine
@@ -1320,14 +1331,22 @@ private struct TVMarqueeBlock: View {
                 .opacity(0)
                 .frame(maxWidth: SiloTheme.Skyline.marqueeSynopsisMaxWidth, alignment: .leading)
                 .overlay(alignment: .leading) {
-                    if let line = enrichment?.detailLine, !line.isEmpty {
-                        Text(line)
-                            .font(.system(size: scale.metaSize, weight: .medium))
-                            .foregroundStyle(Color.siloOnSurface.opacity(0.5))
-                            .lineLimit(1)
-                            .frame(maxWidth: SiloTheme.Skyline.marqueeSynopsisMaxWidth, alignment: .leading)
-                            .transition(.identity)
+                    // The translation status leads the line rather than adding
+                    // one, so the bottom-anchored block keeps its height.
+                    HStack(spacing: 18) {
+                        if let status = content.translationStatus {
+                            DescriptionTranslationStatusLabel(status: status, fontSize: scale.metaSize * 0.85)
+                                .fixedSize()
+                        }
+                        if let line = enrichment?.detailLine, !line.isEmpty {
+                            Text(line)
+                                .font(.system(size: scale.metaSize, weight: .medium))
+                                .foregroundStyle(Color.siloOnSurface.opacity(0.5))
+                                .lineLimit(1)
+                                .transition(.identity)
+                        }
                     }
+                    .frame(maxWidth: SiloTheme.Skyline.marqueeSynopsisMaxWidth, alignment: .leading)
                 }
         }
     }
