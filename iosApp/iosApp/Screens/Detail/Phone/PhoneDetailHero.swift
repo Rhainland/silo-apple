@@ -195,6 +195,14 @@ private enum PhoneDetailGrainTexture {
 enum PhoneDetailArtworkStyle: Equatable {
     case backdrop
     case cover(aspectRatio: CGFloat, placeholderSymbol: String)
+
+    /// The mark a missing poster or cover shows.
+    var placeholderSymbol: String {
+        switch self {
+        case .backdrop: ArtworkPlaceholderSymbol.fallback
+        case .cover(_, let placeholderSymbol): placeholderSymbol
+        }
+    }
 }
 
 /// Artwork moves at roughly half foreground speed. Its translation and
@@ -696,7 +704,9 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
                 url: url,
                 thumbhash: posterThumbhash,
                 targetSize: size,
-                contentMode: .fill
+                contentMode: .fill,
+                placeholderStyle: .artwork,
+                placeholderSymbol: artworkStyle.placeholderSymbol
             )
             .frame(width: size.width, height: size.height)
             .clipShape(RoundedRectangle(cornerRadius: SiloTheme.cardCornerRadius, style: .continuous))
@@ -986,23 +996,14 @@ private struct PhoneDetailCoverArtwork: View {
 
     private var cover: some View {
         let width = coverHeight * aspectRatio
-        return Group {
-            if let url, !url.isEmpty {
-                AsyncImageView(
-                    url: url,
-                    thumbhash: thumbhash,
-                    targetSize: CGSize(width: width, height: coverHeight),
-                    contentMode: .fill
-                )
-            } else {
-                Color.siloSurfaceElevated
-                    .overlay {
-                        Image(systemName: placeholderSymbol)
-                            .font(.system(size: coverHeight * 0.2, weight: .semibold))
-                            .foregroundStyle(Color.siloOnSurface.opacity(0.45))
-                    }
-            }
-        }
+        return AsyncImageView(
+            url: url ?? "",
+            thumbhash: thumbhash,
+            targetSize: CGSize(width: width, height: coverHeight),
+            contentMode: .fill,
+            placeholderStyle: .artwork,
+            placeholderSymbol: placeholderSymbol
+        )
         .frame(width: width, height: coverHeight)
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay(

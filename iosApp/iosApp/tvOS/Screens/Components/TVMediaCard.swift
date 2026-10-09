@@ -8,7 +8,7 @@ struct TVMediaCard: View {
     let title: String
     let posterUrl: String
     var posterThumbhash: String? = nil
-    /// Catalog type; picks the glyph shown when the poster cannot load.
+    /// Catalog type; picks the mark shown when the poster is missing.
     var mediaType: String? = nil
     var year: Int? = nil
     /// Optional second caption line rendered in place of the year (same
@@ -168,6 +168,7 @@ struct TVMediaCard: View {
                 thumbhash: posterThumbhash,
                 targetSize: CGSize(width: resolvedCardWidth, height: cardHeight),
                 contentMode: .fill,
+                placeholderStyle: .artwork,
                 placeholderSymbol: ArtworkPlaceholderSymbol.forMediaType(mediaType)
             )
             .frame(width: resolvedCardWidth, height: cardHeight)

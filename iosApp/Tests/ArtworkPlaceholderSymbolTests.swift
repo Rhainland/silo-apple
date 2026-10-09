@@ -7,6 +7,8 @@ final class ArtworkPlaceholderSymbolTests: XCTestCase {
         XCTAssertEqual(ArtworkPlaceholderSymbol.forMediaType("Series"), "tv")
         XCTAssertEqual(ArtworkPlaceholderSymbol.forMediaType("season"), "tv")
         XCTAssertEqual(ArtworkPlaceholderSymbol.forMediaType("episode"), "tv")
+        XCTAssertEqual(ArtworkPlaceholderSymbol.forMediaType("Episodes"), "tv")
+        XCTAssertEqual(ArtworkPlaceholderSymbol.forMediaType("season_premiere"), "tv")
     }
 
     func testMovieAndUnknownTypesKeepFilmGlyph() {
@@ -15,7 +17,14 @@ final class ArtworkPlaceholderSymbolTests: XCTestCase {
         XCTAssertEqual(ArtworkPlaceholderSymbol.forMediaType(""), "film")
     }
 
-    func testAudiobookUsesHeadphonesGlyph() {
+    func testAudioUsesHeadphonesGlyph() {
         XCTAssertEqual(ArtworkPlaceholderSymbol.forMediaType("audiobook"), "headphones")
+        XCTAssertEqual(ArtworkPlaceholderSymbol.forMediaType("podcast"), "headphones")
+    }
+
+    func testReadingFormatsUseBookGlyph() {
+        XCTAssertEqual(ArtworkPlaceholderSymbol.forMediaType("ebook"), "book.closed")
+        XCTAssertEqual(ArtworkPlaceholderSymbol.forMediaType("manga"), "book.closed")
+        XCTAssertEqual(ArtworkPlaceholderSymbol.forMediaType("comic"), "book.closed")
     }
 }
