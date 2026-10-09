@@ -183,7 +183,10 @@ struct TVPlayerControls: View {
                 }
             } else {
                 isSegmentSkipFocused = false
-                if viewModel.showControls && !isHUDPresented {
+                // A recap ends where the intro pill often appears. Keep the
+                // viewer on the intro pill or a transport button they moved to.
+                if viewModel.showControls && !isHUDPresented &&
+                    focusedTransportButton == nil && !isIntroSkipFocused {
                     isScrubberFocused = true
                 }
             }
