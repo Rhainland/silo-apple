@@ -184,6 +184,23 @@ final class DisplayRatingTests: XCTestCase {
     #if os(tvOS)
     // MARK: Focus marquee
 
+    func testMarqueeTranslatesOnlyFeaturedCardsOnView() throws {
+        let item = try decodeSectionItem(#""type":"movie","pendingTranslationLanguage":"de""#)
+        let featured = TVMarqueeContent(item: item, rowTitle: "Featured", isFeatured: true)
+        XCTAssertEqual(
+            featured.onViewTranslationRequest(pendingLanguage: "de", mode: .auto),
+            TVMarqueeTranslationRequest(contentId: item.contentId, language: "de")
+        )
+        // `button` mode and a landed translation start nothing.
+        XCTAssertNil(featured.onViewTranslationRequest(pendingLanguage: "de", mode: .button))
+        XCTAssertNil(featured.onViewTranslationRequest(pendingLanguage: nil, mode: .auto))
+
+        // A card in an ordinary row keeps its text and marker but never starts a job.
+        let ordinary = TVMarqueeContent(item: item, rowTitle: "Recently Added")
+        XCTAssertEqual(ordinary.pendingTranslationLanguage, "de")
+        XCTAssertNil(ordinary.onViewTranslationRequest(pendingLanguage: "de", mode: .auto))
+    }
+
     func testMarqueeShowsOneMarkedRatingBeforeTimeLeft() throws {
         let item = try decodeSectionItem(#""type":"movie","ratingImdb":7.8,"ratingTmdb":8.1,"positionSeconds":600,"durationSeconds":3000"#)
         let content = TVMarqueeContent(item: item, rowTitle: "Continue Watching", isContinueWatching: true)

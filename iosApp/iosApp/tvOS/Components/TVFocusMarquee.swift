@@ -134,6 +134,10 @@ struct TVMarqueeContent: Equatable {
     /// and `machine_translated_fields`). Nil for previews without a card.
     var pendingTranslationLanguage: String? = nil
     var machineTranslatedFields: [String]? = nil
+    /// The card belongs to a Featured section. Only these translate on view,
+    /// matching web, where only the visible Featured slide does; cards in
+    /// ordinary rows show a landed translation but never start a job.
+    var translatesOnView = false
     /// Display-only status the marquee draws in its detail line; set by
     /// `TVSkylineMarquee` from ``CardDescriptionTranslation``.
     var translationStatus: DescriptionTranslationStatus? = nil
@@ -144,7 +148,8 @@ extension TVMarqueeContent {
         item: SectionItem,
         rowId: String? = nil,
         rowTitle: String,
-        isContinueWatching: Bool = false
+        isContinueWatching: Bool = false,
+        isFeatured: Bool = false
     ) {
         let isEpisode = item.type.lowercased() == "episode"
         let isSeries = SiloMediaType.isSeries(item.type)
@@ -216,8 +221,22 @@ extension TVMarqueeContent {
                 ? item.seasonNumber
                 : nil,
             pendingTranslationLanguage: item.pendingTranslationLanguage,
-            machineTranslatedFields: item.machineTranslatedFields
+            machineTranslatedFields: item.machineTranslatedFields,
+            translatesOnView: isFeatured
         )
+    }
+
+    /// The on-view translation the marquee may start for this card: a
+    /// Featured card, in `auto` mode, while its description is missing in
+    /// `pendingLanguage` (from ``CardDescriptionTranslation``, nil once a
+    /// translation landed).
+    func onViewTranslationRequest(
+        pendingLanguage: String?,
+        mode: MetadataAIStatus.OnViewMode
+    ) -> TVMarqueeTranslationRequest? {
+        guard translatesOnView, mode == .auto, let contentId,
+              let pendingLanguage, !pendingLanguage.isEmpty else { return nil }
+        return TVMarqueeTranslationRequest(contentId: contentId, language: pendingLanguage)
     }
 
     // MARK: Formatting
@@ -276,6 +295,12 @@ extension TVMarqueeContent {
         guard let value, !value.isEmpty else { return nil }
         return value
     }
+}
+
+/// A Featured card the marquee translates once focus rests on it.
+struct TVMarqueeTranslationRequest: Hashable {
+    let contentId: String
+    let language: String
 }
 
 // MARK: - Continue Watching playback metadata

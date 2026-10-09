@@ -1,7 +1,9 @@
 import Foundation
 
 /// On-view description translation for the card a hero shows: the Mac's
-/// Featured hero slide and the tvOS marquee's focused card.
+/// Featured hero slide and the tvOS marquee's focused card. Only Featured
+/// cards start a translation on view, as on web; the marquee shows a landed
+/// translation for any card.
 ///
 /// Section cards carry `pending_translation_language` when their description
 /// is missing in the profile's metadata language. Only the card on show

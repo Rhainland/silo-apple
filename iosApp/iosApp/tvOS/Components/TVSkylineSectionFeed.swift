@@ -259,7 +259,8 @@ struct TVSkylineSectionFeed: View {
                 item: item,
                 rowId: section.id,
                 rowTitle: section.title,
-                isContinueWatching: section.isContinueWatchingSection
+                isContinueWatching: section.isContinueWatchingSection,
+                isFeatured: section.isFeatured
             ),
             neighborBackdropURLs: neighborBackdropURLs(around: item, in: section)
         )
@@ -298,7 +299,8 @@ struct TVSkylineSectionFeed: View {
                 item: item,
                 rowId: section.id,
                 rowTitle: section.title,
-                isContinueWatching: section.isContinueWatchingSection
+                isContinueWatching: section.isContinueWatchingSection,
+                isFeatured: section.isFeatured
             )
         )
     }
@@ -356,22 +358,17 @@ struct TVSkylineMarquee: View {
     /// on view, so rolling across a row starts no jobs.
     private static let translationDwell: Duration = .milliseconds(1500)
 
-    private struct TranslationTrigger: Hashable {
-        let contentId: String
-        let language: String
-        let mode: MetadataAIStatus.OnViewMode
-    }
-
     var body: some View {
         TVFocusMarquee(
             content: displayedContent,
             enrichment: model.enrichment,
             scale: scale
         )
-        .task(id: translationTrigger) {
-            // The marquee has no focusable controls, so `button` mode leaves
-            // the action to the detail page's More menu.
-            guard let trigger = translationTrigger, trigger.mode == .auto else { return }
+        .task(id: translationRequest) {
+            // Featured cards in `auto` mode only. The marquee has no
+            // focusable controls, so `button` mode leaves the action to the
+            // detail page's More menu.
+            guard let trigger = translationRequest else { return }
             try? await Task.sleep(for: Self.translationDwell)
             guard !Task.isCancelled else { return }
             CardDescriptionTranslation.shared.cardDidAppear(
@@ -391,12 +388,10 @@ struct TVSkylineMarquee: View {
         return content
     }
 
-    private var translationTrigger: TranslationTrigger? {
-        guard let content = model.content, let contentId = content.contentId,
-              let language = translationPresentation(for: content).pendingLanguage else { return nil }
-        return TranslationTrigger(
-            contentId: contentId,
-            language: language,
+    private var translationRequest: TVMarqueeTranslationRequest? {
+        guard let content = model.content else { return nil }
+        return content.onViewTranslationRequest(
+            pendingLanguage: translationPresentation(for: content).pendingLanguage,
             mode: AICapabilities.shared.metadataOnView
         )
     }
