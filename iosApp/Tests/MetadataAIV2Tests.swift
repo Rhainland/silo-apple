@@ -346,6 +346,16 @@ final class MetadataAIV2Tests: XCTestCase {
         XCTAssertFalse(store.offersTranslation(contentId: id, pendingLanguage: "de"))
         XCTAssertEqual(translatePosts, 1)
 
+        // A reloaded card that carries the text, or reports another language
+        // missing (changed on another device), shows its own payload.
+        let reloaded = store.presentation(contentId: id, overview: "Ein Film", pendingLanguage: nil, machineTranslatedFields: nil)
+        XCTAssertEqual(reloaded.overview, "Ein Film")
+        XCTAssertNil(reloaded.status)
+        let french = store.presentation(contentId: id, overview: "A film", pendingLanguage: "fr", machineTranslatedFields: nil)
+        XCTAssertEqual(french.overview, "A film")
+        XCTAssertEqual(french.pendingLanguage, "fr")
+        XCTAssertTrue(store.offersTranslation(contentId: id, pendingLanguage: "fr"))
+
         // A new profile or metadata language forgets the landed text; `auto`
         // then translates the card on view.
         store.reset()

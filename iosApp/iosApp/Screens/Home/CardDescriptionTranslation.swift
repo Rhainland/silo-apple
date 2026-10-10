@@ -10,9 +10,10 @@ import Foundation
 /// translates: `auto` mode starts its job once per item and language when it
 /// comes on screen, and `button` mode offers a Translate action. While a job
 /// runs, the card's item detail is re-read until it no longer reports the
-/// language missing (or ~45 s pass), and the localized text then replaces the
-/// card's for as long as this profile's identity lasts, so the hero shows it
-/// without reloading the whole section.
+/// language missing (or ~45 s pass). The localized text then replaces the
+/// card's while the card still reports that language missing, so the hero
+/// shows it without reloading the whole section; a reloaded card that is no
+/// longer missing it, or is missing another language, shows its own text.
 @MainActor
 @Observable
 final class CardDescriptionTranslation {
@@ -20,6 +21,8 @@ final class CardDescriptionTranslation {
 
     /// A card's text after its translation landed.
     struct Localized: Equatable {
+        /// The language it was translated into.
+        let language: String
         let overview: String?
         let machineTranslatedFields: [String]?
     }
@@ -66,14 +69,14 @@ final class CardDescriptionTranslation {
         guard let contentId else {
             return Presentation(overview: overview, status: nil, pendingLanguage: nil)
         }
-        if let localized = localized[contentId] {
+        let pending = pendingLanguage?.isEmpty == false ? pendingLanguage : nil
+        if let localized = landed(contentId: contentId, pendingLanguage: pending) {
             return Presentation(
                 overview: localized.overview ?? overview,
                 status: .resolve(translating: false, machineTranslatedFields: localized.machineTranslatedFields),
                 pendingLanguage: nil
             )
         }
-        let pending = pendingLanguage?.isEmpty == false ? pendingLanguage : nil
         let translating = pending.map {
             coordinators[contentId]?.isTranslating(.init(contentId: contentId, targetLanguage: $0)) == true
         } ?? false
@@ -98,8 +101,8 @@ final class CardDescriptionTranslation {
     func offersTranslation(contentId: String?, pendingLanguage: String?) -> Bool {
         _ = revision
         let mode = onViewMode()
-        guard mode != .off, let contentId, localized[contentId] == nil,
-              let language = pendingLanguage, !language.isEmpty else { return false }
+        guard mode != .off, let contentId, let language = pendingLanguage, !language.isEmpty,
+              landed(contentId: contentId, pendingLanguage: language) == nil else { return false }
         let key = DescriptionTranslationCoordinator.Key(contentId: contentId, targetLanguage: language)
         if coordinators[contentId]?.isTranslating(key) == true { return false }
         return mode == .button || coordinators[contentId]?.hasFailed(key) == true
@@ -127,15 +130,29 @@ final class CardDescriptionTranslation {
         revision &+= 1
     }
 
+    /// The landed translation a card shows: only while the card itself still
+    /// reports the language it was translated into as missing. Once a reload
+    /// carries the text, or the profile's language changed elsewhere, the
+    /// card's own payload is current.
+    private func landed(contentId: String, pendingLanguage: String?) -> Localized? {
+        guard let pendingLanguage, let localized = localized[contentId],
+              localized.language == pendingLanguage else { return nil }
+        return localized
+    }
+
     private func start(contentId: String?, pendingLanguage: String?, libraryId: Int?, automatic: Bool) {
-        guard let contentId, localized[contentId] == nil,
-              let language = pendingLanguage, !language.isEmpty else { return }
+        guard let contentId, let language = pendingLanguage, !language.isEmpty,
+              landed(contentId: contentId, pendingLanguage: language) == nil else { return }
         let coordinator = coordinators[contentId] ?? {
             let made = makeCoordinator()
             coordinators[contentId] = made
             return made
         }()
         let key = DescriptionTranslationCoordinator.Key(contentId: contentId, targetLanguage: language)
+        // A run into a language the card no longer reports missing (the
+        // profile's language changed before its section reloaded) would
+        // otherwise hold the coordinator until its cap.
+        if coordinator.isRunning, coordinator.key != key { coordinator.cancel() }
         let fetch: @MainActor () async -> ItemDetail? = { [fetchDetail] in
             await fetchDetail(contentId, libraryId)
         }
@@ -143,6 +160,7 @@ final class CardDescriptionTranslation {
             guard detail.pendingTranslationLanguage == nil else { return false }
             ResponseCache.shared.set(detail, for: CacheKey.itemDetail(contentId, libraryId: libraryId))
             self?.localized[contentId] = Localized(
+                language: language,
                 overview: detail.overview,
                 machineTranslatedFields: detail.machineTranslatedFields
             )
