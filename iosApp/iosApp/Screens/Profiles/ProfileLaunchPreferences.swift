@@ -40,6 +40,8 @@ final class ProfileLaunchPreferences {
                 guard state.behavior != newValue else { return }
                 let previousState = state
                 state.behavior = newValue
+                // Choosing a behavior in Settings answers the TV's offer.
+                state.rememberOfferPending = nil
                 if newValue == .automatic {
                     state.backgroundedAt = nil
                 }
@@ -56,6 +58,32 @@ final class ProfileLaunchPreferences {
         set {
             guard let behavior = ProfileLaunchBehavior(rawValue: newValue) else { return }
             self.behavior = behavior
+        }
+    }
+
+    /// Whether the next profile picked should be offered as the one this TV
+    /// opens automatically.
+    var isRememberOfferPending: Bool {
+        state.rememberOfferPending == true
+    }
+
+    /// Answers the TV's one-time offer: `remember` opens the picked profile
+    /// automatically from now on (Automatic); otherwise the TV keeps asking.
+    @discardableResult
+    func answerRememberOffer(remember: Bool) -> Bool {
+        update { state in
+            guard state.rememberOfferPending == true else { return true }
+            let previousState = state
+            state.rememberOfferPending = nil
+            if remember {
+                state.behavior = .automatic
+                state.backgroundedAt = nil
+            }
+            guard persist(state) else {
+                state = previousState
+                return false
+            }
+            return true
         }
     }
 
@@ -194,12 +222,20 @@ final class ProfileLaunchPreferences {
               !accountEpoch.isEmpty else {
             return false
         }
-        return remember(
+        guard remember(
             profileID: profileID,
             requiresPIN: requiresPIN,
             accountEpoch: accountEpoch,
             for: serverID
-        )
+        ) else {
+            return false
+        }
+        // A device that remembered a profile before launch state was saved is
+        // not fresh: it keeps opening that profile.
+        if isRememberOfferPending {
+            behavior = .automatic
+        }
+        return true
     }
 
     /// Applies `change` to the state under the lock, so each mutation, its

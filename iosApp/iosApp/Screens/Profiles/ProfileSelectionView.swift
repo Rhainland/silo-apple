@@ -97,7 +97,32 @@ struct ProfileSelectionView: View {
         }
         #endif
         .sensoryFeedback(.error, trigger: wrongPINCount)
+        #if os(tvOS)
+        .alert(
+            rememberOfferTitle,
+            isPresented: Binding(
+                get: { viewModel.rememberOffer != nil },
+                // Only the buttons answer: Menu runs the cancel button's action.
+                set: { _ in }
+            )
+        ) {
+            Button("Remember") {
+                viewModel.answerRememberOffer(remember: true, router: router)
+            }
+            Button("Ask Every Time", role: .cancel) {
+                viewModel.answerRememberOffer(remember: false, router: router)
+            }
+        } message: {
+            Text("Silo can skip Who's Watching and open this profile when it starts on this Apple TV. You can change this later in Settings > General > Profile Selection.")
+        }
+        #endif
     }
+
+    #if os(tvOS)
+    private var rememberOfferTitle: String {
+        "Open \(viewModel.rememberOffer?.name ?? "this profile") automatically?"
+    }
+    #endif
 
     // MARK: - Background
 
@@ -509,6 +534,10 @@ struct ProfileSelectionView: View {
                 case .profileSelection:
                     try await viewModel.selectProfileWithPIN(context.profile, pin: pin, router: router)
                     MarqueeHaptics.success()
+                    if viewModel.rememberOffer != nil {
+                        // Home waits for the remember offer; leave the prompt first.
+                        closePINEntry()
+                    }
                 case .profileManagement:
                     try await viewModel.prepareForProfileManagement(pin: pin)
                     MarqueeHaptics.success()
