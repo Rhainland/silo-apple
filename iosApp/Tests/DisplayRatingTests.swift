@@ -184,6 +184,19 @@ final class DisplayRatingTests: XCTestCase {
     #if os(tvOS)
     // MARK: Focus marquee
 
+    @MainActor
+    func testMarqueeTakesTheReloadedTextOfTheShownCard() throws {
+        let german = try decodeSectionItem(#""type":"movie","overview":"[German] Text""#)
+        let french = try decodeSectionItem(#""type":"movie","overview":"[French] Text""#)
+        let model = TVFocusMarqueeModel()
+        model.seed(TVMarqueeContent(item: german, rowId: "row", rowTitle: "Movies"))
+        model.refreshContent(TVMarqueeContent(item: french, rowId: "row", rowTitle: "Movies"))
+        XCTAssertEqual(model.content?.synopsis, "[French] Text")
+        // Another row's copy of the card is not the one on show.
+        model.refreshContent(TVMarqueeContent(item: german, rowId: "other", rowTitle: "Other"))
+        XCTAssertEqual(model.content?.synopsis, "[French] Text")
+    }
+
     func testMarqueeTranslatesOnlyFeaturedCardsOnView() throws {
         let item = try decodeSectionItem(#""type":"movie","pendingTranslationLanguage":"de""#)
         let featured = TVMarqueeContent(item: item, rowTitle: "Featured", isFeatured: true)

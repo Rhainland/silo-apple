@@ -105,6 +105,38 @@ struct TVSkylineSectionFeed: View {
             seedMarqueeFromFirstItem()
             if let pending = pendingFocusRequest { requestEntryFocus(pending) }
         }
+        // A reload can change the shown card's text without moving focus:
+        // a new metadata language or a translation that landed. The marquee
+        // keeps the card it last previewed, so give it the reloaded copy.
+        .onChange(of: localizedTextSignature) { _, _ in
+            refreshMarqueeFromSections()
+        }
+    }
+
+    /// The localized text the marquee shows for each card, in feed order.
+    private var localizedTextSignature: [String] {
+        sections.flatMap { section in
+            section.items.map { item in
+                [section.id, item.contentId, item.title, item.overview ?? "",
+                 item.pendingTranslationLanguage ?? "", (item.machineTranslatedFields ?? []).joined(separator: ",")]
+                    .joined(separator: "\u{1F}")
+            }
+        }
+    }
+
+    private func refreshMarqueeFromSections() {
+        guard let shown = marqueeModel.content, let contentId = shown.contentId,
+              let section = sections.first(where: { $0.id == shown.rowId }),
+              let item = section.items.first(where: { $0.contentId == contentId }) else { return }
+        marqueeModel.refreshContent(
+            TVMarqueeContent(
+                item: item,
+                rowId: section.id,
+                rowTitle: section.title,
+                isContinueWatching: section.isContinueWatchingSection,
+                isFeatured: section.isFeatured
+            )
+        )
     }
 
     // MARK: - Rows

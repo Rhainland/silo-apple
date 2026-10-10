@@ -765,6 +765,14 @@ final class TVFocusMarqueeModel {
         pendingNeighborBackdropURLs = []
     }
 
+    /// The shown card was reloaded (new metadata language, a landed
+    /// translation): replace its text in place. Focus did not move, so the
+    /// backdrop and rest gate are left alone. Ignores any other card.
+    func refreshContent(_ candidate: TVMarqueeContent) {
+        guard let content, content.id == candidate.id, content != candidate else { return }
+        self.content = candidate
+    }
+
     /// Feed left the screen: stop every in-flight task and warmup. `content`
     /// is kept so `resume` can restore the same selection.
     func suspend() {
