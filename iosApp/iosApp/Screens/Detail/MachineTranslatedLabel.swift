@@ -7,9 +7,12 @@ enum MachineTranslation {
     static let label = "Translated by AI"
     static let symbol = "translate"
 
-    /// Whether any of a row's localized fields was machine-translated.
-    static func isMarked(_ fields: [String]?) -> Bool {
-        !(fields ?? []).isEmpty
+    /// Whether the overview shown was machine-translated. Every surface in
+    /// this app shows the overview but not the tagline, so a tagline-only
+    /// mark (an AI tagline under a provider or hand-written overview) must not
+    /// label it.
+    static func isOverviewMarked(_ fields: [String]?) -> Bool {
+        (fields ?? []).contains("overview")
     }
 }
 
@@ -28,11 +31,12 @@ enum DescriptionTranslationStatus: Equatable {
         }
     }
 
-    /// The status for a description: a running translation wins over the
-    /// label, since the text shown is still the original until it lands.
+    /// The status for an overview: a running translation wins over the
+    /// label, since the text shown is still the original until it lands. The
+    /// label needs `overview` among the machine-translated fields.
     static func resolve(translating: Bool, machineTranslatedFields: [String]?) -> DescriptionTranslationStatus? {
         if translating { return .translating }
-        return MachineTranslation.isMarked(machineTranslatedFields) ? .machineTranslated : nil
+        return MachineTranslation.isOverviewMarked(machineTranslatedFields) ? .machineTranslated : nil
     }
 }
 

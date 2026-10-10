@@ -277,7 +277,7 @@ private struct PhoneEpisodeCard: View {
 
     /// The description shown under the title was machine-translated by AI.
     private var showsMachineTranslationMarker: Bool {
-        episode.overview?.isEmpty == false && MachineTranslation.isMarked(episode.machineTranslatedFields)
+        episode.overview?.isEmpty == false && MachineTranslation.isOverviewMarked(episode.machineTranslatedFields)
     }
 
     private var titleColor: Color {

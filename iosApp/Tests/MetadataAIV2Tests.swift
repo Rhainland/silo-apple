@@ -173,7 +173,11 @@ final class MetadataAIV2Tests: XCTestCase {
 
     func testStatusPrefersARunningTranslationOverTheLabel() {
         XCTAssertEqual(DescriptionTranslationStatus.resolve(translating: true, machineTranslatedFields: ["overview"]), .translating)
-        XCTAssertEqual(DescriptionTranslationStatus.resolve(translating: false, machineTranslatedFields: ["tagline"]), .machineTranslated)
+        XCTAssertEqual(DescriptionTranslationStatus.resolve(translating: false, machineTranslatedFields: ["overview", "tagline"]), .machineTranslated)
+        // Only the tagline was machine-translated: the provider or hand-written
+        // overview on screen carries no label.
+        XCTAssertNil(DescriptionTranslationStatus.resolve(translating: false, machineTranslatedFields: ["tagline"]))
+        XCTAssertFalse(MachineTranslation.isOverviewMarked(["tagline"]))
         XCTAssertNil(DescriptionTranslationStatus.resolve(translating: false, machineTranslatedFields: []))
         XCTAssertEqual(DescriptionTranslationStatus.machineTranslated.text, "Translated by AI")
     }
@@ -195,6 +199,14 @@ final class MetadataAIV2Tests: XCTestCase {
         let settled = ItemDetailViewModel.DescriptionTranslationTargets.make(
             detail: try Self.detail(""), selectedSeason: selected, episodes: [try Self.episode(1)])
         XCTAssertTrue(settled.isEmpty)
+    }
+
+    @MainActor
+    func testHeroCardIgnoresATaglineOnlyMark() {
+        let store = CardDescriptionTranslation(onViewMode: { .auto })
+        let card = store.presentation(contentId: "movie-1", overview: "Anbieter: Text", pendingLanguage: nil,
+                                      machineTranslatedFields: ["tagline"])
+        XCTAssertNil(card.status)
     }
 
     @MainActor
