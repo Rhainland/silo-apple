@@ -127,6 +127,11 @@ class ItemDetailViewModel {
     /// Cancels publication from an older season request after the user has
     /// already moved to another page.
     private var episodeLoadGeneration = 0
+    /// Per season, how many description-translator reads have been
+    /// published. Such a read always began after every load still in flight
+    /// (otherwise its generation check fails), so a load that sees this move
+    /// carries the older page and leaves the published one alone.
+    private var translatedEpisodePublications: [Int: Int] = [:]
     #if !os(tvOS)
     /// Warms the other seasons' pages, nearest first, once the selected
     /// season is known, so a later chip tap is served from memory without
@@ -811,6 +816,7 @@ class ItemDetailViewModel {
         fetchEpisodes: (@Sendable (String, Int) async throws -> EpisodesResponse)? = nil
     ) async -> Bool {
         guard let seasonNumber, !Task.isCancelled else { return false }
+        let translationPublications = translatedEpisodePublications[seasonNumber, default: 0]
         seriesContentId = contentId
         seasonsLoadGeneration += 1
         let hierarchyGeneration = seasonsLoadGeneration
@@ -875,7 +881,7 @@ class ItemDetailViewModel {
               expectedDetailGeneration == nil || expectedDetailGeneration == detailGeneration,
               hierarchyGeneration == seasonsLoadGeneration,
               selectionGeneration == episodeLoadGeneration else { return false }
-        if let response {
+        if let response, translatedEpisodePublications[seasonNumber, default: 0] == translationPublications {
             ResponseCache.shared.set(response, for: CacheKey.itemEpisodes(
                 seriesId: contentId, seasonNumber: seasonNumber,
                 libraryId: libraryId
@@ -1269,6 +1275,7 @@ class ItemDetailViewModel {
         #endif
         episodeLoadGeneration += 1
         let generation = episodeLoadGeneration
+        let translationPublications = translatedEpisodePublications[seasonNumber, default: 0]
         episodesLoadFailed = false
         failedEpisodeSeasonNumber = nil
         defer {
@@ -1315,11 +1322,15 @@ class ItemDetailViewModel {
                 )
             }
             guard !Task.isCancelled, generation == episodeLoadGeneration else { return }
-            ResponseCache.shared.set(response, for: key)
+            // A translated read of this page published meanwhile is newer.
+            let isSuperseded = translatedEpisodePublications[seasonNumber, default: 0] != translationPublications
             let sorted = response.sortedEpisodes
-            episodesBySeason[seasonNumber] = sorted
+            if !isSuperseded {
+                ResponseCache.shared.set(response, for: key)
+                episodesBySeason[seasonNumber] = sorted
+            }
             if selectedSeason == nil || selectedSeason?.seasonNumber == seasonNumber {
-                episodes = sorted
+                if !isSuperseded { episodes = sorted }
                 loadedSeasonNumber = seasonNumber
                 isLoadingEpisodes = false
             }
@@ -1701,6 +1712,7 @@ class ItemDetailViewModel {
         readGeneration: Int
     ) -> Bool {
         guard seriesContentId == seriesId, episodeLoadGeneration == readGeneration else { return false }
+        translatedEpisodePublications[seasonNumber, default: 0] += 1
         ResponseCache.shared.set(
             response,
             for: CacheKey.itemEpisodes(seriesId: seriesId, seasonNumber: seasonNumber, libraryId: libraryId)

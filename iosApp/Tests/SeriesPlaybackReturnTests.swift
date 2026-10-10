@@ -91,6 +91,30 @@ final class SeriesPlaybackReturnTests: XCTestCase {
         XCTAssertEqual(model.episodeReadGeneration, laterRead)
     }
 
+    /// An episode load that began before a translated read was published
+    /// carries the older page; it must not overwrite the translated rows.
+    func testEpisodeLoadOlderThanAPublishedTranslationKeepsIt() async throws {
+        let model = try seriesModel(showing: 1)
+        defer { clearCache() }
+        let seriesId = self.seriesId
+        await model.loadEpisodes(
+            seriesId: seriesId, seasonNumber: 1, refreshFavoriteStates: false,
+            fetchEpisodes: { _, number in
+                // The translator's read begins after this load and lands first.
+                let translated = try self.page(number, count: 4)
+                let readGeneration = await model.episodeReadGeneration
+                let published = await model.publishTranslatedEpisodes(
+                    translated, seriesId: seriesId, seasonNumber: number, readGeneration: readGeneration
+                )
+                XCTAssertTrue(published)
+                return try self.page(number, count: 3)
+            }
+        )
+        XCTAssertEqual(model.episodes.count, 4)
+        XCTAssertEqual(model.episodesBySeason[1]?.count, 4)
+        XCTAssertFalse(model.isLoadingEpisodes)
+    }
+
     func testSeasonChosenDuringTheFetchWins() async throws {
         let model = try seriesModel(showing: 1, seasons: [1, 2, 3])
         defer { clearCache() }
