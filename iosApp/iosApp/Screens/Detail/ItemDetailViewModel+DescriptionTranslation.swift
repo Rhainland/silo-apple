@@ -163,17 +163,31 @@ extension ItemDetailViewModel {
 
     // MARK: Season episodes
 
-    private func seasonTranslationFetch(seriesId: String, seasonNumber: Int) -> @MainActor () async -> EpisodesResponse? {
-        { [libraryId] in
-            try? await SiloAPI.shared.episodes(seriesId: seriesId, seasonNumber: seasonNumber, libraryId: libraryId)
+    /// A season page re-read, with the episode load generation it started at.
+    struct TranslatedEpisodesRead {
+        let response: EpisodesResponse
+        let generation: Int
+    }
+
+    private func seasonTranslationFetch(seriesId: String, seasonNumber: Int) -> @MainActor () async -> TranslatedEpisodesRead? {
+        { [weak self, libraryId] in
+            guard let generation = self?.episodeReadGeneration,
+                  let response = try? await SiloAPI.shared.episodes(
+                      seriesId: seriesId, seasonNumber: seasonNumber, libraryId: libraryId
+                  ) else { return nil }
+            return TranslatedEpisodesRead(response: response, generation: generation)
         }
     }
 
-    private func seasonTranslationApply(seriesId: String, seasonNumber: Int) -> @MainActor (EpisodesResponse) -> Bool {
-        { [weak self] response in
+    private func seasonTranslationApply(seriesId: String, seasonNumber: Int) -> @MainActor (TranslatedEpisodesRead) -> Bool {
+        { [weak self] read in
             guard let self else { return true }
-            self.publishTranslatedEpisodes(response, seriesId: seriesId, seasonNumber: seasonNumber)
-            return !response.episodes.contains { $0.pendingTranslationLanguage?.isEmpty == false }
+            // A load or watched refresh that began during the read owns the
+            // page; read again rather than publish older personal state.
+            guard self.publishTranslatedEpisodes(
+                read.response, seriesId: seriesId, seasonNumber: seasonNumber, readGeneration: read.generation
+            ) else { return false }
+            return !read.response.episodes.contains { $0.pendingTranslationLanguage?.isEmpty == false }
         }
     }
 }

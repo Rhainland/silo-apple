@@ -66,6 +66,31 @@ final class SeriesPlaybackReturnTests: XCTestCase {
         XCTAssertEqual(model.selectedSeason?.seasonNumber, 2)
     }
 
+    /// The description translator re-reads the season page while a watched
+    /// refresh reloads it; the refresh carries newer personal state and wins.
+    func testTranslationReadYieldsToAnEpisodeLoadThatStartedDuringIt() async throws {
+        let model = try seriesModel(showing: 1)
+        defer { clearCache() }
+        let readGeneration = model.episodeReadGeneration
+        await model.loadEpisodes(
+            seriesId: seriesId, seasonNumber: 1, refreshFavoriteStates: false,
+            fetchEpisodes: { _, number in try self.page(number, count: 3) }
+        )
+        XCTAssertFalse(model.publishTranslatedEpisodes(
+            try page(1, count: 2), seriesId: seriesId, seasonNumber: 1, readGeneration: readGeneration
+        ))
+        XCTAssertEqual(model.episodes.count, 3)
+
+        // A read that began after the load publishes, and leaves the
+        // generation alone for loads still in flight.
+        let laterRead = model.episodeReadGeneration
+        XCTAssertTrue(model.publishTranslatedEpisodes(
+            try page(1, count: 4), seriesId: seriesId, seasonNumber: 1, readGeneration: laterRead
+        ))
+        XCTAssertEqual(model.episodes.count, 4)
+        XCTAssertEqual(model.episodeReadGeneration, laterRead)
+    }
+
     func testSeasonChosenDuringTheFetchWins() async throws {
         let model = try seriesModel(showing: 1, seasons: [1, 2, 3])
         defer { clearCache() }

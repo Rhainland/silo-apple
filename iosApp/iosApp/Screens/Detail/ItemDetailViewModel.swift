@@ -1683,23 +1683,36 @@ class ItemDetailViewModel {
     /// The series whose seasons and episodes this page loads.
     var loadedSeriesContentId: String? { seriesContentId }
 
+    /// Taken before the description translator re-reads a season page, so
+    /// ``publishTranslatedEpisodes(_:seriesId:seasonNumber:readGeneration:)``
+    /// can tell whether a newer load started while the read was in flight.
+    var episodeReadGeneration: Int { episodeLoadGeneration }
+
     /// Publish a season page the description translator re-read, without the
-    /// loading or error states a visible refresh shows. A newer read for the
-    /// selected season wins over any older one still in flight.
-    func publishTranslatedEpisodes(_ response: EpisodesResponse, seriesId: String, seasonNumber: Int) {
-        guard seriesContentId == seriesId else { return }
+    /// loading or error states a visible refresh shows. Returns false, and
+    /// publishes nothing, when an episode load or a watched refresh started
+    /// after the read began: that load owns the page and carries newer
+    /// personal state. The generation is not bumped, since it also gates
+    /// season selection and hierarchy loads already in flight.
+    func publishTranslatedEpisodes(
+        _ response: EpisodesResponse,
+        seriesId: String,
+        seasonNumber: Int,
+        readGeneration: Int
+    ) -> Bool {
+        guard seriesContentId == seriesId, episodeLoadGeneration == readGeneration else { return false }
         ResponseCache.shared.set(
             response,
             for: CacheKey.itemEpisodes(seriesId: seriesId, seasonNumber: seasonNumber, libraryId: libraryId)
         )
         let sorted = response.sortedEpisodes
         episodesBySeason[seasonNumber] = sorted
-        guard selectedSeason?.seasonNumber == seasonNumber else { return }
-        episodeLoadGeneration += 1
+        guard selectedSeason?.seasonNumber == seasonNumber else { return true }
         episodes = sorted
         loadedSeasonNumber = seasonNumber
         isLoadingEpisodes = false
         episodesLoadFailed = false
+        return true
     }
 
     func setEpisodeFavorite(contentId: String, isFavorite: Bool) async -> PersonalStateOutcome {
