@@ -61,12 +61,12 @@ struct MacFeaturedHero: View {
             // until they come up.
             .task(id: TranslationTrigger(
                 contentId: item.contentId,
-                language: translation.presentation(for: item).pendingLanguage,
+                language: translatablePresentation(for: item)?.pendingLanguage,
                 mode: AICapabilities.shared.metadataOnView
             )) {
                 translation.cardDidAppear(
                     contentId: item.contentId,
-                    pendingLanguage: translation.presentation(for: item).pendingLanguage,
+                    pendingLanguage: translatablePresentation(for: item)?.pendingLanguage,
                     libraryId: nil
                 )
             }
@@ -92,6 +92,7 @@ struct MacFeaturedHero: View {
                     thumbhash: backdropURL == nil ? item.posterThumbhash : item.backdropThumbhash,
                     contentMode: .fill
                 )
+                .episodeSpoilerBlur(EpisodeSpoilerPreferences.shared.settings.hidesImage(for: item))
             } else {
                 Color.siloSurfaceElevated
             }
@@ -184,12 +185,12 @@ struct MacFeaturedHero: View {
     /// server's `button` mode, a Translate chip.
     @ViewBuilder
     private func overview(for item: SectionItem) -> some View {
-        let presentation = translation.presentation(for: item)
-        let offersTranslation = translation.offersTranslation(
-            contentId: item.contentId,
-            pendingLanguage: presentation.pendingLanguage
-        )
-        if let overview = presentation.overview, !overview.isEmpty {
+        if let presentation = translatablePresentation(for: item),
+           let overview = presentation.overview, !overview.isEmpty {
+            let offersTranslation = translation.offersTranslation(
+                contentId: item.contentId,
+                pendingLanguage: presentation.pendingLanguage
+            )
             VStack(alignment: .leading, spacing: SiloTheme.smallPadding) {
                 Text(overview)
                     .font(.siloBody)
@@ -224,6 +225,14 @@ struct MacFeaturedHero: View {
                 }
             }
         }
+    }
+
+    /// The slide's description and its translation state, or nil while
+    /// spoiler protection hides an unwatched episode's description: a
+    /// translation must neither show it nor start for it.
+    private func translatablePresentation(for item: SectionItem) -> CardDescriptionTranslation.Presentation? {
+        guard !EpisodeSpoilerPreferences.shared.settings.hidesOverview(for: item) else { return nil }
+        return translation.presentation(for: item)
     }
 
     /// The title's logo artwork where the server has one, otherwise its name.
@@ -303,6 +312,9 @@ struct MacFeaturedHero: View {
                     targetSize: Self.thumbnailSize,
                     contentMode: .fill
                 )
+                .episodeSpoilerBlur(entry.isEpisodeItem && EpisodeSpoilerPreferences.shared.settings.hidesImage(
+                    for: EpisodeWatchState(sectionItem: entry), isEpisodeStill: entry.posterIsEpisodeStill
+                ))
             } else {
                 Color.siloSurfaceElevated
                     .overlay {

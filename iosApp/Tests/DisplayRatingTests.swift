@@ -190,10 +190,10 @@ final class DisplayRatingTests: XCTestCase {
         let french = try decodeSectionItem(#""type":"movie","overview":"[French] Text""#)
         let model = TVFocusMarqueeModel()
         model.seed(TVMarqueeContent(item: german, rowId: "row", rowTitle: "Movies"))
-        model.refreshContent(TVMarqueeContent(item: french, rowId: "row", rowTitle: "Movies"))
+        model.replaceContent(TVMarqueeContent(item: french, rowId: "row", rowTitle: "Movies"))
         XCTAssertEqual(model.content?.synopsis, "[French] Text")
         // Another row's copy of the card is not the one on show.
-        model.refreshContent(TVMarqueeContent(item: german, rowId: "other", rowTitle: "Other"))
+        model.replaceContent(TVMarqueeContent(item: german, rowId: "other", rowTitle: "Other"))
         XCTAssertEqual(model.content?.synopsis, "[French] Text")
     }
 
@@ -212,6 +212,22 @@ final class DisplayRatingTests: XCTestCase {
         let ordinary = TVMarqueeContent(item: item, rowTitle: "Recently Added")
         XCTAssertEqual(ordinary.pendingTranslationLanguage, "de")
         XCTAssertNil(ordinary.onViewTranslationRequest(pendingLanguage: "de", mode: .auto))
+    }
+
+    func testMarqueeNeverTranslatesAHiddenEpisodeDescription() throws {
+        let episode = try decodeSectionItem(
+            #""type":"episode","overview":"The twist.","pendingTranslationLanguage":"de","machineTranslatedFields":["overview"]"#
+        )
+        let hidden = TVMarqueeContent(
+            item: episode,
+            rowTitle: "Featured",
+            isFeatured: true,
+            spoilers: EpisodeSpoilerSettings(hidesImages: false, hidesOverviews: true)
+        )
+        XCTAssertNil(hidden.synopsis)
+        XCTAssertTrue(hidden.hidesSynopsis)
+        XCTAssertNil(hidden.machineTranslatedFields)
+        XCTAssertNil(hidden.onViewTranslationRequest(pendingLanguage: "de", mode: .auto))
     }
 
     func testMarqueeShowsOneMarkedRatingBeforeTimeLeft() throws {

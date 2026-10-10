@@ -120,6 +120,8 @@ struct TVMarqueeContent: Equatable {
     /// root hero upgrades to the series backdrop from detail enrichment rather
     /// than blowing the still up full-width.
     let isEpisode: Bool
+    /// Rebuilt from the current section watch state and profile preference.
+    let protectsEpisodeImages: Bool
     /// Series hierarchy to warm while this card is resting under focus. A
     /// Series card points at itself; a Continue Watching episode points at its
     /// parent Series and current season. Other episode rows deliberately leave
@@ -138,6 +140,9 @@ struct TVMarqueeContent: Equatable {
     /// matching web, where only the visible Featured slide does; cards in
     /// ordinary rows show a landed translation but never start a job.
     var translatesOnView = false
+    /// Spoiler protection dropped the synopsis, so a landed translation must
+    /// not bring it back.
+    var hidesSynopsis = false
     /// Display-only status the marquee draws in its detail line; set by
     /// `TVSkylineMarquee` from ``CardDescriptionTranslation``.
     var translationStatus: DescriptionTranslationStatus? = nil
@@ -149,9 +154,16 @@ extension TVMarqueeContent {
         rowId: String? = nil,
         rowTitle: String,
         isContinueWatching: Bool = false,
-        isFeatured: Bool = false
+        isFeatured: Bool = false,
+        spoilers: EpisodeSpoilerSettings = .off
     ) {
-        let isEpisode = item.type.lowercased() == "episode"
+        let isEpisode = item.isEpisodeItem
+        // Drop the unwatched episode's description and stills. Keep series
+        // artwork in either slot while detail enrichment resolves the hero.
+        let hidesSynopsis = spoilers.hidesOverview(for: item)
+        let state = EpisodeWatchState(sectionItem: item)
+        let hidesBackdrop = isEpisode && spoilers.hidesImage(for: state, isEpisodeStill: item.backdropIsEpisodeStill)
+        let hidesPoster = isEpisode && spoilers.hidesImage(for: state, isEpisodeStill: item.posterIsEpisodeStill)
         let isSeries = SiloMediaType.isSeries(item.type)
 
         var meta: [String] = []
@@ -204,25 +216,27 @@ extension TVMarqueeContent {
             trailingMetaParts: trailingMeta,
             runtimeMetaIndex: runtimeMetaIndex,
             runtimeText: runtimeText,
-            synopsis: item.overview,
-            backdropUrl: Self.nonEmpty(item.backdropUrl),
-            backdropThumbhash: item.backdropThumbhash,
-            fallbackArtworkUrl: Self.nonEmpty(item.posterUrl),
-            fallbackArtworkThumbhash: item.posterThumbhash,
+            synopsis: hidesSynopsis ? nil : item.overview,
+            backdropUrl: hidesBackdrop ? nil : Self.nonEmpty(item.backdropUrl),
+            backdropThumbhash: hidesBackdrop ? nil : item.backdropThumbhash,
+            fallbackArtworkUrl: hidesPoster ? nil : Self.nonEmpty(item.posterUrl),
+            fallbackArtworkThumbhash: hidesPoster ? nil : item.posterThumbhash,
             baseOverlayData: OverlayData.from(item),
             contentRatingBadge: contentRatingBadge,
             progressUpdatedAt: item.progressUpdatedAt,
             prefersLastUsedPlaybackMetadata: isContinueWatching,
             isEpisode: isEpisode,
+            protectsEpisodeImages: isEpisode && spoilers.hidesImage(for: state),
             seriesContextId: isSeries
                 ? item.contentId
                 : (isEpisode && isContinueWatching ? item.seriesId : nil),
             seriesContextSeasonNumber: isEpisode && isContinueWatching
                 ? item.seasonNumber
                 : nil,
-            pendingTranslationLanguage: item.pendingTranslationLanguage,
-            machineTranslatedFields: item.machineTranslatedFields,
-            translatesOnView: isFeatured
+            pendingTranslationLanguage: hidesSynopsis ? nil : item.pendingTranslationLanguage,
+            machineTranslatedFields: hidesSynopsis ? nil : item.machineTranslatedFields,
+            translatesOnView: isFeatured && !hidesSynopsis,
+            hidesSynopsis: hidesSynopsis
         )
     }
 
@@ -564,15 +578,17 @@ struct TVMarqueeEnrichment: Equatable {
     /// Item-detail runtime fills section payloads that omit it (notably some
     /// recommendation and library rows).
     let runtimeText: String?
-    /// The detail-level backdrop. For episodes this is the series backdrop —
-    /// far higher-res than the episode still the section payload carries — so
-    /// the root hero swaps to it once enrichment arrives.
+    /// The detail-level backdrop may be an episode still or fallback series
+    /// artwork. Its provenance follows it through hero resolution.
     let backdropUrl: String?
     let backdropThumbhash: String?
+
+    let backdropIsEpisodeStill: Bool?
 
     init(detail: ItemDetail) {
         backdropUrl = detail.backdropUrl
         backdropThumbhash = detail.backdropThumbhash
+        backdropIsEpisodeStill = detail.backdropIsEpisodeStill
         let trimmedRating = detail.contentRating?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         contentRatingBadge = trimmedRating?.isEmpty == false
@@ -637,6 +653,7 @@ final class TVFocusMarqueeModel {
     /// previews without a content id, which have no detail lookup).
     private var resolvedArtwork: TVHeroArtwork? {
         guard let content else { return nil }
+        let hidesEnrichedBackdrop = content.protectsEpisodeImages && enrichment?.backdropIsEpisodeStill != false
         return TVHeroArtworkResolver.resolve(
             sectionBackdrop: TVHeroArtwork(
                 url: content.backdropUrl,
@@ -650,8 +667,8 @@ final class TVFocusMarqueeModel {
             canLoadEnrichment: content.contentId != nil,
             enrichmentState: enrichmentState,
             enrichedBackdrop: TVHeroArtwork(
-                url: enrichment?.backdropUrl,
-                thumbhash: enrichment?.backdropThumbhash
+                url: hidesEnrichedBackdrop ? nil : enrichment?.backdropUrl,
+                thumbhash: hidesEnrichedBackdrop ? nil : enrichment?.backdropThumbhash
             )
         )
     }
@@ -706,6 +723,31 @@ final class TVFocusMarqueeModel {
         restImmediately(on: candidate)
     }
 
+    /// The selected card was removed from the feed. Cancel its pending
+    /// work before allowing the feed to seed a replacement.
+    func clearSelection() {
+        let wasActive = isActive
+        suspend()
+        content = nil
+        enrichment = nil
+        enrichmentState = .notStarted
+        displayedArtwork = nil
+        tintColor = .siloBackground
+        pendingNeighborBackdropURLs = []
+        if wasActive { resume() }
+    }
+
+    /// Swap in a rebuilt copy of the displayed selection, for example after
+    /// the spoiler switches load or change. The debounce, the rested
+    /// backdrop gate, and enrichment carry over; only the presentation
+    /// (synopsis, section artwork) changes. A candidate for any other
+    /// selection is ignored.
+    func replaceContent(_ candidate: TVMarqueeContent) {
+        guard let content, content.id == candidate.id, content != candidate else { return }
+        self.content = candidate
+        updateBackdropIfReady()
+    }
+
     /// Keep foreground information responsive while rapid focus movement
     /// leaves the existing backdrop still. Only a rested selection (150 ms,
     /// §4.2) replaces the large composited image and starts its palette
@@ -739,8 +781,9 @@ final class TVFocusMarqueeModel {
         backdropTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(SiloTheme.Skyline.marqueeRestDebounceMilliseconds))
             guard !Task.isCancelled, let self,
-                  self.isActive, self.content == candidate else { return }
-            self.rest(on: candidate)
+                  self.isActive, let content = self.content,
+                  content.id == candidate.id else { return }
+            self.rest(on: content)
         }
     }
 
@@ -763,14 +806,6 @@ final class TVFocusMarqueeModel {
         updateBackdropIfReady()
         PosterImageCache.warmNeighborBackdrops(pendingNeighborBackdropURLs)
         pendingNeighborBackdropURLs = []
-    }
-
-    /// The shown card was reloaded (new metadata language, a landed
-    /// translation): replace its text in place. Focus did not move, so the
-    /// backdrop and rest gate are left alone. Ignores any other card.
-    func refreshContent(_ candidate: TVMarqueeContent) {
-        guard let content, content.id == candidate.id, content != candidate else { return }
-        self.content = candidate
     }
 
     /// Feed left the screen: stop every in-flight task and warmup. `content`

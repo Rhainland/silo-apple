@@ -416,7 +416,16 @@ struct TVSeriesDetailView: View {
     /// The episode text the hero shows. The season's episode rows are what
     /// an on-view translation refreshes, so they win over the focused
     /// episode's playback detail, which is read once per focus.
+    ///
+    /// Spoiler protection keeps the episode title and drops its description
+    /// (the Series overview is never hidden). The playback detail may be a
+    /// cached copy; the refreshed episode list can know the episode has
+    /// started, so either source can reveal it.
     private var heroEpisodeOverview: (text: String, machineTranslatedFields: [String]?)? {
+        let spoilers = EpisodeSpoilerPreferences.shared.settings
+        let hidesOverview = [matchingPlaybackDetail?.userData, displayedEpisode?.userData]
+            .allSatisfy { spoilers.hidesOverview(for: EpisodeWatchState($0)) }
+        if hidesOverview { return nil }
         if let episode = displayedEpisode, let overview = episode.overview, !overview.isEmpty {
             return (overview, episode.machineTranslatedFields)
         }
