@@ -197,6 +197,26 @@ final class MetadataAIV2Tests: XCTestCase {
         XCTAssertTrue(settled.isEmpty)
     }
 
+    @MainActor
+    func testSeasonJobLeavesTheSeriesDescriptionStatusAlone() async throws {
+        let (api, _) = try await client()
+        stub.reply(202, Self.job.replacingOccurrences(of: "movie/heat?1995", with: "season-1"))
+        let season = DescriptionTranslationCoordinator(api: SiloAI(v2: api), schedule: [.seconds(60)],
+                                                       sleep: { try await Task.sleep(for: $0) })
+        let viewModel = ItemDetailViewModel(seasonDescriptionTranslation: season)
+        viewModel.detail = try Self.detail(#","machine_translated_fields":["overview"]"#)
+        viewModel.selectedSeason = try Self.season(1)
+        viewModel.episodes = [try Self.episode(1, extra: #","pending_translation_language":"de""#)]
+
+        let key = try XCTUnwrap(viewModel.descriptionTranslationTargets.season)
+        XCTAssertTrue(season.translate(key, fetch: { 0 }, apply: { _ in true }))
+        XCTAssertTrue(viewModel.isTranslatingSeasonEpisodes)
+        XCTAssertFalse(viewModel.isTranslatingItemDescription)
+        // The localized series overview keeps its label while only episodes translate.
+        XCTAssertEqual(viewModel.descriptionTranslationStatus, .machineTranslated)
+        season.cancel()
+    }
+
     // MARK: On-view translation runs
 
     @MainActor

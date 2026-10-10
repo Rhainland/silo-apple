@@ -53,15 +53,22 @@ extension ItemDetailViewModel {
             || isTranslating(seasonDescriptionTranslation, contentId: selectedSeason?.contentId)
     }
 
+    /// True while the page's own description translates.
+    var isTranslatingItemDescription: Bool {
+        isTranslating(descriptionTranslation, contentId: detail?.contentId)
+    }
+
     /// True while the selected season's episode descriptions translate.
     var isTranslatingSeasonEpisodes: Bool {
         isTranslating(seasonDescriptionTranslation, contentId: selectedSeason?.contentId)
     }
 
-    /// What to show under the page's own description.
+    /// What to show under the page's own description. Only the item's own
+    /// run counts: a season job leaves an already localized series overview
+    /// and its label alone, as web does.
     var descriptionTranslationStatus: DescriptionTranslationStatus? {
         .resolve(
-            translating: isTranslatingDescriptions,
+            translating: isTranslatingItemDescription,
             machineTranslatedFields: detail?.machineTranslatedFields
         )
     }

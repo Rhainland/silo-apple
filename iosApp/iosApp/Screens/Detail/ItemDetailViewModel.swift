@@ -5,8 +5,14 @@ import Foundation
 class ItemDetailViewModel {
     let libraryId: Int?
 
-    init(libraryId: Int? = nil) {
+    init(
+        libraryId: Int? = nil,
+        descriptionTranslation: DescriptionTranslationCoordinator? = nil,
+        seasonDescriptionTranslation: DescriptionTranslationCoordinator? = nil
+    ) {
         self.libraryId = libraryId
+        self.descriptionTranslation = descriptionTranslation ?? DescriptionTranslationCoordinator()
+        self.seasonDescriptionTranslation = seasonDescriptionTranslation ?? DescriptionTranslationCoordinator()
     }
 
     var detail: ItemDetail?
@@ -197,10 +203,10 @@ class ItemDetailViewModel {
 
     /// On-view translation of the page's own description (movie, series,
     /// audiobook). See `ItemDetailViewModel+DescriptionTranslation`.
-    let descriptionTranslation = DescriptionTranslationCoordinator()
+    let descriptionTranslation: DescriptionTranslationCoordinator
     /// On-view translation of the selected season's episode descriptions on
     /// a series page: the season's job covers its episodes.
-    let seasonDescriptionTranslation = DescriptionTranslationCoordinator()
+    let seasonDescriptionTranslation: DescriptionTranslationCoordinator
 
     /// - Parameter preserveSeasonSelection: keep the season the user is
     ///   currently browsing instead of re-running the auto-select. Set by
