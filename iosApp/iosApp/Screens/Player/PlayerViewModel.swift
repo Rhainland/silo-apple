@@ -2304,12 +2304,21 @@ class PlayerViewModel {
             let priorResolvedServerUrl = self.resolvedServerUrl
             let priorPrefsForCurrentItem = self.prefsForCurrentItem
             let priorPrefsResolvedForCurrentItem = self.prefsResolvedForCurrentItem
+            let priorIntroRange = self.introRange
+            let priorCreditsRange = self.creditsRange
+            let priorRecapRange = self.recapRange
+            var replacedMarkers = false
             /// Puts back the state this replan overwrote when it fails or is
             /// abandoned before committing.
             @MainActor func restorePriorReplanState() {
                 self.activePlaybackSessionId = priorActivePlaybackSessionId
                 self.currentWatchDetail = priorWatchDetail
                 self.currentSelectedVersion = priorSelectedVersion
+                if replacedMarkers {
+                    self.introRange = priorIntroRange
+                    self.creditsRange = priorCreditsRange
+                    self.recapRange = priorRecapRange
+                }
                 self.activePreparedProtocolV3 = priorPreparedProtocolV3
                 self.localProtocolV3SubtitleSelection = priorLocalSubtitleSelection
                 self.lastLoadRequest = priorLastLoadRequest
@@ -2412,7 +2421,7 @@ class PlayerViewModel {
                 let previousSessionId = self.activePlaybackSessionId
                 self.activePlaybackSessionId = prepared.session.sessionId
                 self.currentWatchDetail = prepared.watchDetail
-                self.currentSelectedVersion = prepared.selectedVersion
+                replacedMarkers = self.adoptReplannedVersion(prepared.selectedVersion)
                 self.activePreparedProtocolV3 = prepared.protocolV3
                 if targetsSubtitle || classification == "subtitle_track_changed" {
                     self.localProtocolV3SubtitleSelection = nil
@@ -6350,6 +6359,20 @@ class PlayerViewModel {
         }
         syncIntroSkipPrompt()
         autoSkipCreditsIfNeeded(at: currentTime)
+    }
+
+    /// Adopts the file version a replan selected. A replan can switch to
+    /// another file (edition), whose markers then replace the old file's.
+    /// For the same file the current ranges stay: a `markers_updated` event
+    /// may be newer than the replan's snapshot. Returns whether the markers
+    /// were replaced.
+    @discardableResult
+    func adoptReplannedVersion(_ version: FileVersion) -> Bool {
+        let fileChanged = version.fileId != currentSelectedVersion?.fileId
+        currentSelectedVersion = version
+        guard fileChanged else { return false }
+        applyMarkerRanges(intro: version.intro, credits: version.credits, recap: version.recap)
+        return true
     }
 
     /// Test seam: the playback identity a marker reconcile is fenced on.

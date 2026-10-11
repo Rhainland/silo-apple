@@ -61,10 +61,45 @@ final class MarkerReconciliationTests: XCTestCase {
         XCTAssertTrue(reads.continuations.isEmpty)
     }
 
+    func testReplanToAnotherFileAdoptsThatFilesMarkers() throws {
+        let player = PlayerViewModel()
+        player.bindMarkerReconciliationForTesting(
+            sessionId: "session-1",
+            detail: try detail(intro: nil, recap: nil),
+            version: try version(intro: nil, recap: nil)
+        )
+
+        // Another edition: its own markers replace the previous file's.
+        XCTAssertTrue(player.adoptReplannedVersion(
+            try version(fileId: 43, intro: TimeRange(start: 50, end: 95), recap: TimeRange(start: 0, end: 20))
+        ))
+        XCTAssertEqual(player.introRange, TimeRange(start: 50, end: 95))
+        XCTAssertEqual(player.recapRange, TimeRange(start: 0, end: 20))
+
+        // Back to a file without markers: nothing of the other file's stays.
+        XCTAssertTrue(player.adoptReplannedVersion(try version(fileId: 42, intro: nil, recap: nil)))
+        XCTAssertNil(player.introRange)
+        XCTAssertNil(player.recapRange)
+    }
+
+    func testReplanOnTheSameFileKeepsNewerEventMarkers() async throws {
+        let player = PlayerViewModel()
+        player.bindMarkerReconciliationForTesting(
+            sessionId: "session-1",
+            detail: try detail(intro: nil, recap: nil),
+            version: try version(intro: nil, recap: nil)
+        )
+        await player.handleRealtimeEvent(try markersEvent(#""recap": { "start": 0, "end": 30 }"#))
+
+        // The replan's snapshot predates the event.
+        XCTAssertFalse(player.adoptReplannedVersion(try version(intro: nil, recap: nil)))
+        XCTAssertEqual(player.recapRange, TimeRange(start: 0, end: 30))
+    }
+
     // MARK: - Fixtures
 
-    private func version(intro: TimeRange?, recap: TimeRange?) throws -> FileVersion {
-        var json: [String: Any] = ["file_id": 42]
+    private func version(fileId: Int = 42, intro: TimeRange?, recap: TimeRange?) throws -> FileVersion {
+        var json: [String: Any] = ["file_id": fileId]
         if let intro { json["intro"] = ["start": intro.start, "end": intro.end] }
         if let recap { json["recap"] = ["start": recap.start, "end": recap.end] }
         let decoder = JSONDecoder()
