@@ -158,11 +158,25 @@ struct SubtitleTranslateMenu: View {
 
     /// Whether the menu can produce subtitles in `target` right now. A
     /// translation path is always serviceable; a transcription path needs ASR
-    /// enabled, an audio track, and remaining quota.
+    /// enabled, an audio track, and remaining quota, and translating the
+    /// transcript into another language needs translation enabled too.
     private func canServe(_ target: String) -> Bool {
         if !requiresTranscription(for: target) { return true }
         guard capabilities.transcribeEnabled, !viewModel.audioTracks.isEmpty else { return false }
+        guard capabilities.subtitleEnabled || isSpokenLanguage(target) else { return false }
         return !isQuotaExhausted
+    }
+
+    /// Whether `target` is the spoken language, so a plain transcription
+    /// serves it without translating the transcript.
+    private func isSpokenLanguage(_ target: String) -> Bool {
+        Self.isSameLanguage(spokenLanguageCode, target)
+    }
+
+    /// Compares canonical keys, so "eng" audio matches the menu's "en" row.
+    static func isSameLanguage(_ spoken: String?, _ target: String) -> Bool {
+        guard let key = SubtitleDisplayOrder.canonicalLanguageKey(spoken) else { return false }
+        return key == SubtitleDisplayOrder.canonicalLanguageKey(target)
     }
 
     /// Submit the job for `target`, choosing translate-existing vs transcribe
@@ -172,9 +186,8 @@ struct SubtitleTranslateMenu: View {
         if let source = bestTranslationSource(excluding: target) {
             viewModel.startSubtitleTranslation(track: source, to: target)
         } else {
-            guard capabilities.transcribeEnabled, !viewModel.audioTracks.isEmpty else { return }
-            let translateTo: String? =
-                spokenLanguageCode?.caseInsensitiveCompare(target) == .orderedSame ? nil : target
+            guard canServe(target) else { return }
+            let translateTo: String? = isSpokenLanguage(target) ? nil : target
             viewModel.startSubtitleTranscription(audioIndex: -1, translateTo: translateTo)
         }
         // The controller enters the player-surface preparing state on submit.

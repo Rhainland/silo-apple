@@ -217,6 +217,27 @@ final class APIv2SubtitleTests: XCTestCase {
         XCTAssertFalse(capabilities.transcribeEnabled)
     }
 
+    /// Transcription is offered on its own when the server turns translation off.
+    @MainActor
+    func testAICapabilitiesOfferTranscriptionWithoutTranslation() async throws {
+        let (api, _) = try await client()
+        let capabilities = AICapabilities(api: SiloAI(v2: api))
+        stub.reply(path: "/api/v2/subtitles/ai/status", 200,
+                   #"{"enabled":false,"transcribe_enabled":true,"revision":"r","state":"available","allowed":true}"#)
+        await capabilities.refresh()
+        XCTAssertFalse(capabilities.subtitleEnabled)
+        XCTAssertTrue(capabilities.transcribeEnabled)
+    }
+
+    /// Without translation only the spoken language is served; "eng" audio
+    /// must match the menu's "en" row.
+    func testSpokenLanguageMatchesAcrossCodeForms() {
+        XCTAssertTrue(SubtitleTranslateMenu.isSameLanguage("eng", "en"))
+        XCTAssertTrue(SubtitleTranslateMenu.isSameLanguage("ger", "de"))
+        XCTAssertFalse(SubtitleTranslateMenu.isSameLanguage("eng", "de"))
+        XCTAssertFalse(SubtitleTranslateMenu.isSameLanguage(nil, "en"))
+    }
+
     // MARK: Subtitle AI jobs
 
     private static func aiJob(id: String = "77", kind: String = "translate", sourceIndex: Int = 0,
