@@ -8884,7 +8884,12 @@ class PlayerViewModel {
                     isPaused: !self.isPlaying
                 )
                 if result == .sessionEnded {
-                    self.leaveServerEndedSession()
+                    // A new load or renewal cancels this loop when it moves
+                    // to another session. A late answer about the old one
+                    // must not end the playback that replaced it.
+                    if !Task.isCancelled {
+                        self.leaveServerEndedSession()
+                    }
                     return
                 }
                 if result == .missingSession {
