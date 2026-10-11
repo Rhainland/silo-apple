@@ -826,6 +826,39 @@ final class ProfileLaunchMigrationTests: XCTestCase {
         XCTAssertEqual(ProfileLaunchPreferences(defaults: defaults).behavior, .afterOneHour)
     }
 
+    func testChoosingTheCurrentBehaviorInSettingsEndsTheOffer() throws {
+        let suiteName = "ProfileLaunchPolicyTests.\(UUID().uuidString)"
+        let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { suite.removePersistentDomain(forName: suiteName) }
+        let defaults = SharedDefaults(suite: suite, standard: suite)
+        defaults.set(try JSONEncoder().encode(ProfileLaunchState.fresh(isTV: true)), forKey: SharedStorage.profileLaunchStateKey)
+
+        let preferences = ProfileLaunchPreferences(defaults: defaults)
+        preferences.behavior = .askEveryLaunch
+        XCTAssertFalse(preferences.isRememberOfferPending)
+        XCTAssertFalse(ProfileLaunchPreferences(defaults: defaults).isRememberOfferPending)
+    }
+
+    func testLegacyMigrationThatCannotBeSavedChangesNothing() throws {
+        let serverID = "server-a"
+        let accountEpoch = "account-a"
+        let suiteName = "ProfileLaunchPolicyTests.\(UUID().uuidString)"
+        let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { suite.removePersistentDomain(forName: suiteName) }
+        let defaults = SharedDefaults(suite: suite, standard: suite)
+        defaults.set(try JSONEncoder().encode(ProfileLaunchState.fresh(isTV: true)), forKey: SharedStorage.profileLaunchStateKey)
+        var allowsPersistence = true
+        let preferences = ProfileLaunchPreferences(defaults: defaults, persistenceOverride: { _ in allowsPersistence })
+        allowsPersistence = false
+
+        XCTAssertFalse(preferences.migrateLegacyProfile(
+            profileID: "profile-a", requiresPIN: false, accountEpoch: accountEpoch, for: serverID
+        ))
+        XCTAssertNil(preferences.rememberedProfile(for: serverID))
+        XCTAssertEqual(preferences.behavior, .askEveryLaunch)
+        XCTAssertTrue(preferences.isRememberOfferPending)
+    }
+
     func testMigratedLegacyProfileKeepsOpeningOnAFreshTVState() throws {
         let serverID = "server-a"
         let accountEpoch = "account-a"

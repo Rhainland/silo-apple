@@ -105,9 +105,11 @@ class ProfileSelectionViewModel {
         #endif
     }
 
-    /// Records the answer to the TV's offer and continues to Home.
+    /// Records the answer to the TV's offer and continues to Home. If the
+    /// answer cannot be saved, the offer stays open so it can be answered
+    /// again.
     func answerRememberOffer(remember: Bool, router: AppRouter) {
-        launchPreferences.answerRememberOffer(remember: remember)
+        guard launchPreferences.answerRememberOffer(remember: remember) else { return }
         rememberOffer = nil
         router.resetToHome()
     }

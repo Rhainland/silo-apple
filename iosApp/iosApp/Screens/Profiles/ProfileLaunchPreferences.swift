@@ -37,7 +37,7 @@ final class ProfileLaunchPreferences {
         get { state.behavior }
         set {
             update { state in
-                guard state.behavior != newValue else { return }
+                guard state.behavior != newValue || state.rememberOfferPending != nil else { return }
                 let previousState = state
                 state.behavior = newValue
                 // Choosing a behavior in Settings answers the TV's offer.
@@ -222,20 +222,28 @@ final class ProfileLaunchPreferences {
               !accountEpoch.isEmpty else {
             return false
         }
-        guard remember(
-            profileID: profileID,
-            requiresPIN: requiresPIN,
-            accountEpoch: accountEpoch,
-            for: serverID
-        ) else {
-            return false
+        return update { state in
+            let previousState = state
+            state.rememberedByServerID[serverID] = RememberedProfile(
+                profileID: profileID,
+                requiredPINAtSelection: requiresPIN,
+                accountEpoch: accountEpoch
+            )
+            state.selectionRequiredServerIDs.remove(serverID)
+            state.backgroundedAt = nil
+            // A device that remembered a profile before launch state was
+            // saved is not fresh: it keeps opening that profile. Saved with
+            // the profile, so the two cannot disagree after a failed write.
+            if state.rememberOfferPending == true {
+                state.behavior = .automatic
+                state.rememberOfferPending = nil
+            }
+            guard persist(state) else {
+                state = previousState
+                return false
+            }
+            return true
         }
-        // A device that remembered a profile before launch state was saved is
-        // not fresh: it keeps opening that profile.
-        if isRememberOfferPending {
-            behavior = .automatic
-        }
-        return true
     }
 
     /// Applies `change` to the state under the lock, so each mutation, its
