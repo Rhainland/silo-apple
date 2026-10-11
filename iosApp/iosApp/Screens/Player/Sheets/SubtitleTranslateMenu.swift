@@ -27,6 +27,8 @@
 //    - Transcribe: when no translatable text source exists, transcribe the
 //      default audio track (`-1`). If the target equals the spoken audio
 //      language it's a plain transcribe; otherwise transcribe-and-translate.
+//      With translation off only the spoken language is served; when that
+//      language is unknown, a "Spoken language" row runs a plain transcribe.
 //
 //  Two-platform split: iOS renders a sectioned `List`; tvOS renders a centered
 //  floating panel with `onExitCommand` / backdrop-tap dismissal. The routing
@@ -168,9 +170,42 @@ struct SubtitleTranslateMenu: View {
     }
 
     /// Whether `target` is the spoken language, so a plain transcription
-    /// serves it without translating the transcript.
+    /// serves it without translating the transcript. The detected-language
+    /// row is the spoken language by definition.
     private func isSpokenLanguage(_ target: String) -> Bool {
-        Self.isSameLanguage(spokenLanguageCode, target)
+        if target == Self.detectedLanguageID { return offersDetectedLanguage }
+        return Self.isSameLanguage(spokenLanguageCode, target)
+    }
+
+    /// Row ID of the "Spoken language" row: a plain transcription in the
+    /// language the server detects. Not a language code.
+    static let detectedLanguageID = "ai-detected-spoken-language"
+
+    /// Translation off and the spoken language unknown (missing or `und`):
+    /// no language row can match the transcript, so the menu offers one plain
+    /// transcription in whatever language the server detects.
+    static func offersDetectedLanguage(translationEnabled: Bool, transcribeEnabled: Bool,
+                                       hasAudio: Bool, spokenLanguage: String?) -> Bool {
+        !translationEnabled && transcribeEnabled && hasAudio
+            && SubtitleDisplayOrder.canonicalLanguageKey(spokenLanguage) == nil
+    }
+
+    private var offersDetectedLanguage: Bool {
+        Self.offersDetectedLanguage(
+            translationEnabled: capabilities.subtitleEnabled,
+            transcribeEnabled: capabilities.transcribeEnabled,
+            hasAudio: !viewModel.audioTracks.isEmpty,
+            spokenLanguage: spokenLanguageCode
+        )
+    }
+
+    private var detectedLanguageChoice: SubtitleLanguageChoices.Choice? {
+        guard offersDetectedLanguage else { return nil }
+        return SubtitleLanguageChoices.Choice(
+            code: Self.detectedLanguageID,
+            label: "Spoken language",
+            hint: "Detected from the audio"
+        )
     }
 
     /// Compares canonical keys, so "eng" audio matches the menu's "en" row.
@@ -212,14 +247,16 @@ struct SubtitleTranslateMenu: View {
     private var showsQuota: Bool {
         capabilities.transcribeEnabled
             && !viewModel.audioTracks.isEmpty
-            && languageChoices.all.contains { requiresTranscription(for: $0.code) }
+            && (offersDetectedLanguage
+                || languageChoices.all.contains { requiresTranscription(for: $0.code) })
             && quotaText != nil
     }
 
     #if os(tvOS)
     /// First row the user can act on, in display order.
     private var firstServiceableLanguageID: String? {
-        languageChoices.all.first(where: { canServe($0.code) })?.code
+        if let detected = detectedLanguageChoice, canServe(detected.code) { return detected.code }
+        return languageChoices.all.first(where: { canServe($0.code) })?.code
     }
 
     /// Recover focus when it falls to `nil`.
@@ -294,11 +331,13 @@ struct SubtitleTranslateMenu: View {
             }
         }
         let choices = languageChoices
-        if !choices.suggested.isEmpty {
+        let detected = detectedLanguageChoice
+        if detected != nil || !choices.suggested.isEmpty {
             sectionHeader("Suggested languages")
+            if let detected { tvLanguageRow(detected) }
             ForEach(choices.suggested) { tvLanguageRow($0) }
         }
-        sectionHeader(choices.suggested.isEmpty ? "Language" : "All Languages")
+        sectionHeader(detected == nil && choices.suggested.isEmpty ? "Language" : "All Languages")
         ForEach(choices.other) { tvLanguageRow($0) }
     }
 
@@ -307,7 +346,7 @@ struct SubtitleTranslateMenu: View {
         TVLanguageRow(
             name: choice.label,
             detail: choice.hint,
-            systemImage: choice.hint == "Preferred" ? "star.fill" : "globe",
+            systemImage: Self.rowImage(for: choice),
             code: choice.code,
             isDisabled: !canServe(choice.code),
             focusedID: $focusedLanguageID
@@ -328,6 +367,7 @@ struct SubtitleTranslateMenu: View {
                     progressPanel
                 } else {
                     let choices = languageChoices
+                    let detected = detectedLanguageChoice
                     List {
                         if showsQuota {
                             Section {
@@ -336,15 +376,16 @@ struct SubtitleTranslateMenu: View {
                                 if isQuotaExhausted { Text(Self.quotaExhaustedFooter) }
                             }
                         }
-                        if !choices.suggested.isEmpty {
+                        if detected != nil || !choices.suggested.isEmpty {
                             Section("Suggested") {
+                                if let detected { languageRow(detected) }
                                 ForEach(choices.suggested) { languageRow($0) }
                             }
                         }
                         Section {
                             ForEach(choices.other) { languageRow($0) }
                         } header: {
-                            Text(choices.suggested.isEmpty ? "Language" : "All Languages")
+                            Text(detected == nil && choices.suggested.isEmpty ? "Language" : "All Languages")
                         } footer: {
                             Text(explainer)
                         }
@@ -378,13 +419,18 @@ struct SubtitleTranslateMenu: View {
         MenuRow(
             name: choice.label,
             detail: choice.hint,
-            systemImage: choice.hint == "Preferred" ? "star.fill" : "globe",
+            systemImage: Self.rowImage(for: choice),
             isDisabled: !canServe(choice.code)
         ) {
             route(to: choice.code)
         }
     }
     #endif
+
+    private static func rowImage(for choice: SubtitleLanguageChoices.Choice) -> String {
+        if choice.code == detectedLanguageID { return "waveform" }
+        return choice.hint == "Preferred" ? "star.fill" : "globe"
+    }
 
     // MARK: - Progress / failure panel
 

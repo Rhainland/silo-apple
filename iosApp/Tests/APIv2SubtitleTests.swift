@@ -238,6 +238,23 @@ final class APIv2SubtitleTests: XCTestCase {
         XCTAssertFalse(SubtitleTranslateMenu.isSameLanguage(nil, "en"))
     }
 
+    /// Without translation and with no known spoken language, the menu offers
+    /// a plain detected-language transcription instead of only disabled rows.
+    func testDetectedLanguageRowOnlyWhenSpokenLanguageUnknownAndTranslationOff() {
+        func offers(translation: Bool = false, transcribe: Bool = true,
+                    audio: Bool = true, spoken: String?) -> Bool {
+            SubtitleTranslateMenu.offersDetectedLanguage(
+                translationEnabled: translation, transcribeEnabled: transcribe,
+                hasAudio: audio, spokenLanguage: spoken)
+        }
+        XCTAssertTrue(offers(spoken: nil))
+        XCTAssertTrue(offers(spoken: "und"))
+        XCTAssertFalse(offers(spoken: "eng"))
+        XCTAssertFalse(offers(translation: true, spoken: nil))
+        XCTAssertFalse(offers(transcribe: false, spoken: nil))
+        XCTAssertFalse(offers(audio: false, spoken: nil))
+    }
+
     // MARK: Subtitle AI jobs
 
     private static func aiJob(id: String = "77", kind: String = "translate", sourceIndex: Int = 0,
