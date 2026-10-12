@@ -576,4 +576,162 @@ final class RequestsV2Tests: XCTestCase {
         XCTAssertEqual(stub.requestedPaths,
             ["/api/v2/requests/status", "/api/v2/requests/detail/movie/949", "/api/v2/requests/mine"])
     }
+
+    // MARK: Follow
+
+    private static let followedState = #"{"status":"pending","state":"pending","requestable":false,"reason":"already_requested","request_id":"request-two","following":true,"requested_by_viewer":false}"#
+    private static let statusWithFollow = #"{"requests_enabled":true,"rating_restrictions_enforced":false,"revision":"r","state":"available","allowed":true,"follow_supported":true}"#
+    private static let statusWithoutFollow = #"{"requests_enabled":true,"rating_restrictions_enforced":false,"revision":"r","state":"available","allowed":true}"#
+
+    /// Heat, already requested by another profile on the server.
+    private static func requestedByOther(following: Bool = false, byViewer: Bool = false) -> String {
+        Self.detail.replacingOccurrences(of: #""request":{"requestable":true}"#,
+            with: #""request":{"requestable":false,"status":"pending","state":"pending","reason":"already_requested","request_id":"request-two","following":\#(following),"requested_by_viewer":\#(byViewer)}"#)
+    }
+
+    func testStatusDecodesFollowSupport() async throws {
+        let (api, _) = try await client()
+        stub.reply(200, Self.statusWithFollow)
+        let supported = try await api.requestsStatus()
+        XCTAssertEqual(supported.followSupported, true)
+        stub.reply(200, Self.statusWithoutFollow)
+        let older = try await api.requestsStatus()
+        XCTAssertNil(older.followSupported, "an older server without the field reads as unsupported")
+    }
+
+    func testFollowPutsTheTitleAndDecodesItsState() async throws {
+        let (api, _) = try await client()
+        stub.reply(200, Self.followedState)
+        let state = try await api.followRequestMedia(mediaType: .series, tmdbId: 1396)
+        XCTAssertEqual(state.following, true)
+        XCTAssertEqual(state.requestedByViewer, false)
+        XCTAssertEqual(state.reason, "already_requested")
+        XCTAssertEqual(state.requestId, "request-two")
+        let request = try XCTUnwrap(stub.requests.first)
+        XCTAssertEqual(request.method, "PUT")
+        XCTAssertEqual(request.path, "/api/v2/requests/follows/series/1396")
+        XCTAssertEqual(request.header("X-Profile-Id"), "profile-one")
+    }
+
+    func testUnfollowDeletesTheTitleAndRequiresNoContent() async throws {
+        let (api, _) = try await client()
+        stub.reply(.response(StubURLProtocol.Response(status: 204, headers: [:], body: Data())))
+        try await api.unfollowRequestMedia(mediaType: .movie, tmdbId: 949)
+        let request = try XCTUnwrap(stub.requests.first)
+        XCTAssertEqual(request.method, "DELETE")
+        XCTAssertEqual(request.path, "/api/v2/requests/follows/movie/949")
+
+        stub.reply(200, "{}")
+        do {
+            try await api.unfollowRequestMedia(mediaType: .movie, tmdbId: 949)
+            XCTFail("only 204 is success")
+        } catch APIv2Error.httpStatus(let status) {
+            XCTAssertEqual(status, 200)
+        }
+    }
+
+    func testFollowRefusesAnUnrequestableTypeBeforeSending() async throws {
+        let (api, _) = try await client()
+        do {
+            _ = try await api.followRequestMedia(mediaType: .all, tmdbId: 949)
+            XCTFail("expected a refusal")
+        } catch let error as APIv2RequestsError {
+            XCTAssertEqual(error, .unsupportedMediaType)
+        }
+        XCTAssertTrue(stub.requests.isEmpty)
+    }
+
+    @MainActor
+    private func followModel(status: String = RequestsV2Tests.statusWithFollow,
+                             detail: String = RequestsV2Tests.requestedByOther())
+        async throws -> (RequestDetailViewModel, RequestsFeatureStore) {
+        let tokens = try await tokens()
+        let api = SiloAPI(http: HTTPClient(session: stub.makeSession(), tokenStore: tokens), tokenStore: tokens)
+        stub.reply(path: "/api/v2/requests/status", 200, status)
+        stub.reply(path: "/api/v2/requests/detail/movie/949", 200, detail)
+        stub.reply(path: "/api/v2/requests/mine", 200, #"{"items":[],"page":{"has_more":false}}"#)
+        let features = RequestsFeatureStore(api: api)
+        await features.refresh()
+        let model = RequestDetailViewModel(mediaType: .movie, tmdbId: 949, api: api,
+            cache: RequestDetailCache(), features: features)
+        await model.load()
+        stub.reset()
+        return (model, features)
+    }
+
+    @MainActor
+    func testFollowAndUnfollowFlipTheSameAction() async throws {
+        addTeardownBlock { @MainActor in RequestsEventBus.shared.reset() }
+        let (model, _) = try await followModel()
+        XCTAssertTrue(model.canFollow)
+        XCTAssertFalse(model.isFollowing)
+
+        stub.reply(200, Self.followedState)
+        await model.toggleFollow()
+        XCTAssertTrue(model.isFollowing)
+        XCTAssertTrue(model.canFollow, "the action stays on screen; only its label flips")
+        XCTAssertEqual(model.followNotice, RequestDetailViewModel.followedNotice)
+        XCTAssertNil(model.actionErrorMessage)
+        XCTAssertEqual(RequestsEventBus.shared.lastTitleState?.request.following, true, "cards hear about it")
+
+        stub.reply(.response(StubURLProtocol.Response(status: 204, headers: [:], body: Data())))
+        await model.toggleFollow()
+        XCTAssertFalse(model.isFollowing)
+        XCTAssertTrue(model.canFollow)
+        XCTAssertEqual(model.followNotice, RequestDetailViewModel.unfollowedNotice)
+        XCTAssertEqual(RequestsEventBus.shared.lastTitleState?.request.following, false)
+
+        XCTAssertEqual(stub.requests.map(\.method), ["PUT", "DELETE"])
+        XCTAssertEqual(Set(stub.requestedPaths), ["/api/v2/requests/follows/movie/949"])
+    }
+
+    @MainActor
+    func testFollowIsOfferedOnlyForSomeoneElsesRequestOnAServerThatSupportsIt() async throws {
+        let (own, _) = try await followModel(detail: Self.requestedByOther(following: true, byViewer: true))
+        XCTAssertFalse(own.canFollow, "the viewer's own request already notifies them")
+
+        let (unsupported, _) = try await followModel(status: Self.statusWithoutFollow)
+        XCTAssertFalse(unsupported.canFollow)
+
+        let (requestable, _) = try await followModel(detail: Self.detail)
+        XCTAssertFalse(requestable.canFollow, "a title nobody requested is requested, not followed")
+    }
+
+    @MainActor
+    func testAFailedFollowKeepsTheStateAndShowsTheError() async throws {
+        let (model, features) = try await followModel()
+        // Following is switched off server-side between the page load and the tap.
+        stub.reply(path: "/api/v2/requests/follows/movie/949", 409,
+            Self.problem("capability_disabled", 409, "The requests capability is disabled by an administrator."))
+        stub.reply(path: "/api/v2/requests/status", 200,
+            #"{"requests_enabled":false,"rating_restrictions_enforced":false,"revision":"r","state":"disabled","allowed":true}"#)
+        await model.toggleFollow()
+
+        XCTAssertFalse(model.isFollowing)
+        XCTAssertNil(model.followNotice)
+        XCTAssertEqual(model.actionErrorMessage, "Requests are turned off")
+        XCTAssertFalse(features.isEnabled, "a capability problem refreshes the feature gate")
+        XCTAssertFalse(model.canFollow, "and the action goes with it")
+        XCTAssertEqual(stub.requests.map(\.method), ["PUT", "GET"])
+    }
+
+    @MainActor
+    func testAFollowToggleReachesCardsAndTheNextFirstFrame() throws {
+        let decoder = HTTPClient.makeJSONDecoder()
+        let card = try decoder.decode(RequestMediaResult.self, from: Data(Self.result.utf8))
+        let other = try decoder.decode(RequestMediaResult.self,
+            from: Data(Self.result.replacingOccurrences(of: #""tmdb_id":949"#, with: #""tmdb_id":500"#).utf8))
+        let followed = try decoder.decode(RequestState.self, from: Data(Self.followedState.utf8))
+        let update = RequestTitleStateUpdate(mediaType: .movie, tmdbId: 949, request: followed)
+
+        var cards = [card, other]
+        cards.applyTitleState(update)
+        XCTAssertEqual(cards[0].request.following, true)
+        XCTAssertNil(cards[1].request.following, "other titles keep their state")
+
+        let cache = RequestDetailCache()
+        cache.seed(card)
+        cache.applyTitleState(update)
+        XCTAssertEqual(cache.firstFrameDetail(.init(mediaType: .movie, tmdbId: 949))?.request.following, true)
+    }
 }
