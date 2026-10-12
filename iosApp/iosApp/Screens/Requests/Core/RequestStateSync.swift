@@ -83,6 +83,9 @@ extension Array where Element == RequestMediaResult {
 /// of their own changing: they followed or unfollowed someone else's
 /// request. Carries the whole new state, so consumers replace, not merge.
 struct RequestTitleStateUpdate: Equatable {
+    /// Makes every publication distinct, so `.onChange` observers hear a
+    /// toggle that lands on the same state as the previous one.
+    private let publicationId = UUID()
     let mediaType: RequestMediaType
     let tmdbId: Int
     let request: RequestState

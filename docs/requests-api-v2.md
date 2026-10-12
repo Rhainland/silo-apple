@@ -36,12 +36,12 @@ The transport raises the same identity error just before sending and after a res
 
 ## Follow
 
-When someone else already requested a title, the detail page offers **Notify Me** instead of a second request. It shows only when `follow_supported` is true and the title's `request` has `reason: "already_requested"`, an active `status` or `state`, and `requested_by_viewer: false`. A title in the library, or one the viewer requested, has nothing to follow. `following` decides the label: **Notify Me** or **Stop Notifying Me**.
+When someone else already requested a title, the detail page offers **Notify Me** instead of a second request. It shows only when `follow_supported` is true and the title's `request` has `reason: "already_requested"`, a request that reads as pending or on the way (the same display state the primary action uses), and `requested_by_viewer: false`. A title in the library, or one the viewer requested, has nothing to follow. `following` decides the label: **Notify Me** or **Stop Notifying Me**.
 
 - `PUT /api/v2/requests/follows/{media_type}/{tmdb_id}` requires 200 and returns the title's request state, which replaces the page's.
 - `DELETE` on the same path requires 204 with no body; the page sets `following` to false.
 
-Both are naturally idempotent, so a failure leaves the button as it was for another try. A capability problem refreshes the requests capability, which hides the action when following is gone; any other problem re-reads the title. A successful toggle is published on `RequestsEventBus.lastTitleState`, which patches search and discover cards and the detail cache so the next first frame agrees. On tvOS the button stays enabled while a toggle runs and only its label changes, so focus stays on it.
+Both are naturally idempotent and on the replay allowlist, so a 401 refreshes the session and sends them again, and a failure leaves the button as it was for another try. An uncertain outcome holds the button until a re-read of the title shows whether it landed (no re-read after an owner change). A detail read that overlaps a toggle is read again rather than installed, so it cannot undo the toggle. A capability problem refreshes the requests capability, which hides the action when following is gone; any other problem re-reads the title. A successful toggle is published on `RequestsEventBus.lastTitleState`, which patches search and discover cards and the detail cache so the next first frame agrees. On tvOS the button stays enabled while a toggle runs and only its label changes, so focus stays on it.
 
 ## Error copy
 

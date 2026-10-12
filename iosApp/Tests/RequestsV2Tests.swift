@@ -734,4 +734,86 @@ final class RequestsV2Tests: XCTestCase {
         cache.applyTitleState(update)
         XCTAssertEqual(cache.firstFrameDetail(.init(mediaType: .movie, tmdbId: 949))?.request.following, true)
     }
+
+    func testFollowAndUnfollowRefreshTheSessionAndReplayAfterA401() {
+        for method in ["PUT", "DELETE"] {
+            XCTAssertTrue(HTTPClient.shouldAttemptRefresh(path: "/api/v2/requests/follows/movie/949", method: method),
+                "\(method) is naturally idempotent")
+        }
+    }
+
+    func testRepeatedTitleStatePublicationsAreDistinct() throws {
+        let followed = try HTTPClient.makeJSONDecoder().decode(RequestState.self, from: Data(Self.followedState.utf8))
+        XCTAssertNotEqual(RequestTitleStateUpdate(mediaType: .movie, tmdbId: 949, request: followed),
+            RequestTitleStateUpdate(mediaType: .movie, tmdbId: 949, request: followed),
+            "observers must hear a toggle that repeats the previous state")
+    }
+
+    @MainActor
+    func testFollowIsOfferedOnlyWhileTheRequestIsPendingOrOnTheWay() async throws {
+        func detail(state: String) -> String {
+            Self.requestedByOther().replacingOccurrences(of: #""state":"pending""#, with: #""state":"\#(state)""#)
+        }
+        let (processing, _) = try await followModel(detail: detail(state: "processing"))
+        XCTAssertTrue(processing.canFollow)
+        for ended in ["declined", "failed", "cancelled", "available"] {
+            let (model, _) = try await followModel(detail: detail(state: ended))
+            XCTAssertFalse(model.canFollow, "\(ended) has nothing on its way to follow")
+        }
+    }
+
+    @MainActor
+    func testAnUncertainFollowHoldsUntilAReReadShowsTheResult() async throws {
+        let (model, _) = try await followModel()
+        stub.sequence([
+            .failure(URLError(.networkConnectionLost)),
+            .json(200, Self.requestedByOther(following: true)),
+            .json(200, #"{"items":[],"page":{"has_more":false}}"#),
+        ])
+        await model.toggleFollow()
+
+        XCTAssertTrue(model.isFollowing, "the re-read shows the follow landed")
+        XCTAssertFalse(model.isTogglingFollow)
+        XCTAssertEqual(stub.requests.map(\.method), ["PUT", "GET", "GET"])
+    }
+
+    @MainActor
+    func testADetailReadThatOverlapsAFollowCannotUndoIt() async throws {
+        let (model, _) = try await followModel()
+        stub.reply(path: "/api/v2/requests/detail/movie/949", 200, Self.requestedByOther())
+        stub.reply(path: "/api/v2/requests/mine", 200, #"{"items":[],"page":{"has_more":false}}"#)
+        stub.reply(path: "/api/v2/requests/follows/movie/949", 200, Self.followedState)
+        stub.hold(path: "/api/v2/requests/detail/movie/949")
+        let load = Task { await model.load() }
+        await stub.waitUntilHeld()
+
+        await model.toggleFollow()
+        XCTAssertTrue(model.isFollowing)
+        // The server now has the follow; the parked read predates it.
+        stub.reply(path: "/api/v2/requests/detail/movie/949", 200, Self.requestedByOther(following: true))
+        stub.release()
+        await load.value
+
+        XCTAssertTrue(model.isFollowing, "the stale read is read again, not installed")
+        XCTAssertEqual(stub.requestedPaths.filter { $0 == "/api/v2/requests/detail/movie/949" }.count, 2)
+    }
+
+    @MainActor
+    func testUnfollowKeepsADetailReadThatLandedWhileItRan() async throws {
+        let (model, _) = try await followModel(detail: Self.requestedByOther(following: true))
+        XCTAssertTrue(model.isFollowing)
+        stub.reply(path: "/api/v2/requests/detail/movie/949",
+            200, Self.requestedByOther(following: true).replacingOccurrences(of: #""state":"pending""#, with: #""state":"processing""#))
+        stub.reply(path: "/api/v2/requests/mine", 200, #"{"items":[],"page":{"has_more":false}}"#)
+        stub.reply(path: "/api/v2/requests/follows/movie/949", 204, "")
+        stub.hold(path: "/api/v2/requests/follows/movie/949")
+        let toggle = Task { await model.toggleFollow() }
+        await stub.waitUntilHeld()
+        await model.load()
+        stub.release()
+        await toggle.value
+
+        XCTAssertFalse(model.isFollowing)
+        XCTAssertEqual(model.detail?.request.state, .processing, "the newer read's state survives the unfollow")
+    }
 }

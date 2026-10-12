@@ -69,6 +69,10 @@ final class RequestDetailViewModel {
     /// In-flight bus-triggered reload; cancelled and replaced on the next
     /// event so a slow earlier response can't overwrite a newer one.
     private var reloadTask: Task<Void, Never>?
+    /// Bumped when a follow toggle settles or another page's toggle arrives.
+    /// A detail read that started before the bump may predate the change,
+    /// so `load()` reads again instead of installing it.
+    private var titleStateRevision = 0
 
     init(
         mediaType: RequestMediaType,
@@ -171,19 +175,20 @@ final class RequestDetailViewModel {
 
     // MARK: Follow
 
-    /// "Notify Me" applies to a title someone else already requested: it
-    /// has an active request, isn't in the library, and the viewer didn't
-    /// make that request. Independent of `isFollowing`, so the button stays
-    /// on screen (and focused on tvOS) while its label flips.
+    /// "Notify Me" applies to a title someone else already requested: its
+    /// request reads as pending or on the way (the same state the primary
+    /// action shows), and the viewer didn't make that request. Independent
+    /// of `isFollowing`, so the button stays on screen (and focused on tvOS)
+    /// while its label flips.
     var canFollow: Bool {
         guard features.followSupported, let detail else { return false }
         let request = detail.request
         // `requested_by_viewer` must be present and false: a page built
         // from a card or record without it waits for the server's answer.
-        guard request.reason == "already_requested", request.requestedByViewer == false,
-              request.status != nil || request.state != nil else { return false }
-        guard RequestDisplayState(availability: detail.availability, request: request) != .inLibrary else {
-            return false
+        guard request.reason == "already_requested", request.requestedByViewer == false else { return false }
+        switch RequestDisplayState(availability: detail.availability, request: request) {
+        case .pending, .onTheWay: break
+        default: return false
         }
         // The user's own active request already notifies them.
         return activeRecordState == nil
@@ -195,7 +200,9 @@ final class RequestDetailViewModel {
     static let unfollowedNotice = "Notification turned off."
 
     /// Follows or unfollows the title. Both are naturally idempotent, so a
-    /// failure simply leaves the button as it was for another try.
+    /// failure leaves the button as it was for another try. An uncertain
+    /// outcome may have landed: the button stays held until a re-read shows
+    /// the server's state.
     func toggleFollow() async {
         guard canFollow, let detail, !isTogglingFollow else { return }
         let follow = !isFollowing
@@ -209,18 +216,26 @@ final class RequestDetailViewModel {
             } else {
                 // 204: nothing comes back but the change itself.
                 try await api.unfollowRequestMedia(mediaType: detail.mediaType, tmdbId: detail.tmdbId)
-                var unfollowed = detail.request
+                // From the page as it is now: a read may have refreshed it
+                // while the call ran.
+                var unfollowed = self.detail?.request ?? detail.request
                 unfollowed.following = false
                 state = unfollowed
             }
+            titleStateRevision &+= 1
             applyTitleState(state)
             RequestsEventBus.shared.publishTitleState(
                 RequestTitleStateUpdate(mediaType: detail.mediaType, tmdbId: detail.tmdbId, request: state))
             followNotice = follow ? Self.followedNotice : Self.unfollowedNotice
             followToggledCount += 1
         } catch {
+            titleStateRevision &+= 1
             actionErrorMessage = RequestErrorCopy.message(for: error)
-            if Self.isCapabilityProblem(error) {
+            if RequestMutationFailure.isUncertain(error) {
+                // It may have landed. A read under a replaced owner says
+                // nothing about this toggle.
+                if !RequestMutationFailure.isOwnerChanged(error) { await load() }
+            } else if Self.isCapabilityProblem(error) {
                 // Requests or following went away: let entry points and this
                 // button follow the server.
                 await features.refresh()
@@ -246,6 +261,7 @@ final class RequestDetailViewModel {
     func applyTitleStateUpdate(_ update: RequestTitleStateUpdate) {
         guard update.mediaType == mediaType, update.tmdbId == tmdbId,
               !isTogglingFollow, detail?.request != update.request else { return }
+        titleStateRevision &+= 1
         detail?.request = update.request
     }
 
@@ -258,7 +274,7 @@ final class RequestDetailViewModel {
         isLoading = detail == nil
         error = nil
         do {
-            let fresh = try await api.requestsDetail(mediaType: mediaType, tmdbId: tmdbId)
+            let fresh = try await readDetail()
             detail = fresh
             hasFreshDetail = true
             cache.store(fresh)
@@ -276,6 +292,17 @@ final class RequestDetailViewModel {
             }
         }
         isLoading = false
+    }
+
+    /// The title's detail, read again when a follow toggle settled while the
+    /// read ran: that answer may predate the toggle.
+    private func readDetail() async throws -> RequestMediaDetail {
+        while true {
+            let revision = titleStateRevision
+            let fresh = try await api.requestsDetail(mediaType: mediaType, tmdbId: tmdbId)
+            if revision == titleStateRevision { return fresh }
+            try Task.checkCancellation()
+        }
     }
 
     /// The user's current request for this title (see
