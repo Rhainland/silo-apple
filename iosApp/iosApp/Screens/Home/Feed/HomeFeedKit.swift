@@ -346,9 +346,13 @@ struct HomePosterCard: View {
             thumbhash: item.posterThumbhash,
             targetSize: CGSize(width: width, height: height),
             contentMode: .fill,
+            placeholderStyle: .artwork,
             placeholderSymbol: ArtworkPlaceholderSymbol.forMediaType(item.type)
         )
         .frame(width: width, height: height)
+        .episodeSpoilerBlur(item.isEpisodeItem && EpisodeSpoilerPreferences.shared.settings.hidesImage(
+            for: EpisodeWatchState(sectionItem: item, playedOverride: isPlayed), isEpisodeStill: item.posterIsEpisodeStill
+        ))
         .clipped()
         .clipShape(RoundedRectangle(cornerRadius: HomeFeedMetrics.posterRadius, style: .continuous))
         // A hairline lifts the poster off a pure-black background. Without
@@ -475,6 +479,10 @@ struct HomeStillCard: View {
         return (item.posterUrl ?? "", item.posterThumbhash)
     }
 
+    /// Protect the selected episode still while preserving fallback artwork.
+    private var hidesStill: Bool {
+        return EpisodeSpoilerPreferences.shared.settings.hidesImage(for: item, playedOverride: isPlayed)
+    }
     private var art: (url: String, thumbhash: String?) { Self.art(for: item) }
 
     var body: some View {
@@ -508,9 +516,12 @@ struct HomeStillCard: View {
                 thumbhash: art.thumbhash,
                 targetSize: CGSize(width: width, height: height),
                 contentMode: .fill,
-                placeholderSymbol: ArtworkPlaceholderSymbol.forMediaType(item.type)
+                placeholderStyle: .artwork,
+                // The play badge sits where the mark would.
+                placeholderSymbol: onTap == nil ? nil : ArtworkPlaceholderSymbol.forMediaType(item.type)
             )
             .frame(width: width, height: height)
+            .episodeSpoilerBlur(hidesStill)
             .clipped()
 
             // Scrim so the play affordance and rail stay legible over bright

@@ -424,6 +424,7 @@ struct ContentView: View {
                 Task { await TitleArtPreferences.shared.refresh() }
                 await uiCustomization.refresh()
                 await SeekIntervalPreferences.shared.refresh()
+                await EpisodeSpoilerPreferences.shared.refresh()
                 // The one hydration whose outcome is never optional: `clear()`
                 // above guarantees a real fetch, so the wrapper's
                 // short-circuit case cannot apply here and a failure leaves
@@ -443,6 +444,7 @@ struct ContentView: View {
                 Task { await TitleArtPreferences.shared.refresh() }
                 await uiCustomization.refresh()
                 await SeekIntervalPreferences.shared.refresh()
+                await EpisodeSpoilerPreferences.shared.refresh()
                 #if os(iOS) || os(tvOS)
                 await diagnosticsModel.handleForeground()
                 #endif
@@ -558,7 +560,8 @@ struct ContentView: View {
         async let customization: Void = uiCustomization.refresh()
         async let seek: Void = SeekIntervalPreferences.shared.refresh()
         async let titleArt: Void = TitleArtPreferences.shared.refresh()
-        _ = await (overlay, ai, imageSize, requests, shuffle, subtitles, profile, customization, seek, titleArt)
+        async let spoilers: Void = EpisodeSpoilerPreferences.shared.refresh()
+        _ = await (overlay, ai, imageSize, requests, shuffle, subtitles, profile, customization, seek, titleArt, spoilers)
     }
 
     @MainActor
@@ -1089,6 +1092,9 @@ struct ContentView: View {
         #endif
         #if !os(tvOS)
         Task { await DownloadManager.shared.onAppActive() }
+        // Libraries hidden or shown again on another device. tvOS reloads
+        // its library tabs on its own return from background.
+        Task { _ = try? await StartupContentPrefetcher.fetchUserLibraries(reusingRecent: false) }
         #endif
     }
 
@@ -3026,12 +3032,13 @@ struct MainTabView: View {
     @ViewBuilder
     private func routeContent(for route: Route) -> some View {
         switch route {
-        case .libraryCollection(let libraryId, let collectionId, let title, let kind):
+        case .libraryCollection(let libraryId, let collectionId, let title, let kind, let mediaScope):
             LibraryCollectionDetailView(
                 libraryId: libraryId,
                 collectionId: collectionId,
                 title: title,
-                kind: kind
+                kind: kind,
+                mediaScope: mediaScope
             )
         case .itemDetail(let contentId, _, let libraryId, let context):
             ItemDetailView(contentId: contentId, libraryId: libraryId, resumeContext: context)

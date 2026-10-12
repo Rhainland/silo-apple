@@ -7,6 +7,8 @@ enum APIv2CatalogRead {
     struct CatalogItemDetail: Decodable {
         let advisoryAge: Int64?
         let advisorySource: String?
+        let posterIsEpisodeStill: Bool?
+        let backdropIsEpisodeStill: Bool?
         let airDate: String?
         let audiobook: AudiobookDetailExtension?
         let backdropThumbhash: String?
@@ -32,6 +34,8 @@ enum APIv2CatalogRead {
         let isSpecials: Bool?
         let lastAirDate: String?
         @ArtworkURL var logoUrl: String?
+        /// Localized fields ("overview", "tagline") machine-translated by AI.
+        let machineTranslatedFields: [String]?
         let networks: [String]?
         let originalLanguage: String?
         let originalTitle: String?
@@ -76,6 +80,7 @@ enum APIv2CatalogRead {
         let contentId: String
         let episodeCount: Int64
         let isSpecials: Bool?
+        let machineTranslatedFields: [String]?
         let overview: String?
         let posterThumbhash: String?
         @ArtworkURL var posterUrl: String?
@@ -85,12 +90,15 @@ enum APIv2CatalogRead {
     }
 
     struct Episode: Decodable {
+        let stillIsEpisodeStill: Bool?
         let airDate: String?
         let contentId: String
         let episodeNumber: Int64
         let files: [EpisodeFile]?
         let imdbId: String?
+        let machineTranslatedFields: [String]?
         let overview: String?
+        let pendingTranslationLanguage: String?
         let runtime: Int64
         let seasonNumber: Int64
         let stillThumbhash: String?

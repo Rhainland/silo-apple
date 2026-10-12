@@ -102,7 +102,7 @@ struct PhonePosterRail: View {
     let title: String
     let items: [SimilarPosterItem]
     var aspectRatio: CGFloat = SiloTheme.posterCardWidth / SiloTheme.posterCardHeight
-    var placeholderSymbol: String = "film"
+    var placeholderSymbol: String = ArtworkPlaceholderSymbol.fallback
     let onSelect: (String) -> Void
 
     var body: some View {
@@ -125,7 +125,7 @@ struct PhonePosterRail: View {
 struct PhonePosterRailCards: View {
     let items: [SimilarPosterItem]
     var aspectRatio: CGFloat = SiloTheme.posterCardWidth / SiloTheme.posterCardHeight
-    var placeholderSymbol: String = "film"
+    var placeholderSymbol: String = ArtworkPlaceholderSymbol.fallback
     let onSelect: (String) -> Void
 
     var body: some View {
@@ -138,7 +138,7 @@ struct PhonePosterRailCards: View {
                         PhonePosterCard(
                             item: item,
                             aspectRatio: aspectRatio,
-                            placeholderSymbol: placeholderSymbol
+                            placeholderSymbol: item.placeholderSymbol ?? placeholderSymbol
                         )
                     }
                     .buttonStyle(.plain)
@@ -168,7 +168,7 @@ struct SimilarPosterItem: Identifiable, Hashable {
     let year: Int?
     /// Replaces the year caption when set, e.g. "Book 2" in a series rail.
     let subtitle: String?
-    /// Glyph for a missing poster when the item's own type is known;
+    /// Mark for a missing poster when the item's own type is known;
     /// otherwise the rail's `placeholderSymbol` applies.
     let placeholderSymbol: String?
     let accessibilityDescription: String
@@ -235,26 +235,18 @@ private struct PhonePosterCard: View {
         .contentShape(Rectangle())
     }
 
-    @ViewBuilder
     private var poster: some View {
-        if let url = item.posterUrl, !url.isEmpty {
-            AsyncImageView(
-                url: url,
-                thumbhash: item.posterThumbhash,
-                contentMode: .fill,
-                placeholderSymbol: item.placeholderSymbol ?? placeholderSymbol
-            )
-                .frame(width: cardWidth, height: cardHeight)
-                .clipped()
-                .clipShape(RoundedRectangle(cornerRadius: SiloTheme.cornerRadius))
-        } else {
-            RoundedRectangle(cornerRadius: SiloTheme.cornerRadius)
-                .fill(Color.siloSurfaceElevated)
-                .frame(width: cardWidth, height: cardHeight)
-                .overlay(
-                    ArtworkPlaceholderGlyph(symbol: item.placeholderSymbol ?? placeholderSymbol)
-                )
-        }
+        AsyncImageView(
+            url: item.posterUrl ?? "",
+            thumbhash: item.posterThumbhash,
+            targetSize: CGSize(width: cardWidth, height: cardHeight),
+            contentMode: .fill,
+            placeholderStyle: .artwork,
+            placeholderSymbol: placeholderSymbol
+        )
+            .frame(width: cardWidth, height: cardHeight)
+            .clipped()
+            .clipShape(RoundedRectangle(cornerRadius: SiloTheme.cornerRadius))
     }
 }
 #endif

@@ -6,7 +6,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/Silo-Server/AetherEngine",
       "state" : {
-        "revision" : "b1e4879e6a41477ebef3b68e8d9f65239d1ba80b"
+        "revision" : "87f8574083f96e7d5f3a9cfe07bb2525f708cd4c"
       }
     },
     {
@@ -23,8 +23,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/superuser404notfound/FFmpegBuild",
       "state" : {
-        "revision" : "9ee46ba4fb533e35efa6492eb1a903ca4f8058fc",
-        "version" : "3.4.0"
+        "revision" : "fda08325455bc12c112b5b82d014b98fa0fee0be",
+        "version" : "3.6.0"
       }
     },
     {
@@ -37,21 +37,21 @@
       }
     },
     {
+      "identity" : "libtruehd",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/superuser404notfound/LibTrueHD",
+      "state" : {
+        "revision" : "7ac6b379cb5d77ff5f424bc9daa17131b044a962",
+        "version" : "2.0.0"
+      }
+    },
+    {
       "identity" : "nuke",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/kean/Nuke",
       "state" : {
         "revision" : "30f7a7e72e0607d304fbf69c799474bd5fb6d1ce",
         "version" : "13.2.0"
-      }
-    },
-    {
-      "identity" : "siloobjectaudio",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/Silo-Server/SiloObjectAudio",
-      "state" : {
-        "revision" : "645b91c072fafb60146151fd5127f8ff0ca38b6f",
-        "version" : "1.0.0"
       }
     },
     {

@@ -1339,12 +1339,14 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertFalse(renewal.startFromBeginning)
     }
 
-    func testInitialAutoSubtitleIntentResolvesInCombinedOrdinalOrder() {
+    func testInitialAutoSubtitleIntentPrefersEmbeddedInCombinedOrdinalSpace() {
         // Watch detail lists embedded tracks before externals; the V3 combined
-        // ordinal space and the plan inventory list externals first. With two
-        // English full-dialogue tracks the resolver's first match must be the
-        // same track on both sides, or the post-load policy replans (a full
-        // engine reload) on every episode start.
+        // ordinal space and the plan inventory list externals first. The pick
+        // used to be the first external track (ordinal 0); the embedded
+        // full-dialogue track now wins (silo-server #1849), and its index must
+        // still be the combined ordinal. The post-load resolver over the plan
+        // inventory must land on the same ordinal, or it replans (a full engine
+        // reload) on every episode start.
         let version = makeVersion(
             container: "mkv",
             videoCodec: "h264",
@@ -1368,9 +1370,35 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         )
         XCTAssertEqual(
             intent,
-            PlaybackSessionBridge.InitialProtocolV3SubtitleIntent(ffmpegStreamIndex: nil, combinedIndex: 0),
-            "first external English track is combined ordinal 0 and must win over the embedded one at ordinal 2"
+            PlaybackSessionBridge.InitialProtocolV3SubtitleIntent(ffmpegStreamIndex: 3, combinedIndex: 2),
+            "the embedded English track (stream 3) is combined ordinal 2 and must win over both externals"
         )
+
+        let inventory = ApplePlaybackV3PlanAdapter.subtitlePickerTracks(
+            plan: makePlan(
+                container: "mkv",
+                subtitleInventory: [
+                    makeInventoryItem(combinedIndex: 0, source: "external"),
+                    makeInventoryItem(combinedIndex: 1, source: "external"),
+                    makeInventoryItem(combinedIndex: 2, source: "embedded"),
+                    makeInventoryItem(combinedIndex: 3, source: "downloaded")
+                ]
+            ),
+            version: version
+        )
+        let postLoad = SubtitleAutoResolver.resolve(.init(
+            preferredLanguage: "en",
+            mode: .always,
+            showForced: false,
+            trackSignature: nil,
+            availableSubtitles: inventory,
+            currentAudioLanguage: "ja"
+        ))
+        guard case .select(let postLoadPick) = postLoad else {
+            return XCTFail("post-load resolver must select a track, got \(postLoad)")
+        }
+        XCTAssertEqual(postLoadPick.srcId, 2, "the post-load pick must be the same combined ordinal")
+        XCTAssertEqual(inventory.map(\.isDownloaded), [false, false, false, true])
 
         // The same preference over the plan inventory must land on the same ordinal.
         let indexed = SubtitleTrackCandidates.indexedPlayerTracks(from: version.subtitleTracks ?? [])
@@ -2044,6 +2072,8 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertEqual(tracks.filter(\.isSelected).map(\.trackId), [1])
     }
 
+    /// Direct play and the progressive remux run through Aether's own demux,
+    /// whose audio tracks are the file's, so they stay authoritative there.
     func testV3AudioPickerKeepsAetherInventoryWhenAvailable() {
         let aetherTrack = PlayerTrack(
             trackId: 7,
@@ -2068,14 +2098,81 @@ final class PlaybackProtocolV3Tests: XCTestCase {
             audioTracks: [makeAudio(index: 2, codec: "eac3", isDefault: true)]
         )
 
-        XCTAssertEqual(
-            ApplePlaybackV3PlanAdapter.audioPickerTracks(
-                aetherTracks: [aetherTrack],
-                plan: makePlan(selectedAudioIndex: 0),
-                version: version
-            ),
-            [aetherTrack]
+        for delivery in [
+            PlaybackProtocolV3.PlanDelivery.originalHTTP,
+            PlaybackProtocolV3.PlanDelivery.remuxProgressive,
+        ] {
+            XCTAssertEqual(
+                ApplePlaybackV3PlanAdapter.audioPickerTracks(
+                    aetherTracks: [aetherTrack],
+                    plan: makePlan(delivery: delivery, selectedAudioIndex: 0),
+                    version: version
+                ),
+                [aetherTrack],
+                delivery
+            )
+        }
+    }
+
+    /// Since AetherEngine 7.22 the remote-HLS bypass publishes AVPlayer's
+    /// packaged rendition as an audio track (ids from 400000). Server HLS
+    /// carries only the one stream the plan selected, so that row must not
+    /// replace the file's tracks or leak its id into a pick.
+    func testV3AudioPickerIgnoresBypassRenditionsOnServerHLS() {
+        let bypassRendition = PlayerTrack(
+            trackId: 400_000,
+            kind: .audio,
+            title: "EN (aac)",
+            lang: "en",
+            codec: "aac",
+            audioChannelCount: 2,
+            bitrate: nil,
+            isDefault: true,
+            isForced: false,
+            isHearingImpaired: false,
+            isExternal: false,
+            isSelected: true,
+            ffIndex: 400_000,
+            srcId: 0
         )
+        let version = makeVersion(
+            container: "mkv",
+            videoCodec: "hevc",
+            audioCodec: "truehd",
+            audioTracks: [
+                makeAudio(index: 1, codec: "truehd", isDefault: true),
+                makeAudio(index: 2, codec: "ac3", isDefault: false),
+            ]
+        )
+
+        for delivery in [
+            PlaybackProtocolV3.PlanDelivery.remuxHLS,
+            PlaybackProtocolV3.PlanDelivery.transcodeHLS,
+        ] {
+            let plan = makePlan(delivery: delivery, streamProtocol: "hls", selectedAudioIndex: 1)
+
+            let tracks = ApplePlaybackV3PlanAdapter.audioPickerTracks(
+                aetherTracks: [bypassRendition],
+                plan: plan,
+                version: version
+            )
+            XCTAssertEqual(tracks.map(\.trackId), [0, 1], delivery)
+            XCTAssertEqual(tracks.map(\.srcId), [0, 1], delivery)
+            XCTAssertEqual(tracks.map(\.ffIndex), [1, 2], delivery)
+            XCTAssertEqual(tracks.filter(\.isSelected).map(\.trackId), [1], delivery)
+
+            // Without a catalog version there is nothing server-addressable
+            // to offer, so the rendition is withheld rather than shown.
+            XCTAssertEqual(
+                ApplePlaybackV3PlanAdapter.audioPickerTracks(
+                    aetherTracks: [bypassRendition],
+                    plan: plan,
+                    version: nil
+                ),
+                [],
+                delivery
+            )
+        }
     }
 
     /// `convert` mounts an artifact exactly like `render` does, so every gate
@@ -2336,6 +2433,49 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertEqual(settingsFallback.serverPreference, "1080p")
         XCTAssertEqual(settingsFallback.bandwidthCapKbps, 12_000)
         XCTAssertFalse(settingsFallback.isServerOwned)
+    }
+
+    func testPlannedQualityMenuKeepsServerOrderAndShowsBitrateForCappedRungs() {
+        // A plan that offers a lower-resolution version ("1080p") beside
+        // transcode rungs of the 4K source.
+        let options = ApplePlaybackQuality.playbackOptions(
+            serverQualities: [
+                PlaybackV3AvailableQuality(
+                    label: "original",
+                    displayName: "Original",
+                    height: 2_160,
+                    bitrateKbps: 60_000,
+                    preservesSource: true
+                ),
+                PlaybackV3AvailableQuality(
+                    label: "1080p",
+                    displayName: "1080p",
+                    height: 1_080,
+                    bitrateKbps: 9_500,
+                    preservesSource: false
+                ),
+                PlaybackV3AvailableQuality(
+                    label: "1080p-high",
+                    displayName: "1080p High",
+                    height: 1_080,
+                    bitrateKbps: 20_000,
+                    preservesSource: false
+                ),
+                PlaybackV3AvailableQuality(
+                    label: "720p-low",
+                    displayName: "720p Low",
+                    height: 720,
+                    bitrateKbps: 2_500,
+                    preservesSource: false
+                )
+            ]
+        )
+
+        XCTAssertEqual(options.map(\.id), ["auto", "original", "1080p", "1080p-high", "720p-low"])
+        XCTAssertEqual(options.map(\.label), ["Auto", "Original", "1080p", "1080p High", "720p Low"])
+        XCTAssertEqual(options.map(\.bitrateText), [nil, nil, "9.5 Mbps", "20 Mbps", "2.5 Mbps"])
+        XCTAssertEqual(options[3].labelWithBitrate, "1080p High (20 Mbps)")
+        XCTAssertEqual(options[0].labelWithBitrate, "Auto")
     }
 
     func testEmptyServerQualityCatalogOnlyOffersAuto() {

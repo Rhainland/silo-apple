@@ -16,6 +16,11 @@ private struct WatchPartyMediaChoice: Hashable {
     var backdropThumbhash: String?
     var overview: String?
     var facts: [String] = []
+    /// Set when `backdropURL` may be this episode's still and `overview` is
+    /// its description, so spoiler protection can hide them on this page.
+    private(set) var posterIsEpisodeStill: Bool?
+    private(set) var backdropIsEpisodeStill: Bool?
+    private(set) var episodeWatchState: EpisodeWatchState?
     /// The lobby hero's wording differs from this page's: an episode leads
     /// with its own title and puts the series and code underneath.
     private var lobbyTitle: String?
@@ -33,7 +38,10 @@ private struct WatchPartyMediaChoice: Hashable {
         WatchPartySelectedItem(previewContentId: contentId, type: type, title: lobbyTitle ?? title,
                                subtitle: lobbySubtitle, posterUrl: posterURL, posterThumbhash: posterThumbhash,
                                backdropUrl: backdropURL, backdropThumbhash: backdropThumbhash,
-                               year: year, runtimeMinutes: runtimeMinutes, overview: overview)
+                               year: year, runtimeMinutes: runtimeMinutes, overview: overview,
+                               posterIsEpisodeStill: posterIsEpisodeStill,
+                               backdropIsEpisodeStill: backdropIsEpisodeStill,
+                               episodeWatchState: episodeWatchState)
     }
 
     init(item: BrowseItem) {
@@ -42,8 +50,11 @@ private struct WatchPartyMediaChoice: Hashable {
         title = item.title
         subtitle = nil
         posterURL = item.posterUrl
+        posterIsEpisodeStill = item.posterIsEpisodeStill
         posterThumbhash = item.posterThumbhash
         backdropURL = item.backdropUrl
+        backdropIsEpisodeStill = item.backdropIsEpisodeStill
+        episodeWatchState = item.isEpisodeItem ? EpisodeWatchState(browseItem: item) : nil
         backdropThumbhash = item.backdropThumbhash
         overview = item.overview
         facts = item.watchPartyFacts
@@ -57,10 +68,13 @@ private struct WatchPartyMediaChoice: Hashable {
         title = series.title
         subtitle = "S\(episode.seasonNumber) · E\(episode.episodeNumber)" + (episode.title.map { " · \($0)" } ?? "")
         posterURL = series.posterUrl
+        posterIsEpisodeStill = false
         posterThumbhash = series.posterThumbhash
         backdropURL = episode.stillUrl ?? series.backdropUrl
         backdropThumbhash = episode.stillUrl != nil ? episode.stillThumbhash : series.backdropThumbhash
         overview = episode.overview
+        backdropIsEpisodeStill = episode.stillUrl != nil ? episode.stillIsEpisodeStill : false
+        episodeWatchState = EpisodeWatchState(episode.userData)
         if let runtime = MediaTextFormatting.runtime(minutes: episode.runtime) { facts = [runtime] }
         lobbyTitle = episode.title ?? "Episode \(episode.episodeNumber)"
         lobbySubtitle = "\(series.title) · S\(episode.seasonNumber):E\(episode.episodeNumber)"
@@ -79,17 +93,26 @@ private struct WatchPartyMediaChoice: Hashable {
             subtitle = item.seriesTitle != nil ? item.title : nil
         }
         posterURL = item.posterUrl
+        posterIsEpisodeStill = item.posterIsEpisodeStill
         posterThumbhash = item.posterThumbhash
         backdropURL = item.backdropUrl
         backdropThumbhash = item.backdropThumbhash
         overview = item.overview
+        backdropIsEpisodeStill = item.backdropIsEpisodeStill
+        episodeWatchState = EpisodeWatchState(sectionItem: item)
         if let runtime = MediaTextFormatting.runtime(minutes: item.runtime) { facts = [runtime] }
         lobbyTitle = item.title
         seasonNumber = item.seasonNumber
         if let seriesId = item.seriesId, !seriesId.isEmpty {
+            // The series page and its episodes reuse this artwork, so leave
+            // out anything the server marks as this episode's still.
+            let posterIsStill = item.posterIsEpisodeStill == true
+            let backdropIsStill = item.backdropIsEpisodeStill == true
             seriesLink = BrowseItem(seriesId: seriesId, title: item.seriesTitle ?? item.title,
-                                    posterUrl: item.posterUrl, posterThumbhash: item.posterThumbhash,
-                                    backdropUrl: item.backdropUrl, backdropThumbhash: item.backdropThumbhash)
+                                    posterUrl: posterIsStill ? nil : item.posterUrl,
+                                    posterThumbhash: posterIsStill ? nil : item.posterThumbhash,
+                                    backdropUrl: backdropIsStill ? nil : item.backdropUrl,
+                                    backdropThumbhash: backdropIsStill ? nil : item.backdropThumbhash)
         }
         if let seriesTitle = item.seriesTitle, let season = item.seasonNumber, let episode = item.episodeNumber {
             lobbySubtitle = "\(seriesTitle) · S\(season):E\(episode)"
@@ -105,9 +128,11 @@ private struct WatchPartyMediaChoice: Hashable {
         title = series.title
         subtitle = "S\(nextUp.seasonNumber) · E\(nextUp.episodeNumber)" + (nextUp.title.map { " · \($0)" } ?? "")
         posterURL = series.posterUrl
+        posterIsEpisodeStill = false
         posterThumbhash = series.posterThumbhash
         backdropURL = series.backdropUrl
         backdropThumbhash = series.backdropThumbhash
+        backdropIsEpisodeStill = false
         lobbyTitle = nextUp.title ?? "Episode \(nextUp.episodeNumber)"
         lobbySubtitle = "\(series.title) · S\(nextUp.seasonNumber):E\(nextUp.episodeNumber)"
         seriesLink = series
@@ -122,6 +147,8 @@ private extension BrowseItem {
          backdropUrl: String?, backdropThumbhash: String?) {
         self.init(
             contentId: seriesId, type: "series", title: title,
+            seriesId: nil, seriesTitle: nil, seasonNumber: nil, episodeNumber: nil,
+            itemSource: nil, positionSeconds: nil, durationSeconds: nil, progressUpdatedAt: nil,
             year: nil, genres: nil, contentRating: nil,
             advisoryAge: nil, advisorySource: nil, status: nil,
             ratingImdb: nil, ratingTmdb: nil, ratingRtCritic: nil, ratingRtAudience: nil,
@@ -745,6 +772,8 @@ private struct WatchPartyEpisodePicker: View {
     let purpose: WatchPartyPickerPurpose
     let series: BrowseItem
     var initialSeasonNumber: Int? = nil
+    /// The episode the viewer came from, when they browse its series.
+    var initialEpisodeId: String? = nil
     let onComplete: () -> Void
     @State private var seasons: [Season] = []
     @State private var episodes: [EpisodeListItem] = []
@@ -756,6 +785,8 @@ private struct WatchPartyEpisodePicker: View {
     @State private var focusedEpisodeId: String?
     @FocusState private var focusedSeasonNumber: Int?
     #endif
+
+    private var spoilers: EpisodeSpoilerSettings { EpisodeSpoilerPreferences.shared.settings }
 
     var body: some View {
         content
@@ -775,9 +806,25 @@ private struct WatchPartyEpisodePicker: View {
         #endif
     }
 
+    /// The episode the viewer came from, else their own next episode in this
+    /// season, as on the series page.
+    private var resumeEpisode: EpisodeListItem? {
+        episodes.first { $0.contentId == initialEpisodeId } ?? episodes.preferredResumeEpisode()
+    }
+
     #if os(tvOS)
+    /// The hero describes the resume episode until focus reaches the rail.
     private var focusedEpisode: EpisodeListItem? {
-        episodes.first { $0.contentId == focusedEpisodeId }
+        episodes.first { $0.contentId == focusedEpisodeId } ?? resumeEpisode
+    }
+
+    /// A focused episode's description, or the series overview before any
+    /// episode has focus. A hidden description stays blank rather than
+    /// falling back to the series text, so the line does not jump.
+    private var focusedOverview: String {
+        guard let episode = focusedEpisode else { return series.overview ?? "" }
+        if spoilers.hidesOverview(for: EpisodeWatchState(episode.userData)) { return "" }
+        return episode.overview ?? series.overview ?? ""
     }
 
     private var tvBody: some View {
@@ -799,7 +846,7 @@ private struct WatchPartyEpisodePicker: View {
                     Text(focusedEpisode.map(episodeLine) ?? (series.year.map(String.init) ?? ""))
                         .font(.system(size: WatchPartyMetrics.body, weight: .medium))
                         .foregroundStyle(Color.siloSecondaryText)
-                    Text(focusedEpisode?.overview ?? series.overview ?? "")
+                    Text(focusedOverview)
                         .font(.system(size: WatchPartyMetrics.body))
                         .foregroundStyle(Color.siloSecondaryText)
                         .lineLimit(3)
@@ -827,6 +874,7 @@ private struct WatchPartyEpisodePicker: View {
                     .scrollClipDisabled()
                     .padding(.horizontal, -8)
                     .focusSection()
+                    .defaultFocus($focusedSeasonNumber, seasonNumber, priority: .userInitiated)
                     .padding(.bottom, 24)
                 }
                 Group {
@@ -853,6 +901,7 @@ private struct WatchPartyEpisodePicker: View {
                                 chosen = WatchPartyMediaChoice(series: series, episode: episode)
                             },
                             onFocusedEpisodeChange: { id in if let id { focusedEpisodeId = id } },
+                            currentContentId: resumeEpisode?.contentId,
                             baseCardWidth: 400,
                             cardSpacing: 36
                         )
@@ -879,6 +928,19 @@ private struct WatchPartyEpisodePicker: View {
 
     #if os(iOS)
     private var phoneBody: some View {
+        ScrollViewReader { proxy in
+            phoneList
+                .onChange(of: resumeEpisode?.contentId) { _, id in
+                    guard let id else { return }
+                    // Next tick, so the rows that just loaded are laid out.
+                    DispatchQueue.main.async {
+                        proxy.scrollTo(id, anchor: .center)
+                    }
+                }
+        }
+    }
+
+    private var phoneList: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 if !seasons.isEmpty {
@@ -909,6 +971,7 @@ private struct WatchPartyEpisodePicker: View {
                                     episodeRow(episode)
                                 }
                                 .buttonStyle(.plain)
+                                .id(episode.contentId)
                             }
                         }
                     }
@@ -936,6 +999,7 @@ private struct WatchPartyEpisodePicker: View {
                         .overlay { Image(systemName: "tv").foregroundStyle(Color.siloSecondaryText) }
                 }
             }
+            .episodeSpoilerBlur(spoilers.hidesImage(for: EpisodeWatchState(episode.userData), isEpisodeStill: episode.stillIsEpisodeStill))
             .frame(width: Self.stillWidth, height: Self.stillWidth * 9 / 16)
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             VStack(alignment: .leading, spacing: 4) {
@@ -948,7 +1012,8 @@ private struct WatchPartyEpisodePicker: View {
                         .font(.caption)
                         .foregroundStyle(Color.siloSecondaryText)
                 }
-                if let overview = episode.overview, !overview.isEmpty {
+                if !spoilers.hidesOverview(for: EpisodeWatchState(episode.userData)),
+                   let overview = episode.overview, !overview.isEmpty {
                     Text(overview)
                         .font(.caption)
                         .foregroundStyle(Color.siloSecondaryText)
@@ -972,10 +1037,11 @@ private struct WatchPartyEpisodePicker: View {
             guard !Task.isCancelled, roomId == session.room?.roomId else { return }
             seasons = try values.map { try Season(catalog: $0) }.sortedForDisplay()
             // A retry keeps the season being viewed; the first load opens on
-            // the initial season.
+            // the initial season, else where the viewer left off, as the
+            // series page does.
             let target = seasons.first(where: { $0.seasonNumber == seasonNumber })
                 ?? seasons.first(where: { $0.seasonNumber == initialSeasonNumber })
-                ?? seasons.first(where: { $0.seasonNumber > 0 }) ?? seasons.first
+                ?? seasons.preferredResumeSeason()
             if seasonNumber == target?.seasonNumber { await loadEpisodes() }
             else { seasonNumber = target?.seasonNumber }
             if seasons.isEmpty { isLoading = false }
@@ -997,7 +1063,10 @@ private struct WatchPartyEpisodePicker: View {
             let values = try await SiloAPI.shared.apiV2Client.catalogEpisodes(seriesId: series.contentId,
                 seasonNumber: seasonNumber, imageSize: nil, auth: auth)
             guard !Task.isCancelled, roomId == session.room?.roomId, self.seasonNumber == seasonNumber else { return }
+            // In episode order, as on the series page, so the resume episode is
+            // the earliest unwatched one.
             episodes = try values.map { try EpisodeListItem(catalog: $0) }
+                .sorted { $0.episodeNumber < $1.episodeNumber }
         } catch {
             guard !Task.isCancelled, roomId == session.room?.roomId, self.seasonNumber == seasonNumber else { return }
             errorMessage = error.localizedDescription
@@ -1024,15 +1093,30 @@ private struct WatchPartyMediaChoiceView: View {
         #endif
     }
 
+    private var spoilers: EpisodeSpoilerSettings { EpisodeSpoilerPreferences.shared.settings }
+
+    private var hidesStill: Bool {
+        guard let state = choice.episodeWatchState else { return false }
+        let provenance = choice.backdropURL?.isEmpty == false ? choice.backdropIsEpisodeStill : choice.posterIsEpisodeStill
+        return spoilers.hidesImage(for: state, isEpisodeStill: provenance)
+    }
+
+    private var visibleOverview: String? {
+        if let state = choice.episodeWatchState, spoilers.hidesOverview(for: state) { return nil }
+        return choice.overview
+    }
+
     var body: some View {
         ZStack {
             WatchPartyBackdrop(url: choice.backdropURL ?? choice.posterURL,
                                thumbhash: choice.backdropURL != nil ? choice.backdropThumbhash : choice.posterThumbhash,
-                               isPoster: choice.backdropURL == nil)
+                               isPoster: choice.backdropURL == nil,
+                               hidesStill: hidesStill)
             ScrollView {
                 VStack(alignment: .leading, spacing: WatchPartyMetrics.body * 1.4) {
                     HStack(alignment: .bottom, spacing: WatchPartyMetrics.body) {
-                        WatchPartyPoster(url: choice.posterURL, thumbhash: choice.posterThumbhash, width: posterWidth)
+                        WatchPartyPoster(url: choice.posterURL, thumbhash: choice.posterThumbhash, width: posterWidth,
+                                         hidesStill: choice.episodeWatchState.map { spoilers.hidesImage(for: $0, isEpisodeStill: choice.posterIsEpisodeStill) } ?? false)
                             .shadow(color: .black.opacity(0.6), radius: 16, y: 10)
                         VStack(alignment: .leading, spacing: 8) {
                             WatchPartyEyebrow(text: purpose == .suggest ? "Suggest to the party" : "Watch together")
@@ -1050,7 +1134,7 @@ private struct WatchPartyMediaChoiceView: View {
                             }
                         }
                     }
-                    if let overview = choice.overview, !overview.isEmpty {
+                    if let overview = visibleOverview, !overview.isEmpty {
                         Text(overview)
                             .font(.system(size: WatchPartyMetrics.body))
                             .foregroundStyle(Color.siloSecondaryText)
@@ -1114,7 +1198,8 @@ private struct WatchPartyMediaChoiceView: View {
         #endif
         .navigationDestination(item: $browsedSeries) { series in
             WatchPartyEpisodePicker(session: session, purpose: purpose, series: series,
-                                    initialSeasonNumber: choice.seasonNumber, onComplete: onComplete)
+                                    initialSeasonNumber: choice.seasonNumber, initialEpisodeId: choice.contentId,
+                                    onComplete: onComplete)
         }
         .task(id: choice.contentId) {
             if session.capabilities?.memberState == true {

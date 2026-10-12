@@ -45,6 +45,10 @@ struct TVSkylineSectionFeed: View {
     /// The row that owns card focus or its context-menu dismissal flow. Unlike
     /// the marquee preview, this is cleared when focus moves into chrome.
     @State private var focusRestorationOwnerSectionId: String?
+    /// The card the marquee content was last built from, kept so a spoiler
+    /// settings change can rebuild it. The settings load after sign-in and
+    /// can land after Home has already seeded the marquee.
+    @State private var marqueeSource: (item: SectionItem, section: ResolvedSection)?
 
     init(
         sections: [ResolvedSection],
@@ -104,6 +108,22 @@ struct TVSkylineSectionFeed: View {
         .onChange(of: sections.map(\.id)) { _, _ in
             seedMarqueeFromFirstItem()
             if let pending = pendingFocusRequest { requestEntryFocus(pending) }
+        }
+        .onChange(of: sections.map(\.items)) { _, _ in
+            guard let source = marqueeSource,
+                  let section = sections.first(where: { $0.id == source.section.id }),
+                  let item = section.items.first(where: { $0.contentId == source.item.contentId }) else {
+                marqueeSource = nil
+                marqueeModel.clearSelection()
+                seedMarqueeFromFirstItem()
+                return
+            }
+            marqueeSource = (item, section)
+            marqueeModel.replaceContent(marqueeContent(for: item, in: section))
+        }
+        .onChange(of: EpisodeSpoilerPreferences.shared.settings) { _, _ in
+            guard let source = marqueeSource else { return }
+            marqueeModel.replaceContent(marqueeContent(for: source.item, in: source.section))
         }
     }
 
@@ -254,14 +274,21 @@ struct TVSkylineSectionFeed: View {
     }
 
     private func previewFocusedItem(_ item: SectionItem, in section: ResolvedSection) {
+        marqueeSource = (item, section)
         marqueeModel.preview(
-            TVMarqueeContent(
-                item: item,
-                rowId: section.id,
-                rowTitle: section.title,
-                isContinueWatching: section.isContinueWatchingSection
-            ),
+            marqueeContent(for: item, in: section),
             neighborBackdropURLs: neighborBackdropURLs(around: item, in: section)
+        )
+    }
+
+    private func marqueeContent(for item: SectionItem, in section: ResolvedSection) -> TVMarqueeContent {
+        TVMarqueeContent(
+            item: item,
+            rowId: section.id,
+            rowTitle: section.title,
+            isContinueWatching: section.isContinueWatchingSection,
+            isFeatured: section.isFeatured,
+            spoilers: EpisodeSpoilerPreferences.shared.settings
         )
     }
 
@@ -293,14 +320,8 @@ struct TVSkylineSectionFeed: View {
         guard marqueeModel.content == nil,
               let section = sections.first,
               let item = section.items.first else { return }
-        marqueeModel.seed(
-            TVMarqueeContent(
-                item: item,
-                rowId: section.id,
-                rowTitle: section.title,
-                isContinueWatching: section.isContinueWatchingSection
-            )
-        )
+        marqueeSource = (item, section)
+        marqueeModel.seed(marqueeContent(for: item, in: section))
     }
 
 }
@@ -352,11 +373,55 @@ struct TVSkylineMarquee: View {
     let model: TVFocusMarqueeModel
     let scale: TVFocusMarquee.Scale
 
+    /// How long a card must hold focus before its description is translated
+    /// on view, so rolling across a row starts no jobs.
+    private static let translationDwell: Duration = .milliseconds(1500)
+
     var body: some View {
         TVFocusMarquee(
-            content: model.content,
+            content: displayedContent,
             enrichment: model.enrichment,
             scale: scale
+        )
+        .task(id: translationRequest) {
+            // Featured cards in `auto` mode only. The marquee has no
+            // focusable controls, so `button` mode leaves the action to the
+            // detail page's More menu.
+            guard let trigger = translationRequest else { return }
+            try? await Task.sleep(for: Self.translationDwell)
+            guard !Task.isCancelled else { return }
+            CardDescriptionTranslation.shared.cardDidAppear(
+                contentId: trigger.contentId,
+                pendingLanguage: trigger.language,
+                libraryId: model.libraryId
+            )
+        }
+    }
+
+    /// The focused card with any landed translation and its status.
+    private var displayedContent: TVMarqueeContent? {
+        guard var content = model.content else { return nil }
+        guard !content.hidesSynopsis else { return content }
+        let presentation = translationPresentation(for: content)
+        content.synopsis = presentation.overview
+        content.translationStatus = presentation.status
+        return content
+    }
+
+    private var translationRequest: TVMarqueeTranslationRequest? {
+        guard let content = model.content else { return nil }
+        return content.onViewTranslationRequest(
+            pendingLanguage: translationPresentation(for: content).pendingLanguage,
+            mode: AICapabilities.shared.metadataOnView
+        )
+    }
+
+    private func translationPresentation(for content: TVMarqueeContent) -> CardDescriptionTranslation.Presentation {
+        CardDescriptionTranslation.shared.presentation(
+            contentId: content.contentId,
+            overview: content.synopsis,
+            pendingLanguage: content.pendingTranslationLanguage,
+            machineTranslatedFields: content.machineTranslatedFields
         )
     }
 }

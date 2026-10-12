@@ -8,7 +8,9 @@ struct TVMediaCard: View {
     let title: String
     let posterUrl: String
     var posterThumbhash: String? = nil
-    /// Catalog type; picks the glyph shown when the poster cannot load.
+    var episodeWatchState: EpisodeWatchState? = nil
+    var imageIsEpisodeStill: Bool? = nil
+    /// Catalog type; picks the mark shown when the poster is missing.
     var mediaType: String? = nil
     var year: Int? = nil
     /// Optional second caption line rendered in place of the year (same
@@ -96,6 +98,12 @@ struct TVMediaCard: View {
 
     private var isPlayed: Bool { personalState.isPlayed(userState) }
 
+    private var hidesEpisodeStill: Bool {
+        guard var state = episodeWatchState else { return false }
+        state.played = isPlayed
+        return EpisodeSpoilerPreferences.shared.settings.hidesImage(for: state, isEpisodeStill: imageIsEpisodeStill)
+    }
+
     private var stateMenu: MediaStateMenuItems {
         MediaStateMenuItems(
             isWatched: isPlayed,
@@ -168,8 +176,10 @@ struct TVMediaCard: View {
                 thumbhash: posterThumbhash,
                 targetSize: CGSize(width: resolvedCardWidth, height: cardHeight),
                 contentMode: .fill,
+                placeholderStyle: .artwork,
                 placeholderSymbol: ArtworkPlaceholderSymbol.forMediaType(mediaType)
             )
+            .episodeSpoilerBlur(hidesEpisodeStill)
             .frame(width: resolvedCardWidth, height: cardHeight)
             .clipShape(RoundedRectangle(cornerRadius: SiloTheme.cornerRadius))
 

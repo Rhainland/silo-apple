@@ -67,6 +67,9 @@ struct PlayerNextUpEpisode: Identifiable, Hashable {
     let airDate: String?
     /// False for a shuffled movie, which has no season or episode line.
     let isEpisode: Bool
+    /// The profile's watch state for the next episode, so the Up Next screen
+    /// can apply spoiler protection.
+    let watchState: EpisodeWatchState
 
     var id: String { contentId }
     var episodeLabel: String? { isEpisode ? "S\(seasonNumber):E\(episodeNumber)" : nil }
@@ -89,6 +92,7 @@ struct PlayerNextUpEpisode: Identifiable, Hashable {
         stillUrl = episode.stillUrl
         stillThumbhash = episode.stillThumbhash
         airDate = episode.airDate
+        watchState = EpisodeWatchState(episode.userData)
     }
 
     init(shufflePick item: ShuffleItem) {
@@ -107,6 +111,8 @@ struct PlayerNextUpEpisode: Identifiable, Hashable {
         stillUrl = (item.isEpisode ? item.posterUrl : nil) ?? item.backdropUrl
         stillThumbhash = (item.isEpisode ? item.posterThumbhash : nil) ?? item.backdropThumbhash
         airDate = item.releaseDate
+        // Shuffle picks carry no watch state, so an episode reads as untouched.
+        watchState = EpisodeWatchState(played: false)
     }
 }
 
@@ -3446,15 +3452,21 @@ class PlayerViewModel {
         // TrueHD Atmos keeps its heights when the setting is on and, on Apple TV, the output reports
         // Atmos; Aether applies it to Atmos TrueHD alone and keeps `audioBridgeMode` for the rest.
         #if os(tvOS)
-        let atmosOutput = AetherObjectAudioPolicy.currentOutput()
+        let renderingMode = AVAudioSession.sharedInstance().renderingMode
+        let atmosOutput = AetherObjectAudioPolicy.currentOutput(renderingMode)
+        let renderingModeField = " renderingMode=\(AetherObjectAudioPolicy.renderingModeName(renderingMode))"
         #else
         let atmosOutput = AetherObjectAudioPolicy.Output.unknown
+        let renderingModeField = ""
         #endif
         let trueHDAtmosEnabled = settings.trueHDAtmosEnabled
         let objectAudioRendering = AetherObjectAudioPolicy.rendering(
             enabled: trueHDAtmosEnabled, output: atmosOutput)
-        Self.logger.info(
-            "TrueHD Atmos: setting=\(trueHDAtmosEnabled, privacy: .public) output=\(String(describing: atmosOutput), privacy: .public) rendering=\(String(describing: objectAudioRendering), privacy: .public)"
+        // Essential tier, so a report without Debug Logging says which path
+        // TrueHD Atmos was offered; the engine logs what it then built.
+        cmpLog(
+            "[CMP-ATMOS] setting=\(trueHDAtmosEnabled)\(renderingModeField) output=\(atmosOutput) "
+                + "rendering=\(AetherObjectAudioPolicy.diagnosticName(objectAudioRendering))"
         )
         let deinterlaceMode: DeinterlaceMode = settings.deinterlaceMode == .software
             ? .software
@@ -3462,6 +3474,10 @@ class PlayerViewModel {
         let deinterlaceFieldRate: DeinterlaceFieldRate = settings.deinterlaceFieldRate == .film
             ? .frame
             : .field
+        let dolbyVisionHandling = AetherLoadSpec.dolbyVisionHandling(
+            hdrEnabled: settings.hdrEnabled,
+            dolbyVisionEnabled: settings.dolbyVisionEnabled
+        )
         let spec: AetherLoadSpec
         if let v3 = prepared.protocolV3 {
             let audioSourceStreamIndex: Int32?
@@ -3553,6 +3569,7 @@ class PlayerViewModel {
                 objectAudioRendering: objectAudioRendering,
                 deinterlaceMode: deinterlaceMode,
                 deinterlaceFieldRate: deinterlaceFieldRate,
+                dolbyVisionHandling: dolbyVisionHandling,
                 resumeSourcePosition: resumeSourcePosition
             )
         } else if streamRequest.url.isFileURL {
@@ -3589,7 +3606,8 @@ class PlayerViewModel {
                 audioBridgeMode: audioBridgeMode,
                 objectAudioRendering: objectAudioRendering,
                 deinterlaceMode: deinterlaceMode,
-                deinterlaceFieldRate: deinterlaceFieldRate
+                deinterlaceFieldRate: deinterlaceFieldRate,
+                dolbyVisionHandling: dolbyVisionHandling
             )
         } else {
             spec = try AetherLoadSpec(
@@ -3604,7 +3622,8 @@ class PlayerViewModel {
                 audioBridgeMode: audioBridgeMode,
                 objectAudioRendering: objectAudioRendering,
                 deinterlaceMode: deinterlaceMode,
-                deinterlaceFieldRate: deinterlaceFieldRate
+                deinterlaceFieldRate: deinterlaceFieldRate,
+                dolbyVisionHandling: dolbyVisionHandling
             )
         }
 
@@ -3631,6 +3650,13 @@ class PlayerViewModel {
             shouldPlayWhenReady: shouldPlayWhenReady
         )
         activeAetherLoadEpoch = loadEpoch
+        // A progressive remux opens at its stream origin, behind the position
+        // the caller just published. Clock updates earlier than `currentTime`
+        // are dropped as stale, so move it back to where the engine starts or
+        // the scrubber and progress stay frozen until playback catches up.
+        if spec.delivery == PlaybackProtocolV3.PlanDelivery.remuxProgressive {
+            currentTime = min(currentTime, spec.timeline.sourcePosition(forPlayerTime: spec.aetherStartPosition))
+        }
         // A new transport starts at its own position with its own reader.
         sourceWatch = PlaybackSourceWatch()
         establishedAetherLoadEpoch = nil
@@ -3765,6 +3791,9 @@ class PlayerViewModel {
             )
         }
         let isServerPreparedFile = offlinePlaybackContext?.isServerPreparedFile == true
+        let serverOwnsAudio = ApplePlaybackV3PlanAdapter.serverOwnsAudioTracks(
+            activePreparedProtocolV3?.plan
+        )
         let pickerAudioTracks = ApplePlaybackV3PlanAdapter.audioPickerTracks(
             aetherTracks: aetherAudioTracks,
             plan: activePreparedProtocolV3?.plan,
@@ -3840,8 +3869,10 @@ class PlayerViewModel {
         }
         chapters = mediaChapters.isEmpty ? serverProvidedChapters : mediaChapters
 
+        // On server HLS the engine's active id names its packaged rendition,
+        // not a picker row, so only the plan's ordinal selects one.
         selectedAudioId = audioTracks.first(where: \.isSelected)?.trackId
-            ?? engine.activeAudioTrackIndex.map(Int64.init)
+            ?? (serverOwnsAudio ? nil : engine.activeAudioTrackIndex.map(Int64.init))
         // A locally-registered sidecar is selected client-side, so the plan —
         // which predates the track — must not republish over it. Once the
         // server publishes that ordinal the plan is authoritative again.
@@ -3868,8 +3899,10 @@ class PlayerViewModel {
         let loadIsEstablished = isAetherLoadEstablished
 
         // Catalog fallback rows are picker state for server-owned replans; only
-        // a track Aether actually published may drive its local selection API.
+        // a file track Aether actually published may drive its local selection
+        // API, which server HLS never has.
         if let wantedIndex = pendingAudioFfIndex,
+           !serverOwnsAudio,
            let match = aetherAudioTracks.first(where: {
                audioSelectionIndex(for: $0) == wantedIndex
            }) {
@@ -4249,6 +4282,27 @@ class PlayerViewModel {
             // Not a finish: the reload must not record the item as completed.
             hasReachedEndOfFile = false
             if remountWatchPartyPlayback(at: observedPosition) { return }
+            hasReachedEndOfFile = true
+        }
+
+        // A progressive remux is one response the engine cannot reconnect: a
+        // connection dropped mid-film (a long pause is enough) ends the
+        // stream for good, and the engine reports it as a clean end without
+        // the stall the check above waits for. Reconnect where it dropped
+        // instead of parking the viewer at the end of a film they have not
+        // finished. The reconnect carries the viewer's pause and is bounded
+        // by its own attempt budget.
+        if isPremature, !isWatchPartyPlayback, offlinePlaybackContext == nil,
+           aetherPlaybackController.activeSpec?.delivery == PlaybackProtocolV3.PlanDelivery.remuxProgressive {
+            Self.logger.warning(
+                "[CMP] handleEndOfFile reconnecting progressive remux: premature EOF at \(observedPosition, privacy: .public)/\(safeDuration, privacy: .public)"
+            )
+            // Not a finish: the reconnect must not record the item as completed.
+            hasReachedEndOfFile = false
+            if beginReconnect(position: observedPosition, resume: aetherPlaybackController.shouldPlayWhenReady) {
+                currentTime = observedPosition
+                return
+            }
             hasReachedEndOfFile = true
         }
 
@@ -4749,6 +4803,11 @@ class PlayerViewModel {
         origin: LoadOrigin = .userInitiated
     ) {
         guard !isDisposed else { return }
+        // A renewal still waiting on its progress sync belongs to the load
+        // this one replaces. Left pending, it would reload its own captured
+        // request over the item that is starting now.
+        staleSessionRecoveryTask?.cancel()
+        staleSessionRecoveryTask = nil
         #if os(iOS) || os(macOS)
         if refreshHomeAfterPlaybackWrite == nil {
             refreshHomeAfterPlaybackWrite = StartupContentPrefetcher.homeRefreshAfterPlaybackWrite()
@@ -5354,6 +5413,8 @@ class PlayerViewModel {
             guard !Task.isCancelled, !self.isDisposed else { return }
 
             self.progressTask?.cancel()
+            // This task is the renewal; the load it starts must not cancel it.
+            self.staleSessionRecoveryTask = nil
             self.beginFreshLoad(
                 request: renewalRequest,
                 progressPosition: nil,
@@ -8592,7 +8653,8 @@ class PlayerViewModel {
             disableWhenNoLanguageMatch: prefs.disableWhenNoLanguageMatch,
             trackSignature: prefs.trackSignature,
             availableSubtitles: allSubs,
-            currentAudioLanguage: audioLang
+            currentAudioLanguage: audioLang,
+            sourceContainer: currentSelectedVersion?.container
         ))
         // An empty callback still has to clear a server-seeded automatic
         // selection in device-settings mode, but it must not latch the
@@ -8632,7 +8694,8 @@ class PlayerViewModel {
             availableSubtitles: subtitleTracks,
             currentAudioLanguage: audioTracks
                 .first(where: { $0.trackId == selectedAudioId })?
-                .lang
+                .lang,
+            sourceContainer: currentSelectedVersion?.container
         ))
         guard case .select(let track) = pick else { return }
         Self.logger.info(

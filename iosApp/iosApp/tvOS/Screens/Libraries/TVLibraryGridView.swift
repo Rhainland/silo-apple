@@ -11,6 +11,7 @@ struct TVLibraryGridView: View {
     let libraryId: Int
     let libraryName: String
     let libraryType: String
+    let mediaScope: LibraryVideoScope?
     let initialFilter: CatalogFilterState
     let subtitle: String?
     /// Pushed full-screen entries render the big library header; Skyline
@@ -47,6 +48,7 @@ struct TVLibraryGridView: View {
         libraryId: Int,
         libraryName: String,
         libraryType: String,
+        mediaScope: LibraryVideoScope? = nil,
         initialFilter: CatalogFilterState = .none,
         subtitle: String? = nil,
         showsHeader: Bool = true,
@@ -59,6 +61,7 @@ struct TVLibraryGridView: View {
         self.libraryId = libraryId
         self.libraryName = libraryName
         self.libraryType = libraryType
+        self.mediaScope = mediaScope
         self.initialFilter = initialFilter
         self.subtitle = subtitle
         self.showsHeader = showsHeader
@@ -72,12 +75,21 @@ struct TVLibraryGridView: View {
 
     private var viewModel: TVLibraryGridViewModel {
         modelSlot.value {
-            TVLibraryGridViewModel(libraryId: libraryId, libraryType: libraryType, initialFilter: initialFilter)
+            TVLibraryGridViewModel(
+                libraryId: libraryId,
+                libraryType: libraryType,
+                mediaScope: mediaScope,
+                initialFilter: initialFilter
+            )
         }
     }
 
+    /// A library shuffle has no media type, so the Movies or Series view of
+    /// a mixed library would shuffle titles of both types.
     private var canShuffle: Bool {
-        ShuffleAvailability.isShuffleLibraryType(libraryType) && ShuffleFeatureStore.shared.supports(.library)
+        mediaScope == nil
+            && ShuffleAvailability.isShuffleLibraryType(libraryType)
+            && ShuffleFeatureStore.shared.supports(.library)
     }
 
     var body: some View {

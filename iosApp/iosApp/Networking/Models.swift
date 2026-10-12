@@ -6,6 +6,20 @@ struct BrowseItem: Codable, Identifiable, Hashable {
     let contentId: String
     let type: String
     let title: String
+    /// Episode context; the server sends it on episode rows (text search
+    /// with the `video_with_episodes` or `episode` scope) and on
+    /// section-sourced catalog pages (e.g. a Continue Watching shelf paged
+    /// through `source=section`), with progress on the latter, and omits it
+    /// elsewhere. Defaulted so the memberwise init and synthesized decoder
+    /// stay intact.
+    var seriesId: String? = nil
+    var seriesTitle: String? = nil
+    var seasonNumber: Int? = nil
+    var episodeNumber: Int? = nil
+    var itemSource: String? = nil
+    var positionSeconds: Double? = nil
+    var durationSeconds: Double? = nil
+    var progressUpdatedAt: String? = nil
     let year: Int?
     let genres: [String]?
     let contentRating: String?
@@ -22,6 +36,8 @@ struct BrowseItem: Codable, Identifiable, Hashable {
     let networks: [String]?
     let showStatus: String?
     let overview: String?
+    var posterIsEpisodeStill: Bool? = nil
+    var backdropIsEpisodeStill: Bool? = nil
     @ArtworkURL var posterUrl: String? = nil
     let posterThumbhash: String?
     @ArtworkURL var backdropUrl: String? = nil
@@ -31,13 +47,6 @@ struct BrowseItem: Codable, Identifiable, Hashable {
     let lastAirDate: String?
     let userState: MediaItemUserState?
     let overlaySummary: OverlaySummary?
-    /// Episode context; the server sends it on episode rows (text search
-    /// with the `video_with_episodes` or `episode` scope) and omits it
-    /// elsewhere.
-    var seriesId: String? = nil
-    var seriesTitle: String? = nil
-    var seasonNumber: Int? = nil
-    var episodeNumber: Int? = nil
     var id: String { contentId }
 }
 
@@ -129,6 +138,8 @@ struct SectionItem: Codable, Identifiable, Hashable {
     let positionSeconds: Double?
     let durationSeconds: Double?
     let progressUpdatedAt: String?
+    var posterIsEpisodeStill: Bool? = nil
+    var backdropIsEpisodeStill: Bool? = nil
     @ArtworkURL var posterUrl: String? = nil
     let posterThumbhash: String?
     @ArtworkURL var backdropUrl: String? = nil
@@ -136,6 +147,11 @@ struct SectionItem: Codable, Identifiable, Hashable {
     @ArtworkURL var logoUrl: String? = nil
     let userState: MediaItemUserState?
     let overlaySummary: OverlaySummary?
+    /// This profile's metadata language when the card's description is not
+    /// in it yet. Drives the hero's on-view translation.
+    var pendingTranslationLanguage: String? = nil
+    /// Localized fields ("overview", "tagline") machine-translated by AI.
+    var machineTranslatedFields: [String]? = nil
     var id: String { contentId }
 
     /// Lift a catalog row into a section row so client-composed shelves
@@ -164,10 +180,12 @@ struct SectionItem: Codable, Identifiable, Hashable {
         networks = item.networks
         showStatus = item.showStatus
         overview = item.overview
-        itemSource = nil
-        self.positionSeconds = positionSeconds
-        self.durationSeconds = durationSeconds
-        progressUpdatedAt = nil
+        itemSource = item.itemSource
+        self.positionSeconds = positionSeconds ?? item.positionSeconds
+        self.durationSeconds = durationSeconds ?? item.durationSeconds
+        progressUpdatedAt = item.progressUpdatedAt
+        posterIsEpisodeStill = item.posterIsEpisodeStill
+        backdropIsEpisodeStill = item.backdropIsEpisodeStill
         posterUrl = item.posterUrl
         posterThumbhash = item.posterThumbhash
         backdropUrl = item.backdropUrl
@@ -277,6 +295,14 @@ extension BrowseItem {
             contentId: item.contentId,
             type: item.type,
             title: item.title,
+            seriesId: item.seriesId,
+            seriesTitle: item.seriesTitle,
+            seasonNumber: item.seasonNumber,
+            episodeNumber: item.episodeNumber,
+            itemSource: item.itemSource,
+            positionSeconds: item.positionSeconds,
+            durationSeconds: item.durationSeconds,
+            progressUpdatedAt: item.progressUpdatedAt,
             year: item.year,
             genres: item.genres,
             contentRating: item.contentRating,
@@ -293,6 +319,8 @@ extension BrowseItem {
             networks: item.networks,
             showStatus: item.showStatus,
             overview: item.overview,
+            posterIsEpisodeStill: item.posterIsEpisodeStill,
+            backdropIsEpisodeStill: item.backdropIsEpisodeStill,
             posterUrl: item.posterUrl,
             posterThumbhash: item.posterThumbhash,
             backdropUrl: item.backdropUrl,
@@ -301,11 +329,7 @@ extension BrowseItem {
             releaseDate: nil,
             lastAirDate: nil,
             userState: item.userState,
-            overlaySummary: item.overlaySummary,
-            seriesId: item.seriesId,
-            seriesTitle: item.seriesTitle,
-            seasonNumber: item.seasonNumber,
-            episodeNumber: item.episodeNumber
+            overlaySummary: item.overlaySummary
         )
     }
 }
@@ -442,6 +466,8 @@ struct ItemDetail: Codable {
     let releaseDate: String?
     let firstAirDate: String?
     let lastAirDate: String?
+    var posterIsEpisodeStill: Bool? = nil
+    var backdropIsEpisodeStill: Bool? = nil
     @ArtworkURL var posterUrl: String? = nil
     let posterThumbhash: String?
     @ArtworkURL var backdropUrl: String? = nil
@@ -494,6 +520,10 @@ struct ItemDetail: Codable {
     /// read (`user_state`); absent without a profile. `var` with a default
     /// for the same memberwise-initializer reason as `videos`.
     var userState: MediaItemUserState? = nil
+    /// Localized fields ("overview", "tagline") whose text was machine
+    /// translated by AI. `var` with a default for the same memberwise-
+    /// initializer reason as `videos`.
+    var machineTranslatedFields: [String]? = nil
 }
 
 extension ItemDetail {
@@ -686,6 +716,8 @@ struct Season: Codable, Identifiable, Hashable {
     @ArtworkURL var posterUrl: String? = nil
     let posterThumbhash: String?
     let userData: SeasonUserData?
+    /// Localized fields ("overview") machine-translated by AI.
+    var machineTranslatedFields: [String]? = nil
     var id: String { contentId }
 
     /// Consistent label for season pickers and episode-section headings.
@@ -708,6 +740,7 @@ struct Season: Codable, Identifiable, Hashable {
         posterUrl = try c.decode(ArtworkURL.self, forKey: .posterUrl).wrappedValue
         posterThumbhash = try c.decodeIfPresent(String.self, forKey: .posterThumbhash)
         userData = try c.decodeIfPresent(SeasonUserData.self, forKey: .userData)
+        machineTranslatedFields = try c.decodeIfPresent([String].self, forKey: .machineTranslatedFields)
     }
 }
 
@@ -729,6 +762,43 @@ extension Array where Element == Season {
             if (lhs.title ?? "") != (rhs.title ?? "") { return (lhs.title ?? "") < (rhs.title ?? "") }
             return lhs.contentId < rhs.contentId
         }
+    }
+
+    /// The season a viewer resumes in: one with an episode in progress, then
+    /// the first partially watched season, then the first unplayed numbered
+    /// season (Specials only once every numbered season is played), then the
+    /// first season.
+    func preferredResumeSeason() -> Season? {
+        if let inProgress = first(where: { ($0.userData?.inProgressCount ?? 0) > 0 }) {
+            return inProgress
+        }
+        if let partial = first(where: {
+            guard let ud = $0.userData else { return false }
+            let watched = ud.watchedCount ?? 0
+            return watched > 0 && watched < $0.episodeCount
+        }) {
+            return partial
+        }
+        // Specials sort first for display, but a fresh series should open on
+        // its first numbered season rather than the specials bucket. Once
+        // every numbered season is played, an unplayed Specials still wins
+        // over a fully watched one.
+        let regular = filter { !($0.isSpecials == true || $0.seasonNumber == 0) }
+        let isUnplayed: (Season) -> Bool = { !($0.userData?.played ?? false) }
+        if let firstUnplayed = regular.first(where: isUnplayed) ?? first(where: isUnplayed) {
+            return firstUnplayed
+        }
+        return regular.first ?? first
+    }
+}
+
+extension Array where Element == EpisodeListItem {
+    /// The episode a viewer resumes with: the one in progress, then the first
+    /// unwatched, then the first.
+    func preferredResumeEpisode() -> EpisodeListItem? {
+        first { $0.userData?.isInProgress == true }
+            ?? first { !($0.userData?.played ?? false) }
+            ?? first
     }
 }
 
@@ -758,10 +828,16 @@ struct EpisodeListItem: Codable, Identifiable, Hashable {
     let imdbId: String?
     let tmdbId: String?
     let tvdbId: String?
+    var stillIsEpisodeStill: Bool? = nil
     @ArtworkURL var stillUrl: String? = nil
     let stillThumbhash: String?
     let userData: LeafItemUserData?
     let files: [EpisodeFile]?
+    /// Localized fields ("overview") machine-translated by AI.
+    var machineTranslatedFields: [String]? = nil
+    /// This profile's metadata language when the episode's description is
+    /// not in it yet. The season's translation job covers it.
+    var pendingTranslationLanguage: String? = nil
     var id: String { contentId }
 }
 

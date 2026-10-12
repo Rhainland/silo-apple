@@ -90,8 +90,7 @@ final class MediaAuthorizationPlaybackTests: XCTestCase {
         let subtitles = controller.assSubtitles
         let fontRequest = try XCTUnwrap(spec.subtitleFontRequests.values.first)
         // The native HLS load returns before AVFoundation has decoded its
-        // initial buffer. Starting at rate 1 with waiting disabled before
-        // readiness can immediately exhaust an empty buffer on a cold boot.
+        // initial buffer. Wait for the item to be ready before starting playback.
         guard await eventually(timeout: .seconds(10), { item.status == .readyToPlay }) else {
             return XCTFail("Synthetic HLS item never became ready. \(diagnostics(player, origin: origin))")
         }
@@ -105,7 +104,10 @@ final class MediaAuthorizationPlaybackTests: XCTestCase {
         for track in item.tracks where track.assetTrack?.mediaType == .audio {
             track.isEnabled = false
         }
-        player.automaticallyWaitsToMinimizeStalling = false
+        // The gated origin can exhaust the initial buffer. Retain the native
+        // waiting policy so the same player resumes when later bytes arrive.
+        XCTAssertTrue(player.automaticallyWaitsToMinimizeStalling,
+            "Synthetic HLS must retain the native player's default waiting policy")
         engine.play()
 
         guard await eventually(timeout: .seconds(15), {
@@ -194,7 +196,7 @@ final class MediaAuthorizationPlaybackTests: XCTestCase {
         engine.selectSubtitleTrack(index: subtitleID)
         let hasCues = await eventually(timeout: .seconds(5)) { !engine.isLoadingSubtitles && !engine.subtitleCues.isEmpty }
         XCTAssertTrue(hasCues, "A registered ASS track must download with the current bearer after rotation. \(origin.snapshot().description)")
-        await subtitles.render(size: CGSize(width: 320, height: 180), scale: 1, delaySeconds: 0)
+        await subtitles.step(size: CGSize(width: 320, height: 180), scale: 1, delaySeconds: 0)
         let fontsFinished = await eventually(timeout: .seconds(5)) { !subtitles.isLoadingFonts }
         XCTAssertTrue(fontsFinished)
         XCTAssertNil(subtitles.failureMessage)
