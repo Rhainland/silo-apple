@@ -37,9 +37,10 @@ final class RequestsFeatureStore {
     /// answer or after a reset, and never on a failed probe.
     var isKnownUnavailable: Bool { isResolved && !isEnabled }
 
-    /// Bumped on every `reset()` so a probe that finishes after a sign-out
-    /// or profile switch discards its result instead of repopulating the
-    /// next account's flag.
+    /// Bumped on every `reset()` and every probe. Only the latest probe's
+    /// answer counts: one that finishes after a sign-out or profile switch,
+    /// or after a newer probe started, is discarded, so an older "available"
+    /// can't undo a newer "disabled".
     private var generation = 0
 
     private let probe: @MainActor () async throws -> RequestsFeatureStatus
@@ -53,6 +54,7 @@ final class RequestsFeatureStore {
     }
 
     func refresh() async {
+        generation &+= 1
         let gen = generation
         let status = try? await probe()
         guard gen == generation else { return }
@@ -60,8 +62,10 @@ final class RequestsFeatureStore {
         // yank an already-visible entry point, and foreground/auth-state
         // transitions retry naturally.
         guard let status else { return }
+        // Follow support first, so nothing that watches `isEnabled` reads a
+        // stale value of it.
+        followSupported = status.isAvailable && status.followSupported == true
         isEnabled = status.isAvailable
-        followSupported = isEnabled && status.followSupported == true
         isResolved = true
     }
 
