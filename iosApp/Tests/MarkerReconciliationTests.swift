@@ -70,16 +70,34 @@ final class MarkerReconciliationTests: XCTestCase {
         )
 
         // Another edition: its own markers replace the previous file's.
-        XCTAssertTrue(player.adoptReplannedVersion(
+        XCTAssertNotNil(player.adoptReplannedVersion(
             try version(fileId: 43, intro: TimeRange(start: 50, end: 95), recap: TimeRange(start: 0, end: 20))
         ))
         XCTAssertEqual(player.introRange, TimeRange(start: 50, end: 95))
         XCTAssertEqual(player.recapRange, TimeRange(start: 0, end: 20))
 
         // Back to a file without markers: nothing of the other file's stays.
-        XCTAssertTrue(player.adoptReplannedVersion(try version(fileId: 42, intro: nil, recap: nil)))
+        XCTAssertNotNil(player.adoptReplannedVersion(try version(fileId: 42, intro: nil, recap: nil)))
         XCTAssertNil(player.introRange)
         XCTAssertNil(player.recapRange)
+    }
+
+    func testReplanToAnotherFileHandsBackMarkersFromAnEventDuringTheReplan() async throws {
+        let player = PlayerViewModel()
+        player.bindMarkerReconciliationForTesting(
+            sessionId: "session-1",
+            detail: try detail(intro: nil, recap: nil),
+            version: try version(intro: nil, recap: nil)
+        )
+        // Lands on the original file while the replan request is in flight.
+        await player.handleRealtimeEvent(try markersEvent(#""recap": { "start": 0, "end": 30 }"#))
+
+        // A rollback must put back the event's ranges, not the pre-request ones.
+        let replaced = player.adoptReplannedVersion(
+            try version(fileId: 43, intro: TimeRange(start: 50, end: 95), recap: nil)
+        )
+        XCTAssertEqual(replaced?.recap, TimeRange(start: 0, end: 30))
+        XCTAssertNil(replaced?.intro)
     }
 
     func testReplanOnTheSameFileKeepsNewerEventMarkers() async throws {
@@ -92,7 +110,7 @@ final class MarkerReconciliationTests: XCTestCase {
         await player.handleRealtimeEvent(try markersEvent(#""recap": { "start": 0, "end": 30 }"#))
 
         // The replan's snapshot predates the event.
-        XCTAssertFalse(player.adoptReplannedVersion(try version(intro: nil, recap: nil)))
+        XCTAssertNil(player.adoptReplannedVersion(try version(intro: nil, recap: nil)))
         XCTAssertEqual(player.recapRange, TimeRange(start: 0, end: 30))
     }
 

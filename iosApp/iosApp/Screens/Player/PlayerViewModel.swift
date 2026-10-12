@@ -2304,20 +2304,19 @@ class PlayerViewModel {
             let priorResolvedServerUrl = self.resolvedServerUrl
             let priorPrefsForCurrentItem = self.prefsForCurrentItem
             let priorPrefsResolvedForCurrentItem = self.prefsResolvedForCurrentItem
-            let priorIntroRange = self.introRange
-            let priorCreditsRange = self.creditsRange
-            let priorRecapRange = self.recapRange
-            var replacedMarkers = false
+            // Captured when the replan replaces them, not here: a
+            // markers_updated event can land while the replan is in flight.
+            var replacedMarkers: ReplacedMarkerRanges?
             /// Puts back the state this replan overwrote when it fails or is
             /// abandoned before committing.
             @MainActor func restorePriorReplanState() {
                 self.activePlaybackSessionId = priorActivePlaybackSessionId
                 self.currentWatchDetail = priorWatchDetail
                 self.currentSelectedVersion = priorSelectedVersion
-                if replacedMarkers {
-                    self.introRange = priorIntroRange
-                    self.creditsRange = priorCreditsRange
-                    self.recapRange = priorRecapRange
+                if let replacedMarkers {
+                    self.introRange = replacedMarkers.intro
+                    self.creditsRange = replacedMarkers.credits
+                    self.recapRange = replacedMarkers.recap
                 }
                 self.activePreparedProtocolV3 = priorPreparedProtocolV3
                 self.localProtocolV3SubtitleSelection = priorLocalSubtitleSelection
@@ -6361,18 +6360,26 @@ class PlayerViewModel {
         autoSkipCreditsIfNeeded(at: currentTime)
     }
 
+    /// The marker ranges a replan replaced when it switched files.
+    struct ReplacedMarkerRanges: Equatable {
+        let intro: TimeRange?
+        let credits: TimeRange?
+        let recap: TimeRange?
+    }
+
     /// Adopts the file version a replan selected. A replan can switch to
     /// another file (edition), whose markers then replace the old file's.
     /// For the same file the current ranges stay: a `markers_updated` event
-    /// may be newer than the replan's snapshot. Returns whether the markers
-    /// were replaced.
+    /// may be newer than the replan's snapshot. Returns the ranges it
+    /// replaced, for a rollback to put back, or nil when it kept them.
     @discardableResult
-    func adoptReplannedVersion(_ version: FileVersion) -> Bool {
+    func adoptReplannedVersion(_ version: FileVersion) -> ReplacedMarkerRanges? {
         let fileChanged = version.fileId != currentSelectedVersion?.fileId
         currentSelectedVersion = version
-        guard fileChanged else { return false }
+        guard fileChanged else { return nil }
+        let replaced = ReplacedMarkerRanges(intro: introRange, credits: creditsRange, recap: recapRange)
         applyMarkerRanges(intro: version.intro, credits: version.credits, recap: version.recap)
-        return true
+        return replaced
     }
 
     /// Test seam: the playback identity a marker reconcile is fenced on.
