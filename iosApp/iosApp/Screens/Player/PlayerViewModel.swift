@@ -4521,6 +4521,9 @@ class PlayerViewModel {
         remoteDismissTask = nil
         activeNotice = nil
         remoteDismissToken = nil
+        // The exit a server-ended session started is cancelled above; the
+        // session this load starts handles its own end.
+        serverEndedSessionHandled = false
         hideControlsTask?.cancel()
         skipDebounceTask?.cancel()
         skipDebounceTask = nil
