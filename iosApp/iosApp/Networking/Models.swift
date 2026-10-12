@@ -36,6 +36,8 @@ struct BrowseItem: Codable, Identifiable, Hashable {
     let networks: [String]?
     let showStatus: String?
     let overview: String?
+    var posterIsEpisodeStill: Bool? = nil
+    var backdropIsEpisodeStill: Bool? = nil
     @ArtworkURL var posterUrl: String? = nil
     let posterThumbhash: String?
     @ArtworkURL var backdropUrl: String? = nil
@@ -136,6 +138,8 @@ struct SectionItem: Codable, Identifiable, Hashable {
     let positionSeconds: Double?
     let durationSeconds: Double?
     let progressUpdatedAt: String?
+    var posterIsEpisodeStill: Bool? = nil
+    var backdropIsEpisodeStill: Bool? = nil
     @ArtworkURL var posterUrl: String? = nil
     let posterThumbhash: String?
     @ArtworkURL var backdropUrl: String? = nil
@@ -143,6 +147,11 @@ struct SectionItem: Codable, Identifiable, Hashable {
     @ArtworkURL var logoUrl: String? = nil
     let userState: MediaItemUserState?
     let overlaySummary: OverlaySummary?
+    /// This profile's metadata language when the card's description is not
+    /// in it yet. Drives the hero's on-view translation.
+    var pendingTranslationLanguage: String? = nil
+    /// Localized fields ("overview", "tagline") machine-translated by AI.
+    var machineTranslatedFields: [String]? = nil
     var id: String { contentId }
 
     /// Lift a catalog row into a section row so client-composed shelves
@@ -175,6 +184,8 @@ struct SectionItem: Codable, Identifiable, Hashable {
         self.positionSeconds = positionSeconds ?? item.positionSeconds
         self.durationSeconds = durationSeconds ?? item.durationSeconds
         progressUpdatedAt = item.progressUpdatedAt
+        posterIsEpisodeStill = item.posterIsEpisodeStill
+        backdropIsEpisodeStill = item.backdropIsEpisodeStill
         posterUrl = item.posterUrl
         posterThumbhash = item.posterThumbhash
         backdropUrl = item.backdropUrl
@@ -308,6 +319,8 @@ extension BrowseItem {
             networks: item.networks,
             showStatus: item.showStatus,
             overview: item.overview,
+            posterIsEpisodeStill: item.posterIsEpisodeStill,
+            backdropIsEpisodeStill: item.backdropIsEpisodeStill,
             posterUrl: item.posterUrl,
             posterThumbhash: item.posterThumbhash,
             backdropUrl: item.backdropUrl,
@@ -453,6 +466,8 @@ struct ItemDetail: Codable {
     let releaseDate: String?
     let firstAirDate: String?
     let lastAirDate: String?
+    var posterIsEpisodeStill: Bool? = nil
+    var backdropIsEpisodeStill: Bool? = nil
     @ArtworkURL var posterUrl: String? = nil
     let posterThumbhash: String?
     @ArtworkURL var backdropUrl: String? = nil
@@ -505,6 +520,10 @@ struct ItemDetail: Codable {
     /// read (`user_state`); absent without a profile. `var` with a default
     /// for the same memberwise-initializer reason as `videos`.
     var userState: MediaItemUserState? = nil
+    /// Localized fields ("overview", "tagline") whose text was machine
+    /// translated by AI. `var` with a default for the same memberwise-
+    /// initializer reason as `videos`.
+    var machineTranslatedFields: [String]? = nil
 }
 
 extension ItemDetail {
@@ -697,6 +716,8 @@ struct Season: Codable, Identifiable, Hashable {
     @ArtworkURL var posterUrl: String? = nil
     let posterThumbhash: String?
     let userData: SeasonUserData?
+    /// Localized fields ("overview") machine-translated by AI.
+    var machineTranslatedFields: [String]? = nil
     var id: String { contentId }
 
     /// Consistent label for season pickers and episode-section headings.
@@ -719,6 +740,7 @@ struct Season: Codable, Identifiable, Hashable {
         posterUrl = try c.decode(ArtworkURL.self, forKey: .posterUrl).wrappedValue
         posterThumbhash = try c.decodeIfPresent(String.self, forKey: .posterThumbhash)
         userData = try c.decodeIfPresent(SeasonUserData.self, forKey: .userData)
+        machineTranslatedFields = try c.decodeIfPresent([String].self, forKey: .machineTranslatedFields)
     }
 }
 
@@ -806,10 +828,16 @@ struct EpisodeListItem: Codable, Identifiable, Hashable {
     let imdbId: String?
     let tmdbId: String?
     let tvdbId: String?
+    var stillIsEpisodeStill: Bool? = nil
     @ArtworkURL var stillUrl: String? = nil
     let stillThumbhash: String?
     let userData: LeafItemUserData?
     let files: [EpisodeFile]?
+    /// Localized fields ("overview") machine-translated by AI.
+    var machineTranslatedFields: [String]? = nil
+    /// This profile's metadata language when the episode's description is
+    /// not in it yet. The season's translation job covers it.
+    var pendingTranslationLanguage: String? = nil
     var id: String { contentId }
 }
 

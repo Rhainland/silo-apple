@@ -173,9 +173,11 @@ struct EpisodeThumbCard: View {
                 thumbhash: item.backdropThumbhash ?? item.posterThumbhash,
                 targetSize: CGSize(width: cardWidth, height: cardHeight),
                 contentMode: .fill,
+                placeholderStyle: .artwork,
                 placeholderSymbol: ArtworkPlaceholderSymbol.forMediaType(item.type)
             )
             .frame(width: cardWidth, height: cardHeight)
+            .episodeSpoilerBlur(hidesStill)
             .clipped()
             .clipShape(RoundedRectangle(cornerRadius: SiloTheme.cornerRadius))
 
@@ -264,6 +266,11 @@ struct EpisodeThumbCard: View {
             return backdrop
         }
         return item.posterUrl ?? ""
+    }
+
+    /// Protect the selected episode still while preserving fallback artwork.
+    private var hidesStill: Bool {
+        return EpisodeSpoilerPreferences.shared.settings.hidesImage(for: item, playedOverride: isPlayed)
     }
 
     /// Series title for episodes, otherwise the item title.

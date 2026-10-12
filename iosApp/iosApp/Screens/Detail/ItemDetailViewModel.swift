@@ -5,8 +5,14 @@ import Foundation
 class ItemDetailViewModel {
     let libraryId: Int?
 
-    init(libraryId: Int? = nil) {
+    init(
+        libraryId: Int? = nil,
+        descriptionTranslation: DescriptionTranslationCoordinator? = nil,
+        seasonDescriptionTranslation: DescriptionTranslationCoordinator? = nil
+    ) {
         self.libraryId = libraryId
+        self.descriptionTranslation = descriptionTranslation ?? DescriptionTranslationCoordinator()
+        self.seasonDescriptionTranslation = seasonDescriptionTranslation ?? DescriptionTranslationCoordinator()
     }
 
     var detail: ItemDetail?
@@ -121,6 +127,11 @@ class ItemDetailViewModel {
     /// Cancels publication from an older season request after the user has
     /// already moved to another page.
     private var episodeLoadGeneration = 0
+    /// Per season, how many description-translator reads have been
+    /// published. Such a read always began after every load still in flight
+    /// (otherwise its generation check fails), so a load that sees this move
+    /// carries the older page and leaves the published one alone.
+    private var translatedEpisodePublications: [Int: Int] = [:]
     #if !os(tvOS)
     /// Warms the other seasons' pages, nearest first, once the selected
     /// season is known, so a later chip tap is served from memory without
@@ -192,6 +203,15 @@ class ItemDetailViewModel {
 
     // Track the series contentId for season/episode loading
     private var seriesContentId: String?
+
+    // MARK: Description translation
+
+    /// On-view translation of the page's own description (movie, series,
+    /// audiobook). See `ItemDetailViewModel+DescriptionTranslation`.
+    let descriptionTranslation: DescriptionTranslationCoordinator
+    /// On-view translation of the selected season's episode descriptions on
+    /// a series page: the season's job covers its episodes.
+    let seasonDescriptionTranslation: DescriptionTranslationCoordinator
 
     /// - Parameter preserveSeasonSelection: keep the season the user is
     ///   currently browsing instead of re-running the auto-select. Set by
@@ -633,6 +653,8 @@ class ItemDetailViewModel {
                 releaseDate: item.releaseDate,
                 firstAirDate: item.firstAirDate,
                 lastAirDate: item.lastAirDate,
+                posterIsEpisodeStill: item.posterIsEpisodeStill,
+                backdropIsEpisodeStill: item.backdropIsEpisodeStill,
                 posterUrl: item.posterUrl,
                 posterThumbhash: item.posterThumbhash,
                 backdropUrl: item.backdropUrl,
@@ -662,7 +684,8 @@ class ItemDetailViewModel {
                 // them, so they must be carried across or the trailers rail
                 // would disappear the moment enrichment succeeds.
                 videos: item.videos,
-                extras: item.extras
+                extras: item.extras,
+                machineTranslatedFields: item.machineTranslatedFields
             )
     }
 
@@ -793,6 +816,7 @@ class ItemDetailViewModel {
         fetchEpisodes: (@Sendable (String, Int) async throws -> EpisodesResponse)? = nil
     ) async -> Bool {
         guard let seasonNumber, !Task.isCancelled else { return false }
+        let translationPublications = translatedEpisodePublications[seasonNumber, default: 0]
         seriesContentId = contentId
         seasonsLoadGeneration += 1
         let hierarchyGeneration = seasonsLoadGeneration
@@ -857,7 +881,7 @@ class ItemDetailViewModel {
               expectedDetailGeneration == nil || expectedDetailGeneration == detailGeneration,
               hierarchyGeneration == seasonsLoadGeneration,
               selectionGeneration == episodeLoadGeneration else { return false }
-        if let response {
+        if let response, translatedEpisodePublications[seasonNumber, default: 0] == translationPublications {
             ResponseCache.shared.set(response, for: CacheKey.itemEpisodes(
                 seriesId: contentId, seasonNumber: seasonNumber,
                 libraryId: libraryId
@@ -1251,6 +1275,7 @@ class ItemDetailViewModel {
         #endif
         episodeLoadGeneration += 1
         let generation = episodeLoadGeneration
+        let translationPublications = translatedEpisodePublications[seasonNumber, default: 0]
         episodesLoadFailed = false
         failedEpisodeSeasonNumber = nil
         defer {
@@ -1297,11 +1322,15 @@ class ItemDetailViewModel {
                 )
             }
             guard !Task.isCancelled, generation == episodeLoadGeneration else { return }
-            ResponseCache.shared.set(response, for: key)
+            // A translated read of this page published meanwhile is newer.
+            let isSuperseded = translatedEpisodePublications[seasonNumber, default: 0] != translationPublications
             let sorted = response.sortedEpisodes
-            episodesBySeason[seasonNumber] = sorted
+            if !isSuperseded {
+                ResponseCache.shared.set(response, for: key)
+                episodesBySeason[seasonNumber] = sorted
+            }
             if selectedSeason == nil || selectedSeason?.seasonNumber == seasonNumber {
-                episodes = sorted
+                if !isSuperseded { episodes = sorted }
                 loadedSeasonNumber = seasonNumber
                 isLoadingEpisodes = false
             }
@@ -1660,6 +1689,42 @@ class ItemDetailViewModel {
                 coalescesMetadataRequest: false
             )
         }
+    }
+
+    /// The series whose seasons and episodes this page loads.
+    var loadedSeriesContentId: String? { seriesContentId }
+
+    /// Taken before the description translator re-reads a season page, so
+    /// ``publishTranslatedEpisodes(_:seriesId:seasonNumber:readGeneration:)``
+    /// can tell whether a newer load started while the read was in flight.
+    var episodeReadGeneration: Int { episodeLoadGeneration }
+
+    /// Publish a season page the description translator re-read, without the
+    /// loading or error states a visible refresh shows. Returns false, and
+    /// publishes nothing, when an episode load or a watched refresh started
+    /// after the read began: that load owns the page and carries newer
+    /// personal state. The generation is not bumped, since it also gates
+    /// season selection and hierarchy loads already in flight.
+    func publishTranslatedEpisodes(
+        _ response: EpisodesResponse,
+        seriesId: String,
+        seasonNumber: Int,
+        readGeneration: Int
+    ) -> Bool {
+        guard seriesContentId == seriesId, episodeLoadGeneration == readGeneration else { return false }
+        translatedEpisodePublications[seasonNumber, default: 0] += 1
+        ResponseCache.shared.set(
+            response,
+            for: CacheKey.itemEpisodes(seriesId: seriesId, seasonNumber: seasonNumber, libraryId: libraryId)
+        )
+        let sorted = response.sortedEpisodes
+        episodesBySeason[seasonNumber] = sorted
+        guard selectedSeason?.seasonNumber == seasonNumber else { return true }
+        episodes = sorted
+        loadedSeasonNumber = seasonNumber
+        isLoadingEpisodes = false
+        episodesLoadFailed = false
+        return true
     }
 
     func setEpisodeFavorite(contentId: String, isFavorite: Bool) async -> PersonalStateOutcome {

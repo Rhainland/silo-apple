@@ -67,6 +67,9 @@ struct PlayerNextUpEpisode: Identifiable, Hashable {
     let airDate: String?
     /// False for a shuffled movie, which has no season or episode line.
     let isEpisode: Bool
+    /// The profile's watch state for the next episode, so the Up Next screen
+    /// can apply spoiler protection.
+    let watchState: EpisodeWatchState
 
     var id: String { contentId }
     var episodeLabel: String? { isEpisode ? "S\(seasonNumber):E\(episodeNumber)" : nil }
@@ -89,6 +92,7 @@ struct PlayerNextUpEpisode: Identifiable, Hashable {
         stillUrl = episode.stillUrl
         stillThumbhash = episode.stillThumbhash
         airDate = episode.airDate
+        watchState = EpisodeWatchState(episode.userData)
     }
 
     init(shufflePick item: ShuffleItem) {
@@ -107,6 +111,8 @@ struct PlayerNextUpEpisode: Identifiable, Hashable {
         stillUrl = (item.isEpisode ? item.posterUrl : nil) ?? item.backdropUrl
         stillThumbhash = (item.isEpisode ? item.posterThumbhash : nil) ?? item.backdropThumbhash
         airDate = item.releaseDate
+        // Shuffle picks carry no watch state, so an episode reads as untouched.
+        watchState = EpisodeWatchState(played: false)
     }
 }
 
@@ -3468,6 +3474,10 @@ class PlayerViewModel {
         let deinterlaceFieldRate: DeinterlaceFieldRate = settings.deinterlaceFieldRate == .film
             ? .frame
             : .field
+        let dolbyVisionHandling = AetherLoadSpec.dolbyVisionHandling(
+            hdrEnabled: settings.hdrEnabled,
+            dolbyVisionEnabled: settings.dolbyVisionEnabled
+        )
         let spec: AetherLoadSpec
         if let v3 = prepared.protocolV3 {
             let audioSourceStreamIndex: Int32?
@@ -3559,6 +3569,7 @@ class PlayerViewModel {
                 objectAudioRendering: objectAudioRendering,
                 deinterlaceMode: deinterlaceMode,
                 deinterlaceFieldRate: deinterlaceFieldRate,
+                dolbyVisionHandling: dolbyVisionHandling,
                 resumeSourcePosition: resumeSourcePosition
             )
         } else if streamRequest.url.isFileURL {
@@ -3595,7 +3606,8 @@ class PlayerViewModel {
                 audioBridgeMode: audioBridgeMode,
                 objectAudioRendering: objectAudioRendering,
                 deinterlaceMode: deinterlaceMode,
-                deinterlaceFieldRate: deinterlaceFieldRate
+                deinterlaceFieldRate: deinterlaceFieldRate,
+                dolbyVisionHandling: dolbyVisionHandling
             )
         } else {
             spec = try AetherLoadSpec(
@@ -3610,7 +3622,8 @@ class PlayerViewModel {
                 audioBridgeMode: audioBridgeMode,
                 objectAudioRendering: objectAudioRendering,
                 deinterlaceMode: deinterlaceMode,
-                deinterlaceFieldRate: deinterlaceFieldRate
+                deinterlaceFieldRate: deinterlaceFieldRate,
+                dolbyVisionHandling: dolbyVisionHandling
             )
         }
 

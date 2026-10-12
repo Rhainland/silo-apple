@@ -84,6 +84,7 @@ struct TVItemDetailView: View {
         .siloBackground()
         .siloNavigationTitleDisplayMode(.inline)
         .siloNavigationBarBackgroundHidden()
+        .descriptionTranslation(viewModel)
         .personalStateNoticeAlert($viewModel.personalStateNotice)
         .onAppear {
             isPageVisible = true
@@ -433,10 +434,9 @@ struct TVItemDetailView: View {
                 onNavigateToItem: { id in
                     router.navigate(to: .itemDetail(contentId: id))
                 },
-                belowSynopsis: {
-                    DescriptionTranslationView(viewModel: viewModel, contentId: detail.contentId)
-                        .id(detail.contentId)
-                }
+                synopsisStatus: viewModel.descriptionTranslationStatus,
+                isTranslatingEpisodes: viewModel.isTranslatingSeasonEpisodes,
+                onTranslateDescription: translateDescriptionAction
             )
             .task(id: activeSeriesEpisodeContentId) {
                 guard let id = activeSeriesEpisodeContentId else { return }
@@ -563,12 +563,16 @@ struct TVItemDetailView: View {
                 onNavigateToItem: { id in
                     router.navigate(to: .itemDetail(contentId: id))
                 },
-                belowSynopsis: {
-                    DescriptionTranslationView(viewModel: viewModel, contentId: detail.contentId)
-                        .id(detail.contentId)
-                }
+                synopsisStatus: viewModel.descriptionTranslationStatus,
+                onTranslateDescription: translateDescriptionAction
             )
         }
+    }
+
+    /// The More menu's Translate Description, while the page offers it.
+    private var translateDescriptionAction: (() -> Void)? {
+        guard viewModel.offersDescriptionTranslation else { return nil }
+        return { viewModel.translateDescriptions() }
     }
 
     private func playbackFileId(for detail: ItemDetail) -> Int? {
@@ -1030,6 +1034,8 @@ struct TVItemDetailView: View {
             releaseDate: item.releaseDate,
             firstAirDate: item.firstAirDate,
             lastAirDate: item.lastAirDate,
+            posterIsEpisodeStill: item.posterIsEpisodeStill,
+            backdropIsEpisodeStill: item.backdropIsEpisodeStill,
             posterUrl: item.posterUrl,
             posterThumbhash: item.posterThumbhash,
             backdropUrl: item.backdropUrl,
@@ -1059,7 +1065,8 @@ struct TVItemDetailView: View {
             // them, so they must be carried across or the trailers rail
             // would disappear the moment enrichment succeeds.
             videos: item.videos,
-            extras: item.extras
+            extras: item.extras,
+            machineTranslatedFields: item.machineTranslatedFields
         )
     }
 }

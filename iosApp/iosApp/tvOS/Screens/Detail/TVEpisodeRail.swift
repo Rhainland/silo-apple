@@ -572,6 +572,9 @@ struct TVEpisodeCard: View {
             EpisodeCardLabel(
                 episode: episode,
                 isPlayed: isPlayed,
+                hidesStill: EpisodeSpoilerPreferences.shared.settings.hidesImage(
+                    for: EpisodeWatchState(episode.userData, playedOverride: playedOverride), isEpisodeStill: episode.stillIsEpisodeStill
+                ),
                 isCurrent: isCurrent,
                 cardWidth: cardWidth,
                 stillHeight: stillHeight,
@@ -705,6 +708,9 @@ struct TVEpisodeCard: View {
 private struct EpisodeCardLabel: View {
     let episode: EpisodeListItem
     let isPlayed: Bool
+    /// Spoiler protection: blur the still of an episode the profile has not
+    /// started.
+    var hidesStill = false
     let isCurrent: Bool
     let cardWidth: CGFloat
     let stillHeight: CGFloat
@@ -786,20 +792,16 @@ private struct EpisodeCardLabel: View {
             Color.siloSurfaceElevated
                 .frame(width: cardWidth, height: stillHeight)
 
-            if let url = episode.stillUrl, !url.isEmpty {
-                AsyncImageView(
-                    url: url,
-                    thumbhash: episode.stillThumbhash,
-                    targetSize: CGSize(width: cardWidth, height: stillHeight),
-                    contentMode: .fill
-                )
-                .frame(width: cardWidth, height: stillHeight)
-            } else {
-                Image(systemName: "film")
-                    .font(.system(size: 48))
-                    .foregroundColor(.siloSecondaryText)
-                    .frame(width: cardWidth, height: stillHeight)
-            }
+            AsyncImageView(
+                url: episode.stillUrl ?? "",
+                thumbhash: episode.stillThumbhash,
+                targetSize: CGSize(width: cardWidth, height: stillHeight),
+                contentMode: .fill,
+                placeholderStyle: .artwork,
+                placeholderSymbol: ArtworkPlaceholderSymbol.television
+            )
+            .frame(width: cardWidth, height: stillHeight)
+            .episodeSpoilerBlur(hidesStill)
 
             if isPlayed {
                 Color.black.opacity(0.35)

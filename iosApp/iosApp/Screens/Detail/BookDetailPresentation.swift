@@ -1,7 +1,7 @@
 import Foundation
 
 /// The book formats the shared detail page can present. Everything that
-/// differs between formats — wording, cover shape, placeholder art — lives
+/// differs between formats — wording, cover shape, placeholder mark — lives
 /// here, so supporting ebooks later is one new case rather than a new page.
 enum BookDetailKind {
     case audiobook
@@ -15,7 +15,7 @@ enum BookDetailKind {
 
     var placeholderSymbol: String {
         switch self {
-        case .audiobook: "headphones"
+        case .audiobook: ArtworkPlaceholderSymbol.audiobook
         }
     }
 
