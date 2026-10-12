@@ -27,32 +27,62 @@ final class RequestsFeatureStore {
     /// requested ("Notify Me"). False whenever `isEnabled` is.
     private(set) var followSupported = false
 
+    /// True once a probe for the current session has answered. `isEnabled`
+    /// reads false before that answer as well as after it, so only this pair
+    /// can tell "requests are off" from "not known yet".
+    private(set) var isResolved = false
+
+    /// The server answered that requests are unavailable. Open Requests
+    /// screens close on this, never on the unknown state before the first
+    /// answer or after a reset, and never on a failed probe.
+    var isKnownUnavailable: Bool { isResolved && !isEnabled }
+
     /// Bumped on every `reset()` so a probe that finishes after a sign-out
     /// or profile switch discards its result instead of repopulating the
     /// next account's flag.
     private var generation = 0
 
-    private let api: SiloAPI
+    private let probe: @MainActor () async throws -> RequestsFeatureStatus
 
-    init(api: SiloAPI = .shared) {
-        self.api = api
+    convenience init(api: SiloAPI = .shared) {
+        self.init(probe: { try await api.requestsStatus() })
+    }
+
+    init(probe: @escaping @MainActor () async throws -> RequestsFeatureStatus) {
+        self.probe = probe
     }
 
     func refresh() async {
         let gen = generation
-        let status = try? await api.requestsStatus()
+        let status = try? await probe()
         guard gen == generation else { return }
         // On error, keep the previous value: a transient failure shouldn't
         // yank an already-visible entry point, and foreground/auth-state
         // transitions retry naturally.
-        let enabled = status?.isAvailable ?? isEnabled
-        followSupported = enabled && (status.map { $0.followSupported == true } ?? followSupported)
-        isEnabled = enabled
+        guard let status else { return }
+        isEnabled = status.isAvailable
+        followSupported = isEnabled && status.followSupported == true
+        isResolved = true
     }
 
     func reset() {
         generation &+= 1
         isEnabled = false
         followSupported = false
+        isResolved = false
+    }
+
+    /// A requests call failed because the server reports the requests
+    /// capability off (turned off, not configured, or unsupported). Callers
+    /// re-probe on this so entry points hide and open Requests screens close;
+    /// the probe's answer, not the failed call, decides.
+    nonisolated static func isCapabilityOff(_ error: Error) -> Bool {
+        guard case APIv2Error.problem(let problem) = error else { return false }
+        switch problem.identifier {
+        case "capability_disabled", "capability_not_configured", "capability_unsupported":
+            return true
+        default:
+            return false
+        }
     }
 }
