@@ -6,7 +6,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/Silo-Server/AetherEngine",
       "state" : {
-        "revision" : "38140f8867fe3c94c995504aed3687d6ef06090a"
+        "revision" : "4c57d95ab9703208c20c79ac13d4987ebc55f65d"
       }
     },
     {
