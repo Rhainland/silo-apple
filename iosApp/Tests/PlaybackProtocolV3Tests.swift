@@ -239,6 +239,47 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertNil(intent(showForced: true, audio: "en", explicitCombinedIndex: -1), "an explicit Off stays off")
     }
 
+    /// The next-episode fixture: video at stream 0, English audio at stream 1
+    /// (ordinal 0), and English full, Spanish and English forced subtitles.
+    /// The effective audio index is an ordinal, so the start must read the
+    /// audio language from ordinal 0, not from a track whose stream index is
+    /// 0. Auto with the audio already in the subtitle language then starts on
+    /// the forced track, as a fresh start and the post-load pass do.
+    func testAutoStartUsesTheAudioOrdinalToKeepForcedOnlyForMatchingAudio() {
+        let version = makeVersion(
+            container: "mkv", videoCodec: "h264", audioCodec: "aac",
+            audioTracks: [makeAudio(index: 1, codec: "aac", isDefault: true, language: "eng")],
+            subtitleTracks: [
+                makeSubtitle(index: 2, codec: "srt", external: false, path: nil, language: "eng"),
+                makeSubtitle(index: 3, codec: "srt", external: false, path: nil, language: "spa"),
+                makeSubtitle(index: 4, codec: "srt", external: false, path: nil, forced: true, language: "eng"),
+            ],
+            effectiveAudioTrackIndex: 0
+        )
+        XCTAssertEqual(PlaybackSessionBridge.startAudioLanguage(version: version, audioOrdinal: 0), "eng")
+        XCTAssertEqual(PlaybackSessionBridge.startAudioLanguage(version: version, audioOrdinal: nil), "eng")
+        XCTAssertNil(PlaybackSessionBridge.startAudioLanguage(version: version, audioOrdinal: 5))
+
+        let intent = PlaybackSessionBridge.initialProtocolV3SubtitleIntent(
+            version: version, explicitFFmpegIndex: nil, explicitCombinedIndex: nil,
+            preferredLanguage: "en", mode: .auto, showForced: true, trackSignature: nil,
+            currentAudioLanguage: PlaybackSessionBridge.startAudioLanguage(
+                version: version, audioOrdinal: version.effectiveAudioTrackIndex
+            )
+        )
+        XCTAssertEqual(intent.ffmpegStreamIndex, 4)
+    }
+
+    func testStartAudioLanguageFallsBackToTheServersEffectiveLanguage() {
+        let unlabelled = makeVersion(
+            container: "mkv", videoCodec: "h264", audioCodec: "aac",
+            effectiveAudioTrackIndex: 0, effectiveAudioLanguage: "ja"
+        )
+        XCTAssertEqual(PlaybackSessionBridge.startAudioLanguage(version: unlabelled, audioOrdinal: 0), "ja")
+        XCTAssertEqual(PlaybackSessionBridge.startAudioLanguage(version: unlabelled, audioOrdinal: nil), "ja")
+        XCTAssertNil(PlaybackSessionBridge.startAudioLanguage(version: nil, audioOrdinal: 0))
+    }
+
     func testLocalSelectionCannotSelectReusedOrdinalFromAnotherFile() {
         let selection = ProtocolV3SubtitleSelection.track("file:other:subtitle:3")
         let plan = makePlan(subtitleInventory: [makeInventoryItem(combinedIndex: 3, source: "external")])
@@ -2835,7 +2876,9 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         videoCodec: String,
         audioCodec: String,
         audioTracks: [AudioTrack]? = nil,
-        subtitleTracks: [SubtitleTrack]? = nil
+        subtitleTracks: [SubtitleTrack]? = nil,
+        effectiveAudioTrackIndex: Int? = nil,
+        effectiveAudioLanguage: String? = nil
     ) -> FileVersion {
         FileVersion(
             fileId: 42,
@@ -2851,14 +2894,17 @@ final class PlaybackProtocolV3Tests: XCTestCase {
             videoTracks: nil,
             audioTracks: audioTracks,
             subtitleTracks: subtitleTracks,
-            chapters: nil
+            chapters: nil,
+            effectiveAudioTrackIndex: effectiveAudioTrackIndex,
+            effectiveAudioLanguage: effectiveAudioLanguage
         )
     }
 
     private func makeAudio(
         index: Int,
         codec: String,
-        isDefault: Bool
+        isDefault: Bool,
+        language: String = "en"
     ) -> AudioTrack {
         AudioTrack(
             index: index,
@@ -2867,7 +2913,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
             channelLayout: "5.1",
             bitrate: 640_000,
             sampleRate: 48_000,
-            language: "en",
+            language: language,
             title: codec.uppercased(),
             embeddedTitle: nil,
             isDefault: isDefault

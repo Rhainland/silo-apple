@@ -8871,9 +8871,20 @@ class PlayerViewModel {
             return
         }
 
+        // Until the engine reports which audio track is playing, use the one
+        // the start planned, so this pass resolves exactly as the start
+        // request did. Treating the audio as unknown here made Auto pick full
+        // subtitles where the audio already matched the subtitle language,
+        // and a next episode could keep that pick.
         let audioLang = audioTracks
             .first(where: { $0.trackId == selectedAudioId })?
             .lang
+            ?? PlaybackSessionBridge.startAudioLanguage(
+                version: currentSelectedVersion,
+                audioOrdinal: activePreparedProtocolV3?.plan.selectedTracks.audio?.index
+                    ?? lastLoadRequest?.preferredAudioTrackIndex
+                    ?? currentSelectedVersion?.effectiveAudioTrackIndex
+            )
         let pick = SubtitleAutoResolver.resolve(.init(
             preferredLanguage: prefs.preferredLanguage,
             additionalPreferredLanguages: prefs.additionalPreferredLanguages,
