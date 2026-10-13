@@ -84,6 +84,26 @@ final class RequestsScreensCloseTests: XCTestCase {
         XCTAssertTrue(store.isKnownUnavailable, "the newer disabled answer stands")
     }
 
+    func testANewerProbeThatFailsKeepsAnOlderAnswer() async {
+        var parked: CheckedContinuation<Void, Never>?
+        var calls = 0
+        let store = RequestsFeatureStore(probe: {
+            calls += 1
+            guard calls == 1 else { throw ProbeFailed() }
+            // The first probe answers "disabled" only after a newer one failed.
+            await withCheckedContinuation { parked = $0 }
+            return Self.status(available: false)
+        })
+        let older = Task { await store.refresh() }
+        while parked == nil { await Task.yield() }
+
+        await store.refresh()
+        XCTAssertFalse(store.isResolved)
+        parked?.resume()
+        await older.value
+        XCTAssertTrue(store.isKnownUnavailable, "the older answer is the newest one there is")
+    }
+
     func testOnlyCapabilityOffProblemsTriggerAReprobe() throws {
         func problem(_ id: String) throws -> Error {
             let body = #"{"type":"https://siloserver.org/docs/api/v2/problems/\#(id)","title":"T","status":409,"detail":"d"}"#
