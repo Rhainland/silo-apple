@@ -643,13 +643,14 @@ final class RequestsV2Tests: XCTestCase {
 
     @MainActor
     private func followModel(status: String = RequestsV2Tests.statusWithFollow,
-                             detail: String = RequestsV2Tests.requestedByOther())
+                             detail: String = RequestsV2Tests.requestedByOther(),
+                             mine: String = #"{"items":[],"page":{"has_more":false}}"#)
         async throws -> (RequestDetailViewModel, RequestsFeatureStore) {
         let tokens = try await tokens()
         let api = SiloAPI(http: HTTPClient(session: stub.makeSession(), tokenStore: tokens), tokenStore: tokens)
         stub.reply(path: "/api/v2/requests/status", 200, status)
         stub.reply(path: "/api/v2/requests/detail/movie/949", 200, detail)
-        stub.reply(path: "/api/v2/requests/mine", 200, #"{"items":[],"page":{"has_more":false}}"#)
+        stub.reply(path: "/api/v2/requests/mine", 200, mine)
         let features = RequestsFeatureStore(api: api)
         await features.refresh()
         let model = RequestDetailViewModel(mediaType: .movie, tmdbId: 949, api: api,
@@ -695,6 +696,15 @@ final class RequestsV2Tests: XCTestCase {
 
         let (requestable, _) = try await followModel(detail: Self.detail)
         XCTAssertFalse(requestable.canFollow, "a title nobody requested is requested, not followed")
+    }
+
+    @MainActor
+    func testAnotherProfileOnTheSameAccountCanFollow() async throws {
+        // `/mine` lists the whole account, so it returns the request another
+        // profile made; the server says this profile didn't make it.
+        let (model, _) = try await followModel(mine: #"{"items":[\#(Self.record)],"page":{"has_more":false}}"#)
+        XCTAssertNotNil(model.displayedRecord)
+        XCTAssertTrue(model.canFollow)
     }
 
     @MainActor
@@ -764,6 +774,7 @@ final class RequestsV2Tests: XCTestCase {
 
     @MainActor
     func testAnUncertainFollowHoldsUntilAReReadShowsTheResult() async throws {
+        addTeardownBlock { @MainActor in RequestsEventBus.shared.reset() }
         let (model, _) = try await followModel()
         stub.sequence([
             .failure(URLError(.networkConnectionLost)),
@@ -774,7 +785,23 @@ final class RequestsV2Tests: XCTestCase {
 
         XCTAssertTrue(model.isFollowing, "the re-read shows the follow landed")
         XCTAssertFalse(model.isTogglingFollow)
+        XCTAssertNil(model.actionErrorMessage, "a follow that landed is not reported as failed")
+        XCTAssertEqual(model.followNotice, RequestDetailViewModel.followedNotice)
+        XCTAssertEqual(RequestsEventBus.shared.lastTitleState?.request.following, true, "cards hear about it")
         XCTAssertEqual(stub.requests.map(\.method), ["PUT", "GET", "GET"])
+
+        // Lost again, and this time the re-read shows it did not land.
+        stub.reset()
+        stub.sequence([
+            .failure(URLError(.networkConnectionLost)),
+            .json(200, Self.requestedByOther(following: true)),
+            .json(200, #"{"items":[],"page":{"has_more":false}}"#),
+        ])
+        await model.toggleFollow()
+
+        XCTAssertTrue(model.isFollowing)
+        XCTAssertNotNil(model.actionErrorMessage)
+        XCTAssertNil(model.followNotice)
     }
 
     @MainActor

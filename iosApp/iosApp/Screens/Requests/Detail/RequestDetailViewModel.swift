@@ -186,12 +186,13 @@ final class RequestDetailViewModel {
         // `requested_by_viewer` must be present and false: a page built
         // from a card or record without it waits for the server's answer.
         guard request.reason == "already_requested", request.requestedByViewer == false else { return false }
+        // Not `record`: `/requests/mine` lists the whole account, so another
+        // profile's request would hide the button from a profile the server
+        // lets follow. `requested_by_viewer` is per profile.
         switch RequestDisplayState(availability: detail.availability, request: request) {
-        case .pending, .onTheWay: break
+        case .pending, .onTheWay: return true
         default: return false
         }
-        // The user's own active request already notifies them.
-        return activeRecordState == nil
     }
 
     var isFollowing: Bool { detail?.request.following == true }
@@ -207,6 +208,7 @@ final class RequestDetailViewModel {
         guard canFollow, let detail, !isTogglingFollow else { return }
         let follow = !isFollowing
         isTogglingFollow = true
+        defer { isTogglingFollow = false }
         actionErrorMessage = nil
         followNotice = nil
         do {
@@ -224,18 +226,26 @@ final class RequestDetailViewModel {
             }
             titleStateRevision &+= 1
             applyTitleState(state)
-            RequestsEventBus.shared.publishTitleState(
-                RequestTitleStateUpdate(mediaType: detail.mediaType, tmdbId: detail.tmdbId, request: state))
-            followNotice = follow ? Self.followedNotice : Self.unfollowedNotice
-            followToggledCount += 1
+            confirmFollowToggle(follow, state: state)
         } catch {
             titleStateRevision &+= 1
-            actionErrorMessage = RequestErrorCopy.message(for: error)
             if RequestMutationFailure.isUncertain(error) {
                 // It may have landed. A read under a replaced owner says
                 // nothing about this toggle.
-                if !RequestMutationFailure.isOwnerChanged(error) { await load() }
-            } else if Self.isCapabilityProblem(error) {
+                if !RequestMutationFailure.isOwnerChanged(error) {
+                    await load()
+                    // It landed: confirm it like any other toggle rather
+                    // than showing an error under the new label.
+                    if let landed = self.detail?.request, landed.following == follow {
+                        confirmFollowToggle(follow, state: landed)
+                        return
+                    }
+                }
+                actionErrorMessage = RequestErrorCopy.message(for: error)
+                return
+            }
+            actionErrorMessage = RequestErrorCopy.message(for: error)
+            if Self.isCapabilityProblem(error) {
                 // Requests or following went away: let entry points and this
                 // button follow the server.
                 await features.refresh()
@@ -244,12 +254,19 @@ final class RequestDetailViewModel {
                 await load()
             }
         }
-        isTogglingFollow = false
     }
 
     private func applyTitleState(_ state: RequestState) {
         detail?.request = state
         if let detail { cache.store(detail) }
+    }
+
+    /// Tells the user, and every card, about a toggle the server accepted.
+    private func confirmFollowToggle(_ follow: Bool, state: RequestState) {
+        RequestsEventBus.shared.publishTitleState(
+            RequestTitleStateUpdate(mediaType: mediaType, tmdbId: tmdbId, request: state))
+        followNotice = follow ? Self.followedNotice : Self.unfollowedNotice
+        followToggledCount += 1
     }
 
     private static func isCapabilityProblem(_ error: Error) -> Bool {

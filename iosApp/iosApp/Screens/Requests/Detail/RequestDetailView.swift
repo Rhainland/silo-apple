@@ -310,13 +310,20 @@ struct RequestDetailView: View {
                 }
             }
 
-            if let message = viewModel.actionErrorMessage ?? viewModel.followNotice {
+            if let message = tvActionMessage {
                 Text(message)
                     .font(.siloCaption)
                     .foregroundColor(.siloSecondaryText)
             }
         }
         .focusSection()
+    }
+
+    private var tvActionMessage: String? {
+        if let error = viewModel.actionErrorMessage { return error }
+        // The follow notice belongs to the button: once the title lands or
+        // following goes away, it goes too.
+        return viewModel.canFollow ? viewModel.followNotice : nil
     }
 
     /// The labeled summary under the synopsis, in the playback summary's
