@@ -19,7 +19,7 @@ import Foundation
 
 enum SubtitleAutoSelection: Equatable {
     /// User had no preferences that point at a track, or already had
-    /// an explicit override, or `mode == off`. Caller should leave the
+    /// an explicit override. Caller should leave the
     /// subtitle slot however the player started it.
     case noChange
     /// User wants subs disabled for this content.
@@ -106,7 +106,24 @@ struct SubtitleAutoResolver {
         let mode = inputs.mode ?? .auto
 
         if mode == .off {
-            return .disable
+            // Off turns dialogue subtitles off, not forced ones: with "show
+            // forced subtitles" on, the forced track in the language of the
+            // audio that will play still covers foreign-language lines, as
+            // the settings copy promises and as web and Android do. Nothing
+            // when the audio language is unknown or no forced track matches.
+            // An explicit in-session Off never reaches this resolver.
+            guard inputs.showForced,
+                  let audio = inputs.currentAudioLanguage, !audio.isEmpty,
+                  let forced = bestLanguageMatch(
+                      audio,
+                      in: inputs.availableSubtitles.filter(\.isForced),
+                      preferForced: true,
+                      preferAccessibility: inputs.preferAccessibilityTracks,
+                      sourceContainer: inputs.sourceContainer
+                  ) else {
+                return .disable
+            }
+            return .select(forced)
         }
 
         let preferredLanguages = orderedLanguages(from: inputs)

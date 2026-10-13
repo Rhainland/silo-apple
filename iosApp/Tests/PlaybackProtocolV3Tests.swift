@@ -215,6 +215,30 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertTrue(rows.last?.isSelected == true)
     }
 
+    /// Subtitle mode Off with "show forced subtitles" starts on the forced
+    /// track in the audio language, as web and Android do. An explicit Off
+    /// carried by the request still starts with no subtitle.
+    func testInitialIntentForModeOffKeepsTheForcedTrackForTheAudioLanguage() {
+        let version = makeVersion(container: "mkv", videoCodec: "h264", audioCodec: "aac", subtitleTracks: [
+            makeSubtitle(index: 11, codec: "srt", external: false, path: nil),
+            makeSubtitle(index: 12, codec: "srt", external: false, path: nil, forced: true),
+            makeSubtitle(index: 13, codec: "srt", external: false, path: nil, forced: true, language: "ja"),
+        ])
+        func intent(showForced: Bool, audio: String?, explicitCombinedIndex: Int? = nil) -> Int? {
+            PlaybackSessionBridge.initialProtocolV3SubtitleIntent(
+                version: version, explicitFFmpegIndex: nil, explicitCombinedIndex: explicitCombinedIndex,
+                preferredLanguage: "en", mode: .off, showForced: showForced,
+                trackSignature: nil, currentAudioLanguage: audio
+            ).ffmpegStreamIndex
+        }
+        XCTAssertEqual(intent(showForced: true, audio: "eng"), 12)
+        XCTAssertEqual(intent(showForced: true, audio: "ja"), 13)
+        XCTAssertNil(intent(showForced: false, audio: "en"))
+        XCTAssertNil(intent(showForced: true, audio: "fr"), "no forced track in the audio language")
+        XCTAssertNil(intent(showForced: true, audio: nil))
+        XCTAssertNil(intent(showForced: true, audio: "en", explicitCombinedIndex: -1), "an explicit Off stays off")
+    }
+
     func testLocalSelectionCannotSelectReusedOrdinalFromAnotherFile() {
         let selection = ProtocolV3SubtitleSelection.track("file:other:subtitle:3")
         let plan = makePlan(subtitleInventory: [makeInventoryItem(combinedIndex: 3, source: "external")])
@@ -2857,12 +2881,13 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         path: String?,
         forced: Bool = false,
         isDefault: Bool = false,
-        hearingImpaired: Bool = false
+        hearingImpaired: Bool = false,
+        language: String = "en"
     ) -> SubtitleTrack {
         SubtitleTrack(
             index: index,
             codec: codec,
-            language: "en",
+            language: language,
             title: codec.uppercased(),
             embeddedTitle: nil,
             forced: forced,
