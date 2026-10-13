@@ -1050,9 +1050,12 @@ final class PlayerSettingsFlushTests: XCTestCase {
         )
     }
 
-    func testLegacySnapshotCoversEverySyncedDeviceSetting() throws {
+    func testLegacySnapshotCoversEverySyncedDeviceSetting() async throws {
         let harness = try PlayerSettingsHarness()
         let settings = harness.settings
+        // The snapshot carries this device's own appearance, which only an
+        // edit made while the device keeps its own appearance stores.
+        await settings.setSubtitleDeviceOverrideEnabled(true)
         // Store every synced key the way this device would have.
         settings.setQualityPreset(try XCTUnwrap(SiloQualityPresets.preset(id: "1080p-high")))
         settings.setAudioLanguage("ja")
@@ -1484,19 +1487,18 @@ final class PlayerSettingsFlushTests: XCTestCase {
 
         harness.settings.stageSubtitleAppearance(appearance)
 
-        // Silo Control's position command is synchronous: the edit, the
-        // override and handing control back from the system captions all
-        // apply before anything suspends.
+        // Silo Control's position command is synchronous: the edit and
+        // handing control back from the system captions both apply before
+        // anything suspends. It is a profile edit, not a device override.
         XCTAssertEqual(harness.settings.subtitleAppearance.position, .top)
-        XCTAssertTrue(harness.settings.subtitleUsesDeviceAppearanceOverride)
+        XCTAssertFalse(harness.settings.subtitleUsesDeviceAppearanceOverride)
         XCTAssertFalse(harness.settings.subtitleMatchesSystemAppearance)
         XCTAssertEqual(harness.settings.effectiveSubtitleAppearance.position, .top)
 
         await harness.settings.flushPendingDeviceSettings()
-        XCTAssertEqual(
-            harness.transport.writesByKey()[.playbackSubtitleAppearance]?.value,
-            try SettingJSONValue.encoding(appearance.sanitized())
-        )
+        let write = harness.transport.writesByKey()[.playbackSubtitleAppearance]
+        XCTAssertEqual(write?.value, try SettingJSONValue.encoding(appearance.sanitized()))
+        XCTAssertEqual(write?.scope, .profile)
     }
 
     /// The Playback screen's HDR switch, through the binding the screen uses:
@@ -2409,6 +2411,12 @@ final class FakeSettingsTransport: PlayerSettingsTransport, @unchecked Sendable 
         let key: SettingKey
         let value: SettingJSONValue
         let profileId: String?
+        var scope: PlayerSettingWriteScope = .profileDevice
+    }
+
+    struct Delete: Equatable {
+        let key: SettingKey
+        let scope: PlayerSettingWriteScope
     }
 
     /// What the next `effectiveValues` call answers with.
@@ -2432,7 +2440,7 @@ final class FakeSettingsTransport: PlayerSettingsTransport, @unchecked Sendable 
 
     private let lock = NSLock()
     private var recordedWrites: [Write] = []
-    private var recordedDeletes: [SettingKey] = []
+    private var recordedDeletes: [Delete] = []
     private var recordedEffectiveCalls: [[SettingKey]] = []
     private var writeFailures = 0
     private var writeError: SettingsAPIError = .transport(description: "stub")
@@ -2486,6 +2494,10 @@ final class FakeSettingsTransport: PlayerSettingsTransport, @unchecked Sendable 
     }
 
     func deletes() -> [SettingKey] {
+        scopedDeletes().map(\.key)
+    }
+
+    func scopedDeletes() -> [Delete] {
         lock.lock()
         defer { lock.unlock() }
         return recordedDeletes
@@ -2510,7 +2522,12 @@ final class FakeSettingsTransport: PlayerSettingsTransport, @unchecked Sendable 
         return EffectiveSettingValuesResponse(settings: settings, revision: reportedRevision)
     }
 
-    func putValue(key: SettingKey, value: SettingJSONValue, profileId: String?) async throws {
+    func putValue(
+        key: SettingKey,
+        scope: PlayerSettingWriteScope,
+        value: SettingJSONValue,
+        profileId: String?
+    ) async throws {
         try failIfCancelled()
         onAttemptStart?()
         await writeGate.waitIfBlocked()
@@ -2521,7 +2538,8 @@ final class FakeSettingsTransport: PlayerSettingsTransport, @unchecked Sendable 
         let write = Write(
             key: key,
             value: value,
-            profileId: profileId ?? currentProfileId?()
+            profileId: profileId ?? currentProfileId?(),
+            scope: scope
         )
         lock.lock()
         recordedWrites.append(write)
@@ -2534,12 +2552,12 @@ final class FakeSettingsTransport: PlayerSettingsTransport, @unchecked Sendable 
         if shouldFail { throw error }
     }
 
-    func deleteValue(key: SettingKey, profileId: String?) async throws {
+    func deleteValue(key: SettingKey, scope: PlayerSettingWriteScope, profileId: String?) async throws {
         try failIfCancelled()
         await writeGate.waitIfBlocked()
         try failIfCancelled()
         lock.lock()
-        recordedDeletes.append(key)
+        recordedDeletes.append(Delete(key: key, scope: scope))
         let shouldFail = deleteFailures > 0
         if shouldFail { deleteFailures -= 1 }
         let error = deleteError

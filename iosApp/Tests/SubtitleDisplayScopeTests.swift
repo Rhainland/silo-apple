@@ -1,0 +1,353 @@
+import XCTest
+@testable import Silo
+
+/// Where subtitle display edits are saved (silo-server#1157): appearance and
+/// timing follow the profile to every device, unless this device keeps its own
+/// through the "Only on This Device" override.
+@MainActor
+final class SubtitleDisplayScopeTests: XCTestCase {
+
+    private func appearanceRow(_ value: SettingJSONValue, at scope: SettingScope) -> EffectiveSettingValue {
+        EffectiveSettingValue(
+            key: SettingKey.playbackSubtitleAppearance.rawValue,
+            value: value,
+            source: .scope(scope),
+            scope: scope
+        )
+    }
+
+    private func syncRow(_ milliseconds: Int, at scope: SettingScope) -> EffectiveSettingValue {
+        EffectiveSettingValue(
+            key: SettingKey.playerSubtitleSyncMs.rawValue,
+            value: .int(milliseconds),
+            source: .scope(scope),
+            scope: scope
+        )
+    }
+
+    // MARK: - Appearance
+
+    func testAnAppearanceEditIsSavedForTheProfile() async throws {
+        let harness = try PlayerSettingsHarness()
+        await harness.settings.refreshFromServer()
+        harness.transport.reset()
+
+        var appearance = SubtitleAppearance.default
+        appearance.fontSize = .xlarge
+        await harness.settings.setSubtitleAppearance(appearance)
+
+        let write = try XCTUnwrap(harness.transport.writesByKey()[.playbackSubtitleAppearance])
+        XCTAssertEqual(write.scope, .profile)
+        XCTAssertEqual(write.value, try SettingJSONValue.encoding(appearance.sanitized()))
+        XCTAssertTrue(harness.transport.deletes().isEmpty, "no device value to clear")
+        XCTAssertFalse(harness.settings.subtitleUsesDeviceAppearanceOverride)
+        XCTAssertEqual(harness.settings.effectiveSubtitleAppearance.fontSize, .xlarge)
+
+        // The next read still has the old profile value while the write is
+        // owed elsewhere; once it lands it is the profile's, not this device's.
+        harness.transport.effective = [
+            appearanceRow(try SettingJSONValue.encoding(appearance.sanitized()), at: .profile),
+        ]
+        await harness.settings.refreshFromServer()
+        XCTAssertFalse(harness.settings.subtitleUsesDeviceAppearanceOverride)
+        XCTAssertEqual(harness.settings.subtitleAppearance.fontSize, .xlarge)
+    }
+
+    func testAnAppearanceEditWhileTheDeviceKeepsItsOwnStaysOnThisDevice() async throws {
+        let harness = try PlayerSettingsHarness()
+        harness.transport.effective = [appearanceRow(["fontSize": "small"], at: .profileDevice)]
+        await harness.settings.refreshFromServer()
+        XCTAssertTrue(harness.settings.subtitleUsesDeviceAppearanceOverride)
+        harness.transport.reset()
+
+        var next = harness.settings.subtitleAppearance
+        next.position = .top
+        await harness.settings.setSubtitleAppearance(next)
+
+        let write = try XCTUnwrap(harness.transport.writesByKey()[.playbackSubtitleAppearance])
+        XCTAssertEqual(write.scope, .profileDevice)
+        XCTAssertEqual(write.value.objectValue?["fontSize"], .string("small"))
+        XCTAssertEqual(write.value.objectValue?["position"], .string("top"))
+        XCTAssertTrue(harness.settings.subtitleUsesDeviceAppearanceOverride)
+    }
+
+    /// The in-player controls mutate `subtitleAppearance`. That must be what is
+    /// on screen (the profile's appearance), not a device copy an earlier
+    /// override left in the cache, or the first in-player edit would replace
+    /// the profile's style with stale values.
+    func testAnEditStartsFromTheAppearanceOnScreenNotAStaleDeviceCopy() async throws {
+        let harness = try PlayerSettingsHarness()
+        var stale = SubtitleAppearance.default
+        stale.fontSize = .small
+        stale.fontColor = "#facc15"
+        harness.defaults.set(stale.jsonString, forKey: "player.subtitleAppearance")
+        harness.transport.effective = [appearanceRow(["fontSize": "xxlarge"], at: .profile)]
+        await harness.settings.refreshFromServer()
+        harness.transport.reset()
+
+        XCTAssertEqual(harness.settings.subtitleAppearance.fontSize, .xxlarge)
+        XCTAssertEqual(harness.settings.subtitleAppearance, harness.settings.effectiveSubtitleAppearance)
+
+        var next = harness.settings.subtitleAppearance
+        next.position = .top
+        harness.settings.stageSubtitleAppearance(next)
+        await harness.settings.flushPendingDeviceSettings()
+
+        let fields = try XCTUnwrap(harness.transport.writesByKey()[.playbackSubtitleAppearance]?.value.objectValue)
+        XCTAssertEqual(fields["fontSize"], .string("xxlarge"))
+        XCTAssertEqual(
+            fields["fontColor"],
+            try SettingJSONValue.encoding(SubtitleAppearance.default.sanitized()).objectValue?["fontColor"]
+        )
+        XCTAssertEqual(fields["position"], .string("top"))
+    }
+
+    func testTurningTheDeviceOverrideOnKeepsTheAppearanceOnScreen() async throws {
+        let harness = try PlayerSettingsHarness()
+        var stale = SubtitleAppearance.default
+        stale.fontSize = .small
+        harness.defaults.set(stale.jsonString, forKey: "player.subtitleAppearance")
+        harness.transport.effective = [appearanceRow(["fontSize": "xlarge"], at: .profile)]
+        await harness.settings.refreshFromServer()
+        harness.transport.reset()
+
+        await harness.settings.setSubtitleDeviceOverrideEnabled(true)
+
+        XCTAssertTrue(harness.settings.subtitleUsesDeviceAppearanceOverride)
+        XCTAssertEqual(harness.settings.effectiveSubtitleAppearance.fontSize, .xlarge)
+        let write = try XCTUnwrap(harness.transport.writesByKey()[.playbackSubtitleAppearance])
+        XCTAssertEqual(write.scope, .profileDevice)
+        XCTAssertEqual(write.value.objectValue?["fontSize"], .string("xlarge"))
+    }
+
+    func testTurningTheDeviceOverrideOffDeletesThisDevicesAppearanceAndOffset() async throws {
+        let harness = try PlayerSettingsHarness()
+        harness.transport.effective = [
+            appearanceRow(["fontSize": "small"], at: .profileDevice),
+            syncRow(400, at: .profileDevice),
+        ]
+        await harness.settings.refreshFromServer()
+        harness.transport.reset()
+        harness.transport.effective = [
+            appearanceRow(["fontSize": "large"], at: .profile),
+            syncRow(-250, at: .profile),
+        ]
+
+        await harness.settings.setSubtitleDeviceOverrideEnabled(false)
+
+        XCTAssertEqual(
+            Set(harness.transport.scopedDeletes().map { "\($0.key.rawValue)@\($0.scope.rawValue)" }),
+            [
+                "playback.subtitle_appearance@profile_device",
+                "player.subtitle_sync_ms@profile_device",
+            ]
+        )
+        XCTAssertTrue(harness.transport.writes().isEmpty)
+        XCTAssertFalse(harness.settings.subtitleUsesDeviceAppearanceOverride)
+        XCTAssertEqual(harness.settings.subtitleAppearance.fontSize, .large)
+        XCTAssertEqual(harness.settings.subtitleSyncMs, -250)
+    }
+
+    func testTurningTheOverrideOffKeepsTheDeviceOffsetOnAServerWithoutAProfileOffset() async throws {
+        let harness = try PlayerSettingsHarness()
+        harness.transport.revision = SettingKey.subtitleSyncProfileScopeRevision - 1
+        harness.transport.effective = [
+            appearanceRow(["fontSize": "small"], at: .profileDevice),
+            syncRow(400, at: .profileDevice),
+        ]
+        await harness.settings.refreshFromServer()
+        harness.transport.reset()
+
+        await harness.settings.setSubtitleDeviceOverrideEnabled(false)
+
+        XCTAssertEqual(harness.transport.deletes(), [.playbackSubtitleAppearance])
+    }
+
+    // MARK: - Timing
+
+    func testASubtitleOffsetIsSavedForTheProfileOnACurrentServer() async throws {
+        let harness = try PlayerSettingsHarness()
+        await harness.settings.refreshFromServer()
+        harness.transport.reset()
+
+        harness.settings.setSubtitleSyncMs(-500)
+        await harness.settings.flushPendingDeviceSettings()
+
+        XCTAssertEqual(
+            harness.transport.writes(),
+            [.init(key: .playerSubtitleSyncMs, value: .int(-500), profileId: nil, scope: .profile)]
+        )
+        XCTAssertTrue(harness.transport.deletes().isEmpty)
+    }
+
+    func testASubtitleOffsetStaysOnThisDeviceWhileTheDeviceKeepsItsOwn() async throws {
+        let harness = try PlayerSettingsHarness()
+        harness.transport.effective = [appearanceRow(["fontSize": "small"], at: .profileDevice)]
+        await harness.settings.refreshFromServer()
+        harness.transport.reset()
+
+        harness.settings.setSubtitleSyncMs(300)
+        await harness.settings.flushPendingDeviceSettings()
+
+        XCTAssertEqual(harness.transport.writesByKey()[.playerSubtitleSyncMs]?.scope, .profileDevice)
+    }
+
+    func testASubtitleOffsetStaysADeviceValueOnAServerBeforeRevision18() async throws {
+        let harness = try PlayerSettingsHarness()
+        harness.transport.revision = SettingKey.subtitleSyncProfileScopeRevision - 1
+        await harness.settings.refreshFromServer()
+        harness.transport.reset()
+
+        harness.settings.setSubtitleSyncMs(-500)
+        await harness.settings.flushPendingDeviceSettings()
+
+        XCTAssertEqual(harness.transport.writesByKey()[.playerSubtitleSyncMs]?.scope, .profileDevice)
+        XCTAssertTrue(harness.transport.deletes().isEmpty)
+    }
+
+    /// An older build saved every offset on the device. That value would keep
+    /// hiding the profile's offset here, so a profile save deletes it.
+    func testAProfileSaveDeletesAnOffsetAnOlderBuildLeftOnThisDevice() async throws {
+        let harness = try PlayerSettingsHarness()
+        harness.transport.effective = [
+            appearanceRow(["fontSize": "large"], at: .profile),
+            syncRow(900, at: .profileDevice),
+        ]
+        await harness.settings.refreshFromServer()
+        harness.transport.reset()
+
+        harness.settings.setSubtitleSyncMs(-500)
+        await harness.settings.flushPendingDeviceSettings()
+
+        XCTAssertEqual(harness.transport.writesByKey()[.playerSubtitleSyncMs]?.scope, .profile)
+        XCTAssertEqual(
+            harness.transport.scopedDeletes(),
+            [.init(key: .playerSubtitleSyncMs, scope: .profileDevice)]
+        )
+    }
+
+    /// While the revision is unknown the write waits; it then goes to the
+    /// scope that server accepts.
+    func testAnOffsetMadeBeforeTheRevisionIsKnownWaitsAndFallsBackOnAnOlderServer() async throws {
+        let harness = try PlayerSettingsHarness()
+        harness.transport.effectiveError = .transport(description: "offline")
+        await harness.settings.refreshFromServer()
+        XCTAssertNil(harness.settings.knownManifestRevision)
+
+        harness.settings.setSubtitleSyncMs(-500)
+        await harness.settings.flushPendingDeviceSettings()
+        XCTAssertTrue(harness.transport.writes().isEmpty, "must not guess the server's revision")
+
+        harness.transport.effectiveError = nil
+        harness.transport.revision = SettingKey.subtitleSyncProfileScopeRevision - 1
+        await harness.settings.refreshFromServer()
+
+        let write = try XCTUnwrap(harness.transport.writesByKey()[.playerSubtitleSyncMs])
+        XCTAssertEqual(write.scope, .profileDevice)
+        XCTAssertEqual(write.value, .int(-500))
+        XCTAssertEqual(harness.settings.subtitleSyncMs, -500)
+    }
+
+    func testAnOffsetMadeBeforeTheRevisionIsKnownGoesToTheProfileOnACurrentServer() async throws {
+        let harness = try PlayerSettingsHarness()
+        harness.transport.effectiveError = .transport(description: "offline")
+        await harness.settings.refreshFromServer()
+
+        harness.settings.setSubtitleSyncMs(250)
+        await harness.settings.flushPendingDeviceSettings()
+        XCTAssertTrue(harness.transport.writes().isEmpty)
+
+        harness.transport.effectiveError = nil
+        await harness.settings.refreshFromServer()
+
+        XCTAssertEqual(harness.transport.writesByKey()[.playerSubtitleSyncMs]?.scope, .profile)
+    }
+
+    // MARK: - Queue
+
+    /// A second edit inside the debounce window must keep the device clear the
+    /// first one owed, or the old device value would survive.
+    func testANewerProfileWriteKeepsAnOwedDeviceClear() async throws {
+        let transport = FakeSettingsTransport()
+        let flusher = PlayerSettingsFlusher(transport: transport, debounce: .seconds(30))
+        _ = try await flusher.effectiveValues(keys: [])
+
+        flusher.enqueue(.playerSubtitleSyncMs, value: .int(100), scope: .profile, clearingDeviceValue: true)
+        flusher.enqueue(.playerSubtitleSyncMs, value: .int(200), scope: .profile)
+        await flusher.flushNow()
+
+        XCTAssertEqual(transport.writes().map(\.value), [.int(200)])
+        XCTAssertEqual(transport.scopedDeletes(), [.init(key: .playerSubtitleSyncMs, scope: .profileDevice)])
+    }
+
+    /// Turning the override off queues a clear; a profile edit before it is
+    /// sent must still clear the device value.
+    func testAProfileWriteReplacingAQueuedDeviceClearStillClears() async throws {
+        let transport = FakeSettingsTransport()
+        let flusher = PlayerSettingsFlusher(transport: transport, debounce: .seconds(30))
+        _ = try await flusher.effectiveValues(keys: [])
+
+        flusher.enqueueDelete(.playbackSubtitleAppearance)
+        flusher.enqueue(.playbackSubtitleAppearance, value: ["fontSize": "large"], scope: .profile)
+        await flusher.flushNow()
+
+        XCTAssertEqual(transport.writes().map(\.scope), [.profile])
+        XCTAssertEqual(
+            transport.scopedDeletes(),
+            [.init(key: .playbackSubtitleAppearance, scope: .profileDevice)]
+        )
+    }
+
+    /// A failed clear retries the whole write rather than dropping the clear.
+    func testAFailedDeviceClearIsRetried() async throws {
+        let transport = FakeSettingsTransport()
+        let flusher = PlayerSettingsFlusher(transport: transport, debounce: .seconds(30))
+        _ = try await flusher.effectiveValues(keys: [])
+        transport.failNextDeletes(1, with: .transport(description: "offline"))
+
+        flusher.enqueue(.playbackSubtitleAppearance, value: ["fontSize": "large"], scope: .profile, clearingDeviceValue: true)
+        await flusher.flushNow()
+        XCTAssertTrue(flusher.hasPendingWrites, "the clear is still owed")
+
+        transport.succeedFromNowOn()
+        await flusher.flushNow()
+        XCTAssertFalse(flusher.hasPendingWrites)
+        XCTAssertEqual(transport.writes().map(\.scope), [.profile, .profile])
+        XCTAssertEqual(transport.scopedDeletes().count, 2)
+    }
+
+    func testTheJournalKeepsAWritesScopeAndReadsOlderEntriesAsDeviceWrites() throws {
+        let suiteName = "settings-journal-write-scope-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { UserDefaults().removePersistentDomain(forName: suiteName) }
+        let journal = UserDefaultsSettingsWriteJournal(defaults: defaults, scopeProvider: { "scope-a" })
+
+        journal.save([
+            .playerSubtitleSyncMs: PendingSettingWrite(
+                operation: .set(.int(-500)),
+                scope: .profile,
+                clearsDeviceValue: true
+            ),
+        ])
+        let restored = try XCTUnwrap(journal.load()[.playerSubtitleSyncMs])
+        XCTAssertEqual(restored.scope, .profile)
+        XCTAssertTrue(restored.clearsDeviceValue)
+
+        // An entry written by a build that had no scope fields.
+        journal.save([.playerHdrEnabled: PendingSettingWrite(operation: .set(.bool(false)))])
+        let storageKey = "player.pendingDeviceSettingWrites.scope-a"
+        var stored = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: try XCTUnwrap(defaults.data(forKey: storageKey))) as? [String: Any]
+        )
+        var entry = try XCTUnwrap(stored[SettingKey.playerHdrEnabled.rawValue] as? [String: Any])
+        entry.removeValue(forKey: "scope")
+        entry.removeValue(forKey: "clearsDeviceValue")
+        stored[SettingKey.playerHdrEnabled.rawValue] = entry
+        defaults.set(try JSONSerialization.data(withJSONObject: stored), forKey: storageKey)
+
+        let legacy = try XCTUnwrap(journal.load()[.playerHdrEnabled])
+        XCTAssertEqual(legacy.scope, .profileDevice)
+        XCTAssertFalse(legacy.clearsDeviceValue)
+        XCTAssertEqual(legacy.operation, .set(.bool(false)))
+    }
+}
