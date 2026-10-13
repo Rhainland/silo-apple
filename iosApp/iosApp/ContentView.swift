@@ -56,6 +56,11 @@ struct ContentView: View {
     /// Set when the scene enters the background, so `.active` refreshes only
     /// on a real return to the app.
     @State private var isReturningFromBackground = false
+    #if os(iOS)
+    /// When the scene last entered the background, for the Home refresh
+    /// threshold on return.
+    @State private var sceneBackgroundedAt: Date?
+    #endif
 
     // The root modifier chain runs presentedContent -> appEventContent ->
     // sessionTaskContent -> body. Swift 6.2 cannot type-check it as one
@@ -419,6 +424,9 @@ struct ContentView: View {
             guard !Task.isCancelled else { return }
             Task { await AuthService.shared.refreshActiveServerName() }
             if router.authState == .authenticated {
+                // Nothing below reads title art, and surfaces show its cached
+                // answer meanwhile, so it need not hold up overlay hydration.
+                Task { await TitleArtPreferences.shared.refresh() }
                 await uiCustomization.refresh()
                 await SeekIntervalPreferences.shared.refresh()
                 await EpisodeSpoilerPreferences.shared.refresh()
@@ -438,6 +446,7 @@ struct ContentView: View {
             diagnosticsModel.reset()
             #endif
             if router.authState == .authenticated {
+                Task { await TitleArtPreferences.shared.refresh() }
                 await uiCustomization.refresh()
                 await SeekIntervalPreferences.shared.refresh()
                 await EpisodeSpoilerPreferences.shared.refresh()
@@ -494,6 +503,9 @@ struct ContentView: View {
 
             if newPhase == .background {
                 isReturningFromBackground = true
+                #if os(iOS)
+                sceneBackgroundedAt = .now
+                #endif
                 markProfileAwayStartIfNeeded()
                 return
             }
@@ -555,8 +567,9 @@ struct ContentView: View {
         async let profile: Void = CurrentProfileStore.shared.refresh()
         async let customization: Void = uiCustomization.refresh()
         async let seek: Void = SeekIntervalPreferences.shared.refresh()
+        async let titleArt: Void = TitleArtPreferences.shared.refresh()
         async let spoilers: Void = EpisodeSpoilerPreferences.shared.refresh()
-        _ = await (overlay, ai, imageSize, requests, shuffle, subtitles, profile, customization, seek, spoilers)
+        _ = await (overlay, ai, imageSize, requests, shuffle, subtitles, profile, customization, seek, titleArt, spoilers)
     }
 
     @MainActor
@@ -828,6 +841,22 @@ struct ContentView: View {
             return
         }
         #if os(iOS)
+        // A notification from another server or profile does not navigate,
+        // whichever branch below its link would take. A link held for
+        // profile selection is decided again for the profile chosen.
+        switch ApplePushDeepLinkCoordinator.admission(
+            for: url,
+            profileInUse: router.authState == .authenticated && !launchPreferences.requiresSelectionAfterBackground(),
+            activeServer: serverRegistry.activeServer,
+            activeProfileID: serverRegistry.activeProfileId
+        ) {
+        case .open: break
+        case .wait:
+            pendingDeepLink = url
+            return
+        case .drop:
+            return
+        }
         // A TV sign-in code from the web approval page. Approval is
         // account-level: it waits for a signed-in session, not a profile.
         if let link = DeviceApprovalLink(url: url) {
@@ -1045,6 +1074,14 @@ struct ContentView: View {
         router.authState = state
     }
 
+    /// Saved servers' push registrations still need renewing while no
+    /// profile is in use, or their display tokens lapse at Who's Watching.
+    private func maintainPushRegistrationsWithoutProfile() {
+        #if os(iOS)
+        Task { await ApplePushRegistrationCoordinator.shared.maintainWithoutProfile() }
+        #endif
+    }
+
     /// The splash has lifted over a committed route. Launch intents that
     /// present UI (deep links, sheets, the player) were held until now.
     /// A return to the foreground after a real background: the profile
@@ -1052,11 +1089,19 @@ struct ContentView: View {
     private func handleReturnFromBackgroundIfNeeded() {
         guard isReturningFromBackground else { return }
         isReturningFromBackground = false
-        guard router.authState == .authenticated else { return }
+        #if os(iOS)
+        let backgroundedAt = sceneBackgroundedAt
+        sceneBackgroundedAt = nil
+        #endif
+        guard router.authState == .authenticated else {
+            maintainPushRegistrationsWithoutProfile()
+            return
+        }
         if keepsProfileActiveInBackground {
             launchPreferences.clearBackgroundedAt()
         } else if launchPreferences.requiresSelectionAfterBackground() {
             Task { await applyProfileReturnPolicy() }
+            maintainPushRegistrationsWithoutProfile()
             return
         } else {
             launchPreferences.clearBackgroundedAt()
@@ -1084,6 +1129,10 @@ struct ContentView: View {
         #endif
         #if os(tvOS)
         NotificationCenter.default.post(name: .homeSectionsShouldRefresh, object: nil)
+        #elseif os(iOS)
+        if HomeForegroundRefreshPolicy.shouldRefresh(backgroundedAt: backgroundedAt) {
+            NotificationCenter.default.post(name: .homeSectionsShouldRefresh, object: nil)
+        }
         #endif
         #if !os(tvOS)
         Task { await DownloadManager.shared.onAppActive() }
@@ -3098,8 +3147,6 @@ struct MainTabView: View {
             RequestDetailView(mediaType: mediaType, tmdbId: tmdbId)
         case .myRequests:
             MyRequestsView()
-        case .requestApprovals:
-            MyRequestsView(initialScope: .everyone)
         case .search:
             #if os(iOS)
             SearchView(seededQuery: $siriSearchRequest)

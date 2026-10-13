@@ -12,7 +12,12 @@ class ProfileSelectionViewModel {
     private var temporaryManagementProfileID: String?
     private var temporaryManagementCleanupTask: Task<Bool, Never>?
 
+    /// The profile just picked on a fresh Apple TV, while the TV asks
+    /// whether to open it automatically from now on. Home waits for the answer.
+    var rememberOffer: UserProfile?
+
     private let auth = AuthService.shared
+    private let launchPreferences = ProfileLaunchPreferences.shared
 
     init() {
         if let cached: [UserProfile] = ResponseCache.shared.get(CacheKey.profiles) {
@@ -90,8 +95,23 @@ class ProfileSelectionViewModel {
         #else
         StartupContentPrefetcher.prefetchAuthenticatedContent()
         await PlayerSettings.shared.refreshFromServer()
+        #if os(tvOS)
+        if launchPreferences.isRememberOfferPending {
+            rememberOffer = profile
+            return
+        }
+        #endif
         router.resetToHome()
         #endif
+    }
+
+    /// Records the answer to the TV's offer and continues to Home. If the
+    /// answer cannot be saved, the offer stays open so it can be answered
+    /// again.
+    func answerRememberOffer(remember: Bool, router: AppRouter) {
+        guard launchPreferences.answerRememberOffer(remember: remember) else { return }
+        rememberOffer = nil
+        router.resetToHome()
     }
 
     /// The picker itself has no active profile, but the server requires the

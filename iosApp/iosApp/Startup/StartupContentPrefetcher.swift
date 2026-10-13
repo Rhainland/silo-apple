@@ -667,19 +667,29 @@ enum StartupContentPrefetcher {
     }
 
     /// Home renders under the startup splash and loads what it shows. Warm
-    /// the bytes of the rest of its rows, and the first card's marquee logo,
-    /// so scrolling and focus moves paint from local data.
+    /// the bytes of the leading cards of its rows, and the first card's
+    /// marquee logo, so scrolling and focus moves paint from local data.
     private static func prefetchHomeArtwork(for response: SectionsResponse) {
         let sections = response.sections.filter { !$0.items.isEmpty }
-        let cards = sections.lazy.flatMap { section in
-            section.items.lazy.map { rowCardArtwork(for: $0, in: section, onHome: true)?.url }
-        }
-        PosterImageCache.prefetchArtworkData(uniqueURLs(cards, limit: maxHomeArtworkURLs))
+        PosterImageCache.prefetchArtworkData(homeArtworkURLs(for: sections))
         #if os(tvOS)
-        if let logo = normalizedURL(from: sections.first?.items.first?.logoUrl) {
+        // A profile that turned title art off never shows the logo.
+        if TitleArtPreferences.shared.showsTitleArt,
+           let logo = normalizedURL(from: sections.first?.items.first?.logoUrl) {
             PosterImageCache.prefetchOriginalArtwork([logo])
         }
         #endif
+    }
+
+    /// Rows hold up to 100 items, so each row contributes only its first
+    /// screen; otherwise the budget would go to the first row's far end.
+    static func homeArtworkURLs(for sections: [ResolvedSection]) -> [URL] {
+        let cards = sections.lazy.flatMap { section in
+            section.items.prefix(ArtworkLookahead.cardsAhead).lazy.map {
+                rowCardArtwork(for: $0, in: section, onHome: true)?.url
+            }
+        }
+        return uniqueURLs(cards, limit: maxHomeArtworkURLs)
     }
 
     /// Landing rows of a tab the user has not opened yet: decode their first
@@ -726,6 +736,8 @@ enum StartupContentPrefetcher {
     /// Match `RecommendationsViewModel` ordering so the first two rows the
     /// user can actually focus are the ones whose logo art is ready first.
     private static func prefetchRecommendationLogos(for response: SectionsResponse) {
+        // A profile that turned title art off never shows these logos.
+        guard TitleArtPreferences.shared.showsTitleArt else { return }
         let nonEmpty = response.sections.filter { !$0.items.isEmpty }
         let forYou = nonEmpty.filter { $0.title.lowercased() == "for you" }
         let others = nonEmpty.filter { $0.title.lowercased() != "for you" }

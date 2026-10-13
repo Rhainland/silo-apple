@@ -51,6 +51,37 @@ enum CreditsAutoSkipPolicy {
     }
 }
 
+/// `playback.auto_skip_recap`: the credits rule, plus three more. A Watch
+/// Party never skips a recap on its own, because the seek would move every
+/// member; they keep the Skip Recap button. Nothing skips before the load's
+/// first frame: a recap often starts at 0:00, and seeking that early can
+/// prevent the startup milestone, as with intros. And every recap already
+/// skipped stays skipped, not only the last one, so a replan to another file
+/// and back does not skip the first file's recap again.
+enum RecapAutoSkipPolicy {
+    static func target(
+        enabled: Bool,
+        isWatchParty: Bool,
+        playbackStarted: Bool,
+        playbackEligible: Bool,
+        time: Double,
+        range: TimeRange?,
+        markerKey: String?,
+        skippedKeys: Set<String>
+    ) -> Double? {
+        guard !isWatchParty, playbackStarted else { return nil }
+        if let markerKey, skippedKeys.contains(markerKey) { return nil }
+        return CreditsAutoSkipPolicy.target(
+            enabled: enabled,
+            playbackEligible: playbackEligible,
+            time: time,
+            range: range,
+            markerKey: markerKey,
+            lastSkippedKey: nil
+        )
+    }
+}
+
 /// What the up-next screen offers: the series' next episode, or a shuffle's
 /// next pick, which may be a movie.
 struct PlayerNextUpEpisode: Identifiable, Hashable {
@@ -224,7 +255,6 @@ class PlayerViewModel {
     /// loads have no picture and reach it when the audio route starts playing.
     /// Both funnel through one epoch-scoped latch so a load can never take the
     /// milestone twice.
-    @ObservationIgnored
     private var startedAetherLoadEpoch: AetherPlaybackController.LoadEpoch?
     /// A user track change that arrived while a replan was already in flight.
     /// Re-issued when the in-flight replan settles so the local selection the
@@ -344,6 +374,9 @@ class PlayerViewModel {
     private var subtitleOrderingLanguage: String?
     var chapters: [PlayerChapterInfo] = []
     var introRange: TimeRange?
+    var recapRange: TimeRange? {
+        didSet { updateCreditsWindow() }
+    }
     var creditsRange: TimeRange? {
         didSet { updateCreditsWindow() }
     }
@@ -351,6 +384,7 @@ class PlayerViewModel {
     /// `showCreditsSkip` change only on entering or leaving the credits, not
     /// on every clock tick.
     private(set) var isInCreditsWindow = false
+    private(set) var isInRecapWindow = false
     /// The intro-skip pill — `ask`'s "Skip Intro" offer or `always`'s undo.
     /// See IntroSkipPrompt.swift and the server's intro-skip-mode spec.
     let introSkipPrompt = IntroSkipPrompt()
@@ -364,6 +398,9 @@ class PlayerViewModel {
     var selectedSecondarySubtitleId: Int64?
     var qualityOptions: [ApplePlaybackQualityOption] = [ApplePlaybackQuality.auto]
     var activeQualityId: String = ApplePlaybackQuality.autoId
+    /// False when the plan offers a single quality; the in-player quality
+    /// controls are hidden then. The saved preference is left alone.
+    var hasQualityChoice: Bool { ApplePlaybackQuality.hasChoice(among: qualityOptions) }
     var isQualitySwitching = false
     var qualitySwitchError: String?
     var isScrubbing = false
@@ -466,12 +503,33 @@ class PlayerViewModel {
         introSkipPrompt.isVisible
     }
 
+    private var markerPlaybackHasStarted: Bool {
+        guard let epoch = activeAetherLoadEpoch else { return false }
+        return startedAetherLoadEpoch == epoch
+    }
+
     var showCreditsSkip: Bool {
         // A party member who may not seek has nothing to press.
-        isInCreditsWindow && canRequestSeek
+        markerPlaybackHasStarted && !isLoading && isInCreditsWindow && canRequestSeek
+    }
+
+    var showRecapSkip: Bool {
+        markerPlaybackHasStarted && !isLoading && isInRecapWindow && canRequestSeek
+    }
+    var showSegmentSkip: Bool { showRecapSkip || showCreditsSkip }
+    var segmentSkipLabel: String { showRecapSkip ? "Skip Recap" : "Skip Credits" }
+
+    func skipCurrentSegment() {
+        if showRecapSkip, let recapRange {
+            seekTo(seconds: recapRange.end)
+        } else if showCreditsSkip {
+            skipCredits()
+        }
     }
 
     private func updateCreditsWindow() {
+        let inRecap = recapRange.map { currentTime >= $0.start && currentTime < $0.end } ?? false
+        if isInRecapWindow != inRecap { isInRecapWindow = inRecap }
         let inWindow = creditsRange.map { currentTime >= $0.start && currentTime < $0.end } ?? false
         if isInCreditsWindow != inWindow { isInCreditsWindow = inWindow }
     }
@@ -682,9 +740,17 @@ class PlayerViewModel {
     /// A marker update can finish after the playback session starts but before
     /// the realtime websocket has connected. Reconcile once after the socket
     /// is live so that event-delivery race cannot hide intro/credits prompts
-    /// for the current Aether load.
-    private var markerReconciledSessionId: String?
+    /// for the current Aether load. A `markers_updated` event that lands
+    /// while a reconcile read is in flight replaces that read with a fresh
+    /// one, so the event is never overwritten by an older snapshot and the
+    /// marker kinds it omits still get reconciled.
+    private var markerReconcileRequestId: UUID?
     private var markerReconcileTask: Task<Void, Never>?
+    /// Reads the file-specific markers for a reconcile. Tests replace it.
+    @ObservationIgnored
+    var markerDetailLoader: @MainActor (_ contentId: String, _ libraryId: Int?) async throws -> WatchDetail = {
+        try await SiloAPI.shared.watchDetail(contentId: $0, libraryId: $1)
+    }
 
     /// Whether the realtime websocket can currently receive live AI-subtitle
     /// cues. The preparing/pause flow starts on submit for both live and
@@ -760,6 +826,9 @@ class PlayerViewModel {
     /// and the start request a new session uses when the old one is gone.
     @ObservationIgnored
     private var reconnectCycle = PlaybackReconnectCycle()
+    /// Set once the server said the session was ended for good, so progress,
+    /// replan and reconnect do not each start their own exit.
+    private var serverEndedSessionHandled = false
     @ObservationIgnored
     private var reconnectTimerTask: Task<Void, Never>?
     @ObservationIgnored
@@ -927,6 +996,8 @@ class PlayerViewModel {
     var canRequestSeek: Bool { !isWatchPartyPlayback || watchPartyAdapter?.canSeek == true }
     var effectivePlaybackSpeed: Double { isWatchPartyPlayback ? watchPartyCorrectionRate : settings.playbackSpeed }
     private var autoSkippedCreditsKey: String?
+    /// Recaps already skipped for the current content, by marker key.
+    private var autoSkippedRecapKeys: Set<String> = []
     /// Skip Credits reached the end of the file while playback continued.
     /// The viewer chose to finish the item, so it completes even after Keep
     /// Watching, until a seek leaves the credits.
@@ -1109,6 +1180,8 @@ class PlayerViewModel {
     private var lastSeriesPlayback: (seriesId: String, seasonNumber: Int?)?
     /// `SeriesPlaybackReturnInbox` generation when this player was created.
     private let seriesReturnGeneration: Int
+    /// `PlayerCleanupBarrier` generation when this player was created.
+    private let cleanupBarrierGeneration: Int
     #if os(iOS) || os(macOS)
     @ObservationIgnored
     private var refreshHomeAfterPlaybackWrite: (@MainActor () -> Void)?
@@ -1148,6 +1221,7 @@ class PlayerViewModel {
     init(libraryId: Int? = nil) {
         self.initialLibraryId = libraryId
         self.seriesReturnGeneration = SeriesPlaybackReturnInbox.generation
+        self.cleanupBarrierGeneration = PlayerCleanupBarrier.playerCreated()
         let controller: AetherPlaybackController
         do {
             controller = try AetherPlaybackController()
@@ -1453,6 +1527,9 @@ class PlayerViewModel {
             sourceWatch.observePlayhead(movieTime, hasMediaAhead: engineHasMediaAhead)
             updateNextUpPresentation(for: movieTime)
             syncIntroSkipPrompt()
+            // Not `movieTime`: an intro skip just above may have moved the
+            // playhead past a recap that overlaps the intro.
+            autoSkipRecapIfNeeded(at: currentTime)
             autoSkipCreditsIfNeeded(at: movieTime)
             pushNowPlayingIfDue()
             refreshPlaybackStats()
@@ -1536,7 +1613,7 @@ class PlayerViewModel {
     private func projectPlaybackStats() -> PlaybackStats {
         guard let spec = aetherPlaybackController.activeSpec else { return .empty }
         let secondaryLabel = selectedSecondarySubtitleId.flatMap { selectedID in
-            subtitleTracks.first { $0.trackId == selectedID }?.primaryLabel
+            subtitleTracks.first { $0.trackId == selectedID }?.singleLineLabel
         }
         let playbackPlan = activePreparedProtocolV3?.plan
         let source = AetherPlaybackStatsSourceMetadata(
@@ -1696,6 +1773,7 @@ class PlayerViewModel {
         } else {
             startProgressReporting()
         }
+        syncIntroSkipPrompt()
         refreshPlaybackStats(force: true)
     }
 
@@ -1810,7 +1888,8 @@ class PlayerViewModel {
     }
 
     /// Only static-header transports need replacement after API rotation.
-    /// Native HLS resolves the current credential for each upstream request.
+    /// Server HLS and direct play with video resolve the current credential
+    /// for each request; audio-only media keeps the headers it opened with.
     private func attemptProtocolV3AuthenticationReloadAfterProgress(
         _ result: PlaybackProgressReportResult
     ) async {
@@ -2277,12 +2356,20 @@ class PlayerViewModel {
             let priorResolvedServerUrl = self.resolvedServerUrl
             let priorPrefsForCurrentItem = self.prefsForCurrentItem
             let priorPrefsResolvedForCurrentItem = self.prefsResolvedForCurrentItem
+            // Captured when the replan replaces them, not here: a
+            // markers_updated event can land while the replan is in flight.
+            var replacedMarkers: ReplacedMarkerRanges?
             /// Puts back the state this replan overwrote when it fails or is
             /// abandoned before committing.
             @MainActor func restorePriorReplanState() {
                 self.activePlaybackSessionId = priorActivePlaybackSessionId
                 self.currentWatchDetail = priorWatchDetail
                 self.currentSelectedVersion = priorSelectedVersion
+                if let replacedMarkers {
+                    self.introRange = replacedMarkers.intro
+                    self.creditsRange = replacedMarkers.credits
+                    self.recapRange = replacedMarkers.recap
+                }
                 self.activePreparedProtocolV3 = priorPreparedProtocolV3
                 self.localProtocolV3SubtitleSelection = priorLocalSubtitleSelection
                 self.lastLoadRequest = priorLastLoadRequest
@@ -2385,7 +2472,7 @@ class PlayerViewModel {
                 let previousSessionId = self.activePlaybackSessionId
                 self.activePlaybackSessionId = prepared.session.sessionId
                 self.currentWatchDetail = prepared.watchDetail
-                self.currentSelectedVersion = prepared.selectedVersion
+                replacedMarkers = self.adoptReplannedVersion(prepared.selectedVersion)
                 self.activePreparedProtocolV3 = prepared.protocolV3
                 if targetsSubtitle || classification == "subtitle_track_changed" {
                     self.localProtocolV3SubtitleSelection = nil
@@ -2515,6 +2602,10 @@ class PlayerViewModel {
                 Self.logger.error(
                     "Protocol V3 replan failed: \(MediaLogRedactor.sanitize(error), privacy: .public)"
                 )
+                if PlaybackSessionBridge.isPlaybackSessionEnded(error) {
+                    self.leaveServerEndedSession()
+                    return
+                }
                 if self.reconnectCycle.isActive {
                     // A replan sent while reconnecting got no plan back: the
                     // reconnect decides whether to wait or start over.
@@ -3516,9 +3607,10 @@ class PlayerViewModel {
             let requestAuthorization: HTTPRequestAuthorization?
             let subtitleRequestAuthorization: HTTPRequestAuthorization?
             if v3.serverFeatures.contains(PlaybackProtocolV3.headerAuthenticatedMediaFeature),
-               [PlaybackProtocolV3.PlanDelivery.remuxHLS,
-                PlaybackProtocolV3.PlanDelivery.transcodeHLS].contains(v3.plan.delivery),
-               v3.plan.effectiveRecipe.videoCodec != nil {
+               AetherAuthenticationRecoveryPolicy.resolvesRequestCredentials(
+                   delivery: v3.plan.delivery,
+                   hasVideo: v3.plan.effectiveRecipe.videoCodec != nil
+               ) {
                 guard let owner = streamRequest.capturedAuth else {
                     throw HTTPError.requestIdentityChanged
                 }
@@ -4219,7 +4311,7 @@ class PlayerViewModel {
     /// Called when the active backend reports natural EOF. Move the shell into
     /// a paused end-state immediately so the player does not look frozen if
     /// auto-play-next is unavailable.
-    private func handleEndOfFile() {
+    func handleEndOfFile() {
         // Once per load. Two callers can land here for the same end — the
         // `.ended` event and a near-end playback error reclassified as a
         // natural finish — and running twice would raise the Next Up postroll
@@ -4318,12 +4410,6 @@ class PlayerViewModel {
             // or hit Back.
             nextUpAutoplayCancelled = true
             cancelNextUpCountdown()
-            showNotice(
-                title: "Connection lost",
-                message: "Lost connection to the server before the episode finished.",
-                tone: .warning,
-                duration: 6
-            )
         }
 
         #if os(iOS) || os(tvOS)
@@ -4416,6 +4502,22 @@ class PlayerViewModel {
             return
         }
         beginNextUpPostroll(videoEnded: true)
+
+        // After the postroll, which clears notices left over from playback;
+        // the postroll shows this one.
+        if isPremature {
+            // A download has no connection to lose: its early end is a file
+            // that stops short.
+            let isDownload = lastLoadRequest?.offlineDownloadId != nil
+            showNotice(
+                title: isDownload ? "Download incomplete" : "Connection lost",
+                message: isDownload
+                    ? "The downloaded video file ends early. Delete and re-download it."
+                    : "Lost connection to the server before the episode finished.",
+                tone: .warning,
+                duration: 6
+            )
+        }
     }
 
 
@@ -4521,6 +4623,9 @@ class PlayerViewModel {
         remoteDismissTask = nil
         activeNotice = nil
         remoteDismissToken = nil
+        // The exit a server-ended session started is cancelled above; the
+        // session this load starts handles its own end.
+        serverEndedSessionHandled = false
         hideControlsTask?.cancel()
         skipDebounceTask?.cancel()
         skipDebounceTask = nil
@@ -4562,9 +4667,10 @@ class PlayerViewModel {
         chapters = []
         introRange = nil
         creditsRange = nil
+        recapRange = nil
         markerReconcileTask?.cancel()
         markerReconcileTask = nil
-        markerReconciledSessionId = nil
+        markerReconcileRequestId = nil
         qualityOptions = [ApplePlaybackQuality.auto]
         activeQualityId = ApplePlaybackQuality.autoId
         isQualitySwitching = false
@@ -4820,13 +4926,15 @@ class PlayerViewModel {
         recordCurrentPlaybackMutation()
         let pendingNaturalEndProgressTask = naturalEndProgressTask
         naturalEndProgressTask = nil
-        // Intro decisions belong to the content, not to one stream of it. A
-        // retry or a reload that lands a seek keeps them, so a viewer who
-        // skipped or dismissed an intro is not asked again — and `always`
+        // Intro and recap decisions belong to the content, not to one stream
+        // of it. A retry or a reload that lands a seek keeps them, so a viewer
+        // who skipped or dismissed an intro is not asked again, `always`
         // cannot skip the same intro twice when the reload lands just short of
-        // its end.
+        // its end, and a recap the viewer went back to watch is not skipped
+        // again.
         if lastLoadRequest?.contentId != request.contentId {
             introSkipPrompt.reset()
+            autoSkippedRecapKeys = []
             viewingHasPlayed = false
             reconnectLoadRequest = nil
             // Other content starts with a full reconnect budget.
@@ -5047,8 +5155,9 @@ class PlayerViewModel {
                 self.duration = session.durationSeconds ?? prepared.selectedVersion.duration ?? 0
                 self.currentTime = self.movieTime(for: session)
                 self.applyMarkerRanges(
-                    intro: prepared.selectedVersion.intro ?? prepared.watchDetail.intro,
-                    credits: prepared.selectedVersion.credits ?? prepared.watchDetail.credits
+                    intro: prepared.selectedVersion.intro,
+                    credits: prepared.selectedVersion.credits,
+                    recap: prepared.selectedVersion.recap
                 )
 
                 guard let streamRequest = await self.makeStreamRequest(
@@ -5266,21 +5375,32 @@ class PlayerViewModel {
             isLoadingNextUpEpisode = false
             showNextUpScreen = true
             nextUpScreenVideoEnded = true
+            var noticeTitle = "Couldn't start the next episode"
             // A shuffle keeps offering the pick that failed: Play Now
             // retries it, since it never reached a first frame. A later part
             // of an item that already played moves on to the next pick.
             if let shuffleState {
-                shuffleActionError = lastLoadRequest?.contentId == shuffleState.advanceFromContentId
-                    ? "Couldn't play the next part."
-                    : "Couldn't start the next pick."
+                let isNextPart = lastLoadRequest?.contentId == shuffleState.advanceFromContentId
+                shuffleActionError = isNextPart ? "Couldn't play the next part." : "Couldn't start the next pick."
+                noticeTitle = isNextPart ? "Couldn't play the next part" : "Couldn't start the next pick"
                 publishShuffleNextUp()
             }
-            showNotice(
-                title: "Couldn't start the next episode",
-                message: message,
-                tone: .warning,
-                duration: 6
-            )
+            // The tvOS episode panel shows the reason itself. The other
+            // panels only say the start failed, and macOS has no postroll, so
+            // there the notice carries the reason.
+            #if os(tvOS)
+            let panelShowsReason = shuffleState == nil
+            #else
+            let panelShowsReason = false
+            #endif
+            if !panelShowsReason {
+                showNotice(
+                    title: noticeTitle,
+                    message: message,
+                    tone: .warning,
+                    duration: 6
+                )
+            }
         case .recovery:
             let logMessage = MediaLogRedactor.sanitize(message)
             Self.logger.warning(
@@ -5584,6 +5704,10 @@ class PlayerViewModel {
     /// session, or give up.
     private func continueReconnect(after error: Error, step: PlaybackReconnectPolicy.Step) {
         guard !isDisposed, reconnectCycle.isActive else { return }
+        if PlaybackSessionBridge.isPlaybackSessionEnded(error) {
+            leaveServerEndedSession()
+            return
+        }
         isLoading = false
         Self.logger.warning(
             "Playback reconnect attempt failed step=\(String(describing: step), privacy: .public): \(MediaLogRedactor.sanitize(error), privacy: .public)"
@@ -6325,9 +6449,10 @@ class PlayerViewModel {
         scheduleHideControls()
     }
 
-    private func applyMarkerRanges(intro: TimeRange?, credits: TimeRange?) {
+    private func applyMarkerRanges(intro: TimeRange?, credits: TimeRange?, recap: TimeRange?) {
         introRange = validTimeRange(intro)
         creditsRange = validTimeRange(credits)
+        recapRange = validTimeRange(recap)
         if let introRange {
             Self.logger.info(
                 "[CMP-MARKERS] intro range active start=\(introRange.start, privacy: .public) end=\(introRange.end, privacy: .public)"
@@ -6339,46 +6464,79 @@ class PlayerViewModel {
             )
         }
         syncIntroSkipPrompt()
+        autoSkipRecapIfNeeded(at: currentTime)
         autoSkipCreditsIfNeeded(at: currentTime)
     }
 
-    private func reconcileMarkersAfterRealtimeConnect() {
+    /// The marker ranges a replan replaced when it switched files.
+    struct ReplacedMarkerRanges: Equatable {
+        let intro: TimeRange?
+        let credits: TimeRange?
+        let recap: TimeRange?
+    }
+
+    /// Adopts the file version a replan selected. A replan can switch to
+    /// another file (edition), whose markers then replace the old file's.
+    /// For the same file the current ranges stay: a `markers_updated` event
+    /// may be newer than the replan's snapshot. Returns the ranges it
+    /// replaced, for a rollback to put back, or nil when it kept them.
+    @discardableResult
+    func adoptReplannedVersion(_ version: FileVersion) -> ReplacedMarkerRanges? {
+        let fileChanged = version.fileId != currentSelectedVersion?.fileId
+        currentSelectedVersion = version
+        guard fileChanged else { return nil }
+        let replaced = ReplacedMarkerRanges(intro: introRange, credits: creditsRange, recap: recapRange)
+        applyMarkerRanges(intro: version.intro, credits: version.credits, recap: version.recap)
+        return replaced
+    }
+
+    /// Test seam: the playback identity a marker reconcile is fenced on.
+    func bindMarkerReconciliationForTesting(sessionId: String, detail: WatchDetail, version: FileVersion) {
+        activePlaybackSessionId = sessionId
+        currentWatchDetail = detail
+        currentSelectedVersion = version
+    }
+
+    func reconcileMarkersAfterRealtimeConnect() {
         guard offlinePlaybackContext == nil,
-              introRange == nil || creditsRange == nil,
               let sessionId = activePlaybackSessionId,
-              markerReconciledSessionId != sessionId,
               let contentId = currentWatchDetail?.contentId,
               let fileId = currentSelectedVersion?.fileId else {
             return
         }
 
-        markerReconciledSessionId = sessionId
+        let requestId = UUID()
+        let libraryId = self.libraryId
+        markerReconcileRequestId = requestId
         markerReconcileTask?.cancel()
         markerReconcileTask = Task { @MainActor [weak self] in
             guard let self else { return }
             defer {
-                if self.markerReconciledSessionId == sessionId {
+                if self.markerReconcileRequestId == requestId {
                     self.markerReconcileTask = nil
+                    self.markerReconcileRequestId = nil
                 }
             }
             do {
-                let detail = try await SiloAPI.shared.watchDetail(contentId: contentId, libraryId: libraryId)
+                // The read is owner-fenced: it is sent for the owner captured
+                // at dispatch and refused if that owner changed in flight.
+                let detail = try await self.markerDetailLoader(contentId, libraryId)
                 guard !Task.isCancelled,
+                      self.markerReconcileRequestId == requestId,
                       self.activePlaybackSessionId == sessionId,
                       self.currentSelectedVersion?.fileId == fileId,
                       let version = detail.versions.first(where: { $0.fileId == fileId }) else {
                     return
                 }
-                let refreshedIntro = version.intro ?? detail.intro
-                let refreshedCredits = version.credits ?? detail.credits
+                let refreshedIntro = version.intro
+                let refreshedCredits = version.credits
                 self.applyMarkerRanges(
-                    intro: self.introRange ?? refreshedIntro,
-                    credits: self.creditsRange ?? refreshedCredits
+                    intro: refreshedIntro,
+                    credits: refreshedCredits,
+                    recap: version.recap
                 )
             } catch {
-                if self.activePlaybackSessionId == sessionId {
-                    self.markerReconciledSessionId = nil
-                }
+                guard !Task.isCancelled, self.markerReconcileRequestId == requestId else { return }
                 Self.logger.warning(
                     "[CMP-MARKERS] realtime marker reconciliation failed: \(String(describing: error), privacy: .public)"
                 )
@@ -6403,7 +6561,10 @@ class PlayerViewModel {
     /// the play/pause, loading and buffering state. The pill's own timer runs
     /// in between. The one seek it can ask for is `always`'s immediate skip.
     private func syncIntroSkipPrompt() {
-        let range = introRange
+        // Do not offer or resolve a skip while the engine has yet to present
+        // this load. Seeking and pausing before its first frame can prevent
+        // the startup milestone and its session progress reporting.
+        let range = markerPlaybackHasStarted ? introRange : nil
         let target = introSkipPrompt.update(
             IntroSkipPrompt.Inputs(
                 position: currentTime,
@@ -6463,6 +6624,32 @@ class PlayerViewModel {
             "[CMP-MARKERS] auto-skip credits target=\(target, privacy: .public) current=\(time, privacy: .public)"
         )
         performCreditsSkip(to: target)
+    }
+
+    /// Jumps past a recap once per recap when the profile turns on
+    /// `playback.auto_skip_recap`; see ``RecapAutoSkipPolicy``.
+    private func autoSkipRecapIfNeeded(at time: Double) {
+        let key = recapRange.flatMap(currentRecapSkipKey(for:))
+        guard let target = RecapAutoSkipPolicy.target(
+            enabled: settings.autoSkipRecap,
+            isWatchParty: isWatchPartyPlayback,
+            playbackStarted: markerPlaybackHasStarted,
+            playbackEligible: !isLoading && !hasReachedEndOfFile,
+            time: time,
+            range: recapRange,
+            markerKey: key,
+            skippedKeys: autoSkippedRecapKeys
+        ), let key else {
+            return
+        }
+
+        // Set the latch before seeking: a synchronous backend time callback
+        // caused by the seek must see this recap as already handled.
+        autoSkippedRecapKeys.insert(key)
+        Self.logger.info(
+            "[CMP-MARKERS] auto-skip recap target=\(target, privacy: .public) current=\(time, privacy: .public)"
+        )
+        seekTo(seconds: target)
     }
 
     private func performCreditsSkip(to target: Double) {
@@ -6528,6 +6715,18 @@ class PlayerViewModel {
             return nil
         }
         return "\(sessionId):\(fileId):credits:\(range.start):\(range.end)"
+    }
+
+    /// Names the marker, not the session, like the intro key: a protocol-v3
+    /// replan or a reload can replace the session id mid-playback, and a
+    /// recap already skipped must stay skipped across it.
+    private func currentRecapSkipKey(for range: TimeRange) -> String? {
+        guard activePlaybackSessionId != nil,
+              let contentId = currentWatchDetail?.contentId,
+              let fileId = currentSelectedVersion?.fileId else {
+            return nil
+        }
+        return "\(contentId):\(fileId):recap:\(range.start):\(range.end)"
     }
 
     func beginScrub(fraction: Double) {
@@ -7575,11 +7774,13 @@ class PlayerViewModel {
         clearPlaybackStats()
         introRange = nil
         creditsRange = nil
+        recapRange = nil
         markerReconcileTask?.cancel()
         markerReconcileTask = nil
-        markerReconciledSessionId = nil
+        markerReconcileRequestId = nil
         introSkipPrompt.reset()
         autoSkippedCreditsKey = nil
+        autoSkippedRecapKeys = []
         knownExternalSubtitles = []
         locallyRegisteredSidecarSubtitleTracks = []
         localProtocolV3SubtitleSelection = nil
@@ -7643,6 +7844,7 @@ class PlayerViewModel {
         // path finalized any prior one), so skip the server stop below —
         // it would report the offline position against a stale session.
         let stopServerSessionOnTeardown = offlinePlaybackContext == nil
+        var offlineProgressWrite: Task<Void, Never>?
         if let offline = offlinePlaybackContext {
             let finalOfflinePosition = completionProgressPositionForCurrentItem()
             let endedNaturally = PlayerNextUpCompletionPolicy.shouldFinalizeAsCompleted(
@@ -7656,7 +7858,7 @@ class PlayerViewModel {
             // Strong capture on purpose: this is the last write of the
             // resume point and must not be dropped because the VM was
             // released between dismiss and the hop to the MainActor.
-            Task { @MainActor in
+            offlineProgressWrite = Task { @MainActor in
                 self.recordOfflineProgress(
                     context: offline,
                     position: finalOfflinePosition,
@@ -7681,7 +7883,10 @@ class PlayerViewModel {
         realtimeConnectivityObserverToken = nil
         let unavailabilityToken = realtimeUnavailabilityObserverToken
         realtimeUnavailabilityObserverToken = nil
-        cleanupCompletionTask = Task {
+        let cleanupCompletion = Task { [offlineProgressWrite] in
+            // The offline counterpart of the final `stopSession` below; a
+            // page waiting on this teardown reloads after it.
+            await offlineProgressWrite?.value
             await scrubPreviewShutdown?.value
             // Remove our availability observer before tearing down the realtime
             // client; normal fresh-load unbinds preserve this observer.
@@ -7700,6 +7905,8 @@ class PlayerViewModel {
             refreshHomeAfterPlaybackWrite?()
             #endif
         }
+        cleanupCompletionTask = cleanupCompletion
+        PlayerCleanupBarrier.record(cleanupCompletion, generation: cleanupBarrierGeneration)
     }
 
     func waitForCleanupCompletion() async {
@@ -7751,7 +7958,7 @@ class PlayerViewModel {
         await realtimeClient.bind(sessionId: sessionId, authority: authority)
     }
 
-    private func handleRealtimeEvent(_ event: PlaybackRealtimeEventEnvelope) async {
+    func handleRealtimeEvent(_ event: PlaybackRealtimeEventEnvelope) async {
         guard event.sessionId == activePlaybackSessionId else { return }
         switch event.name {
         case .markersUpdated:
@@ -7767,8 +7974,15 @@ class PlayerViewModel {
             }
             applyMarkerRanges(
                 intro: payload.introUpdate.resolving(current: introRange),
-                credits: payload.creditsUpdate.resolving(current: creditsRange)
+                credits: payload.creditsUpdate.resolving(current: creditsRange),
+                recap: payload.recapUpdate.resolving(current: recapRange)
             )
+            // An in-flight reconcile snapshot may predate this event. Replace
+            // it rather than drop it: the event can omit a kind whose update
+            // was missed while the socket was down.
+            if markerReconcileRequestId != nil {
+                reconcileMarkersAfterRealtimeConnect()
+            }
         case .chapterThumbnailReady:
             break
         case .subtitleTimingChanged:
@@ -7992,6 +8206,23 @@ class PlayerViewModel {
             self.activeNotice = nil
             self.noticeDismissTask = nil
         }
+    }
+
+    /// The server ended this session for good: an administrator stopped it
+    /// while the player could not be told over the control socket. Leave the
+    /// way an administrator stop does, instead of renewing into a new session.
+    private func leaveServerEndedSession() {
+        guard !isDisposed, !serverEndedSessionHandled else { return }
+        serverEndedSessionHandled = true
+        cancelReconnect()
+        aetherPlaybackController.pause()
+        showNotice(
+            title: "Playback stopped by admin",
+            message: "An administrator ended this playback session.",
+            tone: .warning,
+            duration: 1.2
+        )
+        requestRemoteDismiss(after: 0.8)
     }
 
     private func requestRemoteDismiss(after delay: TimeInterval = 0) {
@@ -8862,6 +9093,15 @@ class PlayerViewModel {
                     position: self.currentTime,
                     isPaused: !self.isPlaying
                 )
+                if result == .sessionEnded {
+                    // A new load or renewal cancels this loop when it moves
+                    // to another session. A late answer about the old one
+                    // must not end the playback that replaced it.
+                    if !Task.isCancelled {
+                        self.leaveServerEndedSession()
+                    }
+                    return
+                }
                 if result == .missingSession {
                     _ = self.attemptStaleSessionRenewal(
                         reason: "progress",
@@ -9115,11 +9355,11 @@ extension PlayerViewModel {
             isBuffering: isBuffering,
             currentTime: currentTime,
             duration: duration,
-            audioTracks: audioTracks.map(makeSiloControlTrack),
-            subtitleTracks: subtitleTracks.map(makeSiloControlTrack),
+            audioTracks: makeSiloControlTracks(audioTracks),
+            subtitleTracks: makeSiloControlTracks(subtitleTracks),
             selectedAudioTrackId: selectedAudioId,
             selectedSubtitleTrackId: selectedSubtitleId,
-            qualityOptions: qualityOptions.map(makeSiloControlOption),
+            qualityOptions: hasQualityChoice ? qualityOptions.map(makeSiloControlOption) : [],
             activeQualityId: activeQualityId,
             isQualitySwitching: isQualitySwitching,
             playbackSpeed: effectivePlaybackSpeed,
@@ -9138,24 +9378,18 @@ extension PlayerViewModel {
         )
     }
 
-    private func makeSiloControlTrack(_ track: PlayerTrack) -> SiloControlTrack {
-        // Subtitle titles are often the release name, which made every row on
-        // the phone remote identical. Lead with the language, and keep what
-        // separates same-language tracks in the title: remotes show only that.
-        if track.kind == .sub {
-            return SiloControlTrack(
+    private func makeSiloControlTracks(_ tracks: [PlayerTrack]) -> [SiloControlTrack] {
+        // Rows lead with the language, so the title also carries what tells
+        // same-language tracks apart ("English (Commentary)"): remotes show
+        // only the title.
+        zip(tracks, PlayerTrack.singleLineLabels(tracks)).map { track, title in
+            SiloControlTrack(
                 kind: track.kind.rawValue,
                 trackId: track.trackId,
-                title: track.languageFirstSingleLineLabel,
-                detail: track.languageFirstAttributesLabel
+                title: title,
+                detail: track.attributesLabel
             )
         }
-        return SiloControlTrack(
-            kind: track.kind.rawValue,
-            trackId: track.trackId,
-            title: track.primaryLabel,
-            detail: track.attributesLabel
-        )
     }
 
     private func makeSiloControlOption(_ option: ApplePlaybackQualityOption) -> SiloControlOption {

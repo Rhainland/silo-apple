@@ -1756,6 +1756,20 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertFalse(PlaybackSessionBridge.isPlaybackSessionMissing(HTTPError.http(statusCode: 404, body: "Not found")))
     }
 
+    func testAnAdministratorEndedSessionIsGoneNotMissing() throws {
+        func problem(_ status: Int, _ type: String) throws -> Error {
+            APIv2Error.problem(try HTTPClient.makeJSONDecoder().decode(APIv2Problem.self, from: Data(
+                #"{"type":"https://siloserver.org/docs/api/v2/problems/\#(type)","title":"t","status":\#(status),"detail":"d"}"#.utf8)))
+        }
+        let ended = try problem(410, "playback_session_ended")
+        XCTAssertTrue(PlaybackSessionBridge.isPlaybackSessionEnded(ended))
+        // A 410 means leave, never renew into a fresh session.
+        XCTAssertFalse(PlaybackSessionBridge.isPlaybackSessionMissing(ended))
+        XCTAssertFalse(PlaybackSessionBridge.isPlaybackSessionEnded(try problem(404, "not_found")))
+        XCTAssertFalse(PlaybackSessionBridge.isPlaybackSessionEnded(try problem(410, "gone")))
+        XCTAssertFalse(PlaybackSessionBridge.isPlaybackSessionEnded(HTTPError.http(statusCode: 410, body: "Gone")))
+    }
+
     func testHDRAttestationDoesNotInventHDR10PlusOrMacDolbyVision() {
         let details = ApplePlaybackV3Capabilities.hdrDetails(
             hdr10: true,
@@ -2380,6 +2394,19 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertFalse(original.audioDecodeCodecs.contains("dts"))
         XCTAssertFalse(original.audioDecodeCodecs.contains("truehd"))
         XCTAssertFalse(original.audioDecodeCodecs.contains("vorbis"))
+    }
+
+    func testASingleServerQualityIsNoChoiceEvenWithAutoAdded() {
+        func quality(_ label: String, height: Int?, original: Bool = false) -> PlaybackV3AvailableQuality {
+            PlaybackV3AvailableQuality(label: label, displayName: nil, height: height, bitrateKbps: 8000,
+                                       preservesSource: original)
+        }
+        let originalOnly = ApplePlaybackQuality.playbackOptions(serverQualities: [quality("original", height: nil, original: true)])
+        XCTAssertEqual(originalOnly.count, 2, "Auto is still prepended")
+        XCTAssertFalse(ApplePlaybackQuality.hasChoice(among: originalOnly))
+        XCTAssertFalse(ApplePlaybackQuality.hasChoice(among: ApplePlaybackQuality.playbackOptions(serverQualities: [])))
+        XCTAssertTrue(ApplePlaybackQuality.hasChoice(among: ApplePlaybackQuality.playbackOptions(
+            serverQualities: [quality("original", height: nil, original: true), quality("1080p", height: 1080)])))
     }
 
     func testAudioOnlyAndUnknownServerQualityRungsRemainUsable() {

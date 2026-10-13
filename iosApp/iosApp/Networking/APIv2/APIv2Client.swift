@@ -303,18 +303,24 @@ struct APIv2Client: Sendable {
 
     private func householdRequest<T: Decodable>(_ method: String, path: String, query: [String: String] = [:],
                                                 body: Data? = nil, status: Int) async throws -> T {
+        let response = try await householdResponse(method, path: path, query: query, body: body)
+        guard response.statusCode == status else { throw APIv2Error.httpStatus(response.statusCode) }
+        return try HTTPClient.makeJSONDecoder(artworkServerURL: response.url).decode(T.self, from: response.data)
+    }
+
+    private func householdResponse(_ method: String, path: String, query: [String: String] = [:], body: Data? = nil,
+                                   acceptedStatuses: Set<Int> = []) async throws -> HTTPRawResponse {
         try await gate()
         guard let auth = await tokenStore.captureOrdinaryRequestAuth() else { throw HTTPError.requestIdentityChanged }
         let identity = auth.profileId.map { Self.requestIdentity(auth, profile: $0) }
-        let response = try await tokenStore.withOwnerFence(auth) {
+        return try await tokenStore.withOwnerFence(auth) {
             try await mapErrors {
                 try await http.requestData(method: method, path: path, query: query, body: body,
                     headers: auth.profileId == nil ? ["X-Profile-Id": ""] : [:],
-                    requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
+                    requestIdentity: identity, acceptedStatuses: acceptedStatuses,
+                    expectedAccount: auth.account, expectedAuth: auth)
             }
         }
-        guard response.statusCode == status else { throw APIv2Error.httpStatus(response.statusCode) }
-        return try HTTPClient.makeJSONDecoder(artworkServerURL: response.url).decode(T.self, from: response.data)
     }
 
     func householdProfiles() async throws -> [UserProfile] {
@@ -338,7 +344,15 @@ struct APIv2Client: Sendable {
     func verifyHouseholdPIN(id: String, pin: String) async throws -> VerifyPinResponse {
         let segment = try catalogPathSegment(id)
         let data = try JSONEncoder().encode(VerifyPinRequest(pin: pin))
-        return try await householdRequest("POST", path: "/api/v2/profiles/\(segment)/verify-pin", body: data, status: 200)
+        let response = try await householdResponse("POST", path: "/api/v2/profiles/\(segment)/verify-pin", body: data,
+            acceptedStatuses: [429])
+        // 429 is the lockout after repeated wrong PINs; `Retry-After` (seconds)
+        // says how long it lasts.
+        if response.statusCode == 429 {
+            throw ProfileTransitionError.pinLockedOut(retryAfter: response.header("retry-after").flatMap(TimeInterval.init))
+        }
+        guard response.statusCode == 200 else { throw APIv2Error.httpStatus(response.statusCode) }
+        return try HTTPClient.makeJSONDecoder().decode(VerifyPinResponse.self, from: response.data)
     }
 
     /// `getOnboardingState`, then `getOnboardingFlow` when `surface` is set,
@@ -1198,7 +1212,7 @@ struct APIv2Client: Sendable {
     }
 
     func applePushRegistrationCapability(auth: CapturedOrdinaryRequestAuth) async throws -> APIv2ApplePushCapability {
-        let data = try await applePushRequest(method: "GET", path: "/api/v2/devices/push/apple/capabilities", auth: auth)
+        let data = try await applePushRequest(method: "GET", path: Self.applePushCapabilityPath, auth: auth)
         return try HTTPClient.makeJSONDecoder().decode(APIv2ApplePushCapability.self, from: data)
     }
 
@@ -1211,16 +1225,36 @@ struct APIv2Client: Sendable {
     /// receipt does not describe this generation and payload.
     func registerApplePush(_ body: APIv2ApplePushRegistrationBody, installationKey: String, generation: Int64,
                            auth: CapturedOrdinaryRequestAuth) async throws -> APIv2ApplePushRegistrationReceipt {
+        let data = try await applePushRequest(method: "POST", path: Self.applePushRegistrationPath,
+            body: Self.applePushRegistrationBody(body),
+            headers: Self.applePushInstallationHeaders(installationKey: installationKey, generation: generation),
+            auth: auth)
+        return try Self.applePushReceipt(from: data, generation: generation, body: body)
+    }
+
+    static let applePushCapabilityPath = "/api/v2/devices/push/apple/capabilities"
+    static let applePushRegistrationPath = "/api/v2/devices/push/apple"
+
+    /// The ordered-registration headers, refused before anything is sent
+    /// when the journal handed over a value outside the contract.
+    static func applePushInstallationHeaders(installationKey: String, generation: Int64) throws -> [String: String] {
         guard ApplePushInstallationJournal.isInstallationKey(installationKey), generation > 0 else {
             throw ApplePushRegistrationError.invalidInstallation
         }
+        return ["X-Push-Installation-Key": installationKey, "X-Push-Generation": String(generation)]
+    }
+
+    /// Sorted keys, so a replay sends the same bytes whichever server
+    /// session sends it.
+    static func applePushRegistrationBody(_ body: APIv2ApplePushRegistrationBody) throws -> Data {
         let encoder = JSONEncoder()
         encoder.keyEncodingStrategy = .convertToSnakeCase
         encoder.outputFormatting = .sortedKeys
-        let data = try await applePushRequest(method: "POST", path: "/api/v2/devices/push/apple",
-            body: encoder.encode(body),
-            headers: ["X-Push-Installation-Key": installationKey, "X-Push-Generation": String(generation)],
-            auth: auth)
+        return try encoder.encode(body)
+    }
+
+    static func applePushReceipt(from data: Data, generation: Int64,
+                                 body: APIv2ApplePushRegistrationBody) throws -> APIv2ApplePushRegistrationReceipt {
         let receipt = try HTTPClient.makeJSONDecoder().decode(APIv2ApplePushRegistrationReceipt.self, from: data)
         guard receipt.generation == String(generation), !receipt.id.isEmpty, !receipt.serverDeviceId.isEmpty,
               receipt.pushMode == body.pushMode else {
