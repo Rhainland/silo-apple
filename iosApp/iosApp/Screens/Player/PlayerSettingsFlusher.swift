@@ -121,6 +121,12 @@ struct PendingSettingWrite: Equatable, Codable {
     /// the profile value on the device the user just edited it on.
     let clearsDeviceValue: Bool
 
+    /// For a clear of this device's value: wanted only where the server
+    /// stores the key per profile (``SettingKey/profileScopeRevision``). On an
+    /// older server the device value is the only one, so there the clear
+    /// settles without being sent. Waits while the revision is unknown.
+    let onlyWhereProfileScoped: Bool
+
     /// The (server, profile, device) identity this operation belongs to.
     /// Nil is retained for in-memory/test journals with no scoped identity;
     /// the production journal binds older encoded entries to the scope whose
@@ -145,6 +151,7 @@ struct PendingSettingWrite: Equatable, Codable {
         operation: Operation,
         scope: PlayerSettingWriteScope = .profileDevice,
         clearsDeviceValue: Bool = false,
+        onlyWhereProfileScoped: Bool = false,
         scopeIdentifier: String? = nil,
         profileId: String? = nil,
         failedAttempts: Int = 0,
@@ -153,6 +160,7 @@ struct PendingSettingWrite: Equatable, Codable {
         self.operation = operation
         self.scope = scope
         self.clearsDeviceValue = scope == .profile && clearsDeviceValue
+        self.onlyWhereProfileScoped = scope == .profileDevice && operation == .delete && onlyWhereProfileScoped
         self.scopeIdentifier = scopeIdentifier
         self.profileId = profileId
         self.failedAttempts = failedAttempts
@@ -160,7 +168,7 @@ struct PendingSettingWrite: Equatable, Codable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case operation, scope, clearsDeviceValue, scopeIdentifier, profileId, failedAttempts, isHeld
+        case operation, scope, clearsDeviceValue, onlyWhereProfileScoped, scopeIdentifier, profileId, failedAttempts, isHeld
     }
 
     init(from decoder: Decoder) throws {
@@ -168,6 +176,7 @@ struct PendingSettingWrite: Equatable, Codable {
         operation = try container.decode(Operation.self, forKey: .operation)
         scope = try container.decodeIfPresent(PlayerSettingWriteScope.self, forKey: .scope) ?? .profileDevice
         clearsDeviceValue = try container.decodeIfPresent(Bool.self, forKey: .clearsDeviceValue) ?? false
+        onlyWhereProfileScoped = try container.decodeIfPresent(Bool.self, forKey: .onlyWhereProfileScoped) ?? false
         scopeIdentifier = try container.decodeIfPresent(String.self, forKey: .scopeIdentifier)
         profileId = try container.decodeIfPresent(String.self, forKey: .profileId)
         failedAttempts = try container.decodeIfPresent(Int.self, forKey: .failedAttempts) ?? 0
@@ -178,6 +187,7 @@ struct PendingSettingWrite: Equatable, Codable {
     /// bookkeeping.
     func hasSameDesiredState(as other: PendingSettingWrite) -> Bool {
         operation == other.operation && scope == other.scope && clearsDeviceValue == other.clearsDeviceValue
+            && onlyWhereProfileScoped == other.onlyWhereProfileScoped
     }
 
     func bound(to scopeIdentifier: String?, profileId: String?) -> PendingSettingWrite {
@@ -186,6 +196,7 @@ struct PendingSettingWrite: Equatable, Codable {
             operation: operation,
             scope: scope,
             clearsDeviceValue: clearsDeviceValue,
+            onlyWhereProfileScoped: onlyWhereProfileScoped,
             scopeIdentifier: self.scopeIdentifier ?? scopeIdentifier,
             profileId: self.profileId ?? profileId,
             failedAttempts: failedAttempts,
@@ -561,10 +572,20 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
     var hasRevisionGatedWrites: Bool {
         lock.withLock {
             pending.contains { key, write in
-                guard !write.isHeld, write.failedAttempts == 0, case .set = write.operation else { return false }
-                return !key.revisionGatedMembers.isEmpty
-                    || (write.scope == .profile && key.profileScopeRevision != nil)
+                guard !write.isHeld, write.failedAttempts == 0 else { return false }
+                return Self.waitsForManifestRevision(key, write)
             }
+        }
+    }
+
+    /// Whether sending `write` depends on the server's manifest revision.
+    private static func waitsForManifestRevision(_ key: SettingKey, _ write: PendingSettingWrite) -> Bool {
+        switch write.operation {
+        case .set:
+            return !key.revisionGatedMembers.isEmpty
+                || (write.scope == .profile && key.profileScopeRevision != nil)
+        case .delete:
+            return write.onlyWhereProfileScoped && key.profileScopeRevision != nil
         }
     }
 
@@ -702,12 +723,19 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
     /// answer as this device still holding its own value.
     var unsettledClears: Set<SettingKey> {
         lock.withLock {
+            // A clear meant only for a server that stores the key per profile
+            // removes nothing from an older one.
+            func clears(_ key: SettingKey, _ write: PendingSettingWrite) -> Bool {
+                guard case .delete = write.operation else { return false }
+                guard write.onlyWhereProfileScoped, let manifestRevision else { return true }
+                return key.acceptsProfileScope(atRevision: manifestRevision)
+            }
             var keys: Set<SettingKey> = []
             for (key, write) in inFlight where write.scopeIdentifier == activeJournalScope {
-                if case .delete = write.operation { keys.insert(key) }
+                if clears(key, write) { keys.insert(key) }
             }
             for (key, write) in pending {
-                if case .delete = write.operation {
+                if clears(key, write) {
                     keys.insert(key)
                 } else {
                     keys.remove(key)
@@ -744,6 +772,7 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
                     operation: write.operation,
                     scope: write.scope,
                     clearsDeviceValue: write.clearsDeviceValue,
+                    onlyWhereProfileScoped: write.onlyWhereProfileScoped,
                     scopeIdentifier: write.scopeIdentifier,
                     profileId: write.profileId
                 )
@@ -805,19 +834,25 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
         }
     }
 
-    /// Queue clearing the value at `scope` (this device's by default), so the
-    /// setting inherits again.
-    func enqueueDelete(_ key: SettingKey, scope: PlayerSettingWriteScope = .profileDevice) {
+    /// Queue clearing this device's value, so the setting inherits again.
+    /// The queue never deletes the profile's own value.
+    ///
+    /// `onlyWhereProfileScoped`: the clear is wanted only if the server
+    /// stores `key` per profile, which may not be known yet; see
+    /// ``PendingSettingWrite/onlyWhereProfileScoped``.
+    func enqueueDelete(_ key: SettingKey, onlyWhereProfileScoped: Bool = false) {
         schedule(key) { existing, _, scopeIdentifier, profileId in
-            if case .delete = existing?.operation, existing?.scope == scope, existing?.isHeld == false {
-                return existing
-            }
-            return PendingSettingWrite(
+            let next = PendingSettingWrite(
                 operation: .delete,
-                scope: scope,
+                scope: .profileDevice,
+                onlyWhereProfileScoped: onlyWhereProfileScoped,
                 scopeIdentifier: scopeIdentifier,
                 profileId: profileId
             )
+            if let existing, !existing.isHeld, existing.hasSameDesiredState(as: next) {
+                return existing
+            }
+            return next
         }
     }
 
@@ -1164,6 +1199,16 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
                     }
                 }
             case .delete:
+                if write.onlyWhereProfileScoped, let required = key.profileScopeRevision {
+                    guard let revision = knownManifestRevision else {
+                        log(key, "server manifest revision not known yet", kept: true)
+                        return .retryOnNextTrigger
+                    }
+                    guard revision >= required else {
+                        // The device value is the only one this server keeps.
+                        return .settled
+                    }
+                }
                 try await transport.deleteValue(key: key, scope: write.scope, profileId: write.profileId)
             }
             return .settled

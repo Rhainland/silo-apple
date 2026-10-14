@@ -168,6 +168,68 @@ final class SubtitleDisplayScopeTests: XCTestCase {
         XCTAssertEqual(harness.transport.deletes(), [.playbackSubtitleAppearance])
     }
 
+    /// A launch that has not reached the server yet does not know whether
+    /// the profile can hold an offset. Turning the override off then still
+    /// owes the offset clear, decided once a read reports the revision.
+    func testTurningTheOverrideOffBeforeTheRevisionIsKnownClearsTheOffsetOnACurrentServer() async throws {
+        let (settings, transport) = try await offlineLaunchWithDeviceOffset()
+
+        await settings.setSubtitleDeviceOverrideEnabled(false)
+        XCTAssertEqual(transport.deletes(), [.playbackSubtitleAppearance])
+
+        transport.effectiveError = nil
+        await settings.refreshFromServer()
+        XCTAssertEqual(
+            transport.scopedDeletes(),
+            [
+                .init(key: .playbackSubtitleAppearance, scope: .profileDevice),
+                .init(key: .playerSubtitleSyncMs, scope: .profileDevice),
+            ]
+        )
+    }
+
+    func testTurningTheOverrideOffBeforeTheRevisionIsKnownKeepsTheOffsetOnAnOlderServer() async throws {
+        let (settings, transport) = try await offlineLaunchWithDeviceOffset()
+
+        await settings.setSubtitleDeviceOverrideEnabled(false)
+
+        transport.effectiveError = nil
+        transport.revision = SettingKey.subtitleSyncProfileScopeRevision - 1
+        transport.effective = [syncRow(400, at: .profileDevice)]
+        await settings.refreshFromServer()
+        XCTAssertEqual(transport.deletes(), [.playbackSubtitleAppearance])
+        XCTAssertTrue(settings.deviceOverriddenKeys.contains(.playerSubtitleSyncMs))
+
+        // Settled, not left waiting to be sent later.
+        transport.revision = SettingKey.revision
+        await settings.refreshFromServer()
+        XCTAssertEqual(transport.deletes(), [.playbackSubtitleAppearance])
+    }
+
+    /// Settings whose cache holds a device appearance and offset from an
+    /// earlier run, launched while the server is unreachable.
+    private func offlineLaunchWithDeviceOffset() async throws -> (PlayerSettings, FakeSettingsTransport) {
+        let harness = try PlayerSettingsHarness()
+        harness.transport.effective = [
+            appearanceRow(["fontSize": "small"], at: .profileDevice),
+            syncRow(400, at: .profileDevice),
+        ]
+        await harness.settings.refreshFromServer()
+        XCTAssertTrue(harness.settings.deviceOverriddenKeys.contains(.playerSubtitleSyncMs))
+
+        let transport = FakeSettingsTransport()
+        transport.effectiveError = .transport(description: "offline")
+        let settings = PlayerSettings(
+            defaults: harness.defaults,
+            flusher: PlayerSettingsFlusher(transport: transport, debounce: .milliseconds(10))
+        )
+        addTeardownBlock { _ = harness }
+        await settings.refreshFromServer()
+        XCTAssertNil(settings.knownManifestRevision)
+        XCTAssertTrue(settings.subtitleUsesDeviceAppearanceOverride)
+        return (settings, transport)
+    }
+
     // MARK: - Timing
 
     func testASubtitleOffsetIsSavedForTheProfileOnACurrentServer() async throws {

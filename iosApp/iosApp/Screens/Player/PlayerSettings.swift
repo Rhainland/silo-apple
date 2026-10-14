@@ -1004,9 +1004,11 @@ final class PlayerSettings {
         var cleared: [SettingKey] = [.subtitleAppearance]
         // The device's own offset goes too, but only where the profile can
         // hold one: on an older server the device value is the only offset.
-        if deviceOverriddenKeys.contains(.subtitleSyncMs),
-           let revision = knownManifestRevision,
-           SettingKey.subtitleSyncMs.acceptsProfileScope(atRevision: revision) {
+        // Before the revision is known (an offline launch) the flusher makes
+        // that call once a read reports it.
+        let clearsOffset = deviceOverriddenKeys.contains(.subtitleSyncMs)
+            && knownManifestRevision.map { SettingKey.subtitleSyncMs.acceptsProfileScope(atRevision: $0) } != false
+        if clearsOffset {
             cleared.append(.subtitleSyncMs)
         }
         // A first refresh for this scope must not import these keys straight
@@ -1014,8 +1016,10 @@ final class PlayerSettings {
         if let scopeID = Self.currentScopeIdentifier {
             retireMigration(of: cleared, for: scopeID)
         }
-        for key in cleared {
-            enqueueDeviceClear(key)
+        enqueueDeviceClear(.subtitleAppearance)
+        if clearsOffset {
+            deviceOverriddenKeys.remove(.subtitleSyncMs)
+            flusher.enqueueDelete(.subtitleSyncMs, onlyWhereProfileScoped: true)
         }
         await flushPendingDeviceSettings()
         await refreshFromServer()
