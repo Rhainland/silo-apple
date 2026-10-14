@@ -125,6 +125,29 @@ final class SubtitleDisplayScopeTests: XCTestCase {
         XCTAssertEqual(write.value.objectValue?["fontSize"], .string("xlarge"))
     }
 
+    /// An appearance edit that has not reached the profile yet (here: the
+    /// server was unreachable) still goes to the profile when the device
+    /// override is turned on before it is sent.
+    func testTurningTheOverrideOnKeepsAnUnsentProfileEdit() async throws {
+        let harness = try PlayerSettingsHarness()
+        harness.transport.effective = [appearanceRow(["fontSize": "small"], at: .profile)]
+        await harness.settings.refreshFromServer()
+        harness.transport.reset()
+        harness.transport.failNextWrites(1, with: .transport(description: "offline"))
+
+        var appearance = harness.settings.subtitleAppearance
+        appearance.fontSize = .xlarge
+        await harness.settings.setSubtitleAppearance(appearance)
+        await harness.settings.setSubtitleDeviceOverrideEnabled(true)
+
+        let expected = try SettingJSONValue.encoding(appearance.sanitized())
+        let writes = harness.transport.writes()
+        XCTAssertEqual(writes.last { $0.scope == .profile }?.value, expected, "the profile still gets the edit")
+        XCTAssertEqual(writes.last?.scope, .profileDevice)
+        XCTAssertEqual(writes.last?.value, expected)
+        XCTAssertTrue(harness.settings.subtitleUsesDeviceAppearanceOverride)
+    }
+
     func testTurningTheDeviceOverrideOffDeletesThisDevicesAppearanceAndOffset() async throws {
         let harness = try PlayerSettingsHarness()
         harness.transport.effective = [
@@ -423,6 +446,33 @@ final class SubtitleDisplayScopeTests: XCTestCase {
         XCTAssertEqual(transport.writes().map(\.scope), [.profile, .profile])
         XCTAssertEqual(transport.scopedDeletes(), [.init(key: .playbackSubtitleAppearance, scope: .profileDevice)])
         XCTAssertTrue(journal.load().isEmpty)
+    }
+
+    /// The owed profile value follows every later operation on this device's
+    /// value until one is sent, and waits for the revision like a profile
+    /// write of the key would.
+    func testAnOwedProfileValueSurvivesLaterDeviceOperations() async throws {
+        let transport = FakeSettingsTransport()
+        let flusher = PlayerSettingsFlusher(transport: transport, debounce: .seconds(30))
+
+        flusher.enqueue(.playerSubtitleSyncMs, value: .int(-300), scope: .profile, clearingDeviceValue: true)
+        flusher.enqueue(.playerSubtitleSyncMs, value: .int(100))
+        flusher.enqueueDelete(.playerSubtitleSyncMs)
+        XCTAssertEqual(flusher.unsettledScopedValues()[.playerSubtitleSyncMs]?.scope, .profile)
+        XCTAssertEqual(flusher.unsettledScopedValues()[.playerSubtitleSyncMs]?.value, .int(-300))
+        XCTAssertTrue(flusher.hasRevisionGatedWrites)
+
+        await flusher.flushNow()
+        XCTAssertTrue(transport.writes().isEmpty, "must not guess the server's revision")
+
+        _ = try await flusher.effectiveValues(keys: [])
+        await flusher.flushNow()
+        XCTAssertEqual(
+            transport.writes(),
+            [.init(key: .playerSubtitleSyncMs, value: .int(-300), profileId: nil, scope: .profile)]
+        )
+        XCTAssertEqual(transport.scopedDeletes(), [.init(key: .playerSubtitleSyncMs, scope: .profileDevice)])
+        XCTAssertFalse(flusher.hasPendingWrites)
     }
 
     /// A failed clear retries the whole write rather than dropping the clear.
