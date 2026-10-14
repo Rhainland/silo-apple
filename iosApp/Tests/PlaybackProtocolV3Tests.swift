@@ -278,6 +278,19 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertEqual(PlaybackSessionBridge.startAudioLanguage(version: unlabelled, audioOrdinal: 0), "ja")
         XCTAssertEqual(PlaybackSessionBridge.startAudioLanguage(version: unlabelled, audioOrdinal: nil), "ja")
         XCTAssertNil(PlaybackSessionBridge.startAudioLanguage(version: nil, audioOrdinal: 0))
+
+        // The track is listed but carries no language: the server's language
+        // for that same track stands in, and not for a different one.
+        let blankTrack = makeVersion(
+            container: "mkv", videoCodec: "h264", audioCodec: "aac",
+            audioTracks: [
+                makeAudio(index: 1, codec: "aac", isDefault: true, language: " "),
+                makeAudio(index: 2, codec: "aac", isDefault: false, language: ""),
+            ],
+            effectiveAudioTrackIndex: 0, effectiveAudioLanguage: "ja"
+        )
+        XCTAssertEqual(PlaybackSessionBridge.startAudioLanguage(version: blankTrack, audioOrdinal: 0), "ja")
+        XCTAssertNil(PlaybackSessionBridge.startAudioLanguage(version: blankTrack, audioOrdinal: 1))
     }
 
     func testLocalSelectionCannotSelectReusedOrdinalFromAnotherFile() {

@@ -959,8 +959,9 @@ actor PlaybackSessionBridge {
     /// that left the language unknown whenever the two differ (an MKV with
     /// video at stream 0 and its one audio track at stream 1), and Auto then
     /// picked full subtitles where the audio already matched the subtitle
-    /// language. Without a usable ordinal, the server's effective audio
-    /// language, then the default (or only) track's, stand in.
+    /// language. Without a usable ordinal, or when the track it names has no
+    /// language, the server's effective audio language (for that same track),
+    /// then the default (or only) track's, stand in.
     static func startAudioLanguage(version: FileVersion?, audioOrdinal: Int?) -> String? {
         guard let version else { return nil }
         let tracks = version.audioTracks ?? []
@@ -969,8 +970,9 @@ actor PlaybackSessionBridge {
                   !language.isEmpty else { return nil }
             return language
         }
-        if let audioOrdinal, tracks.indices.contains(audioOrdinal) {
-            return usable(tracks[audioOrdinal].language)
+        if let audioOrdinal, tracks.indices.contains(audioOrdinal),
+           let language = usable(tracks[audioOrdinal].language) {
+            return language
         }
         if audioOrdinal == nil || audioOrdinal == version.effectiveAudioTrackIndex,
            let effective = usable(version.effectiveAudioLanguage) {
