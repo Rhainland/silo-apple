@@ -229,6 +229,32 @@ final class SubtitleDisplayScopeTests: XCTestCase {
         XCTAssertEqual(transport.deletes(), [.playbackSubtitleAppearance])
     }
 
+    /// An offset edited offline while the device keeps its own, then the
+    /// override turned off: on a server that only stores offsets per device
+    /// the clear does not apply, and the edit must still be saved.
+    func testAnUnsentDeviceOffsetSurvivesTheOverrideTurningOffOnAnOlderServer() async throws {
+        let (settings, transport) = try await offlineLaunchWithDeviceOffset()
+
+        transport.failNextWrites(100, with: .transport(description: "offline"))
+        transport.failNextDeletes(100, with: .transport(description: "offline"))
+        settings.setSubtitleSyncMs(-700)
+        await settings.setSubtitleDeviceOverrideEnabled(false)
+
+        transport.succeedFromNowOn()
+        transport.reset()
+        transport.effectiveError = nil
+        transport.revision = SettingKey.subtitleSyncProfileScopeRevision - 1
+        transport.effective = [syncRow(400, at: .profileDevice)]
+        await settings.refreshFromServer()
+
+        XCTAssertEqual(
+            transport.writesByKey()[.playerSubtitleSyncMs],
+            .init(key: .playerSubtitleSyncMs, value: .int(-700), profileId: nil, scope: .profileDevice)
+        )
+        XCTAssertEqual(transport.deletes(), [.playbackSubtitleAppearance])
+        XCTAssertEqual(settings.subtitleSyncMs, -700)
+    }
+
     /// Settings whose cache holds a device appearance and offset from an
     /// earlier run, launched while the server is unreachable.
     private func offlineLaunchWithDeviceOffset() async throws -> (PlayerSettings, FakeSettingsTransport) {

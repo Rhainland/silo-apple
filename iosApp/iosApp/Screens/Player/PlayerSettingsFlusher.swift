@@ -127,6 +127,11 @@ struct PendingSettingWrite: Equatable, Codable {
     /// settles without being sent. Waits while the revision is unknown.
     let onlyWhereProfileScoped: Bool
 
+    /// For an ``onlyWhereProfileScoped`` clear: the device value a set it
+    /// replaced had not stored yet. Where the clear does not apply, that
+    /// value is still this device's latest edit, so it is sent instead.
+    let fallbackDeviceValue: SettingJSONValue?
+
     /// For an operation on this device's value: a profile value that a write
     /// this one replaced had not stored yet. The queue keeps one operation per
     /// key, so turning the device override on before a profile edit reached
@@ -159,6 +164,7 @@ struct PendingSettingWrite: Equatable, Codable {
         scope: PlayerSettingWriteScope = .profileDevice,
         clearsDeviceValue: Bool = false,
         onlyWhereProfileScoped: Bool = false,
+        fallbackDeviceValue: SettingJSONValue? = nil,
         owedProfileValue: SettingJSONValue? = nil,
         scopeIdentifier: String? = nil,
         profileId: String? = nil,
@@ -169,6 +175,7 @@ struct PendingSettingWrite: Equatable, Codable {
         self.scope = scope
         self.clearsDeviceValue = scope == .profile && clearsDeviceValue
         self.onlyWhereProfileScoped = scope == .profileDevice && operation == .delete && onlyWhereProfileScoped
+        self.fallbackDeviceValue = self.onlyWhereProfileScoped ? fallbackDeviceValue : nil
         self.owedProfileValue = scope == .profileDevice ? owedProfileValue : nil
         self.scopeIdentifier = scopeIdentifier
         self.profileId = profileId
@@ -177,7 +184,7 @@ struct PendingSettingWrite: Equatable, Codable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case operation, scope, clearsDeviceValue, onlyWhereProfileScoped, owedProfileValue, scopeIdentifier, profileId, failedAttempts, isHeld
+        case operation, scope, clearsDeviceValue, onlyWhereProfileScoped, fallbackDeviceValue, owedProfileValue, scopeIdentifier, profileId, failedAttempts, isHeld
     }
 
     init(from decoder: Decoder) throws {
@@ -186,6 +193,7 @@ struct PendingSettingWrite: Equatable, Codable {
         scope = try container.decodeIfPresent(PlayerSettingWriteScope.self, forKey: .scope) ?? .profileDevice
         clearsDeviceValue = try container.decodeIfPresent(Bool.self, forKey: .clearsDeviceValue) ?? false
         onlyWhereProfileScoped = try container.decodeIfPresent(Bool.self, forKey: .onlyWhereProfileScoped) ?? false
+        fallbackDeviceValue = try container.decodeIfPresent(SettingJSONValue.self, forKey: .fallbackDeviceValue)
         owedProfileValue = try container.decodeIfPresent(SettingJSONValue.self, forKey: .owedProfileValue)
         scopeIdentifier = try container.decodeIfPresent(String.self, forKey: .scopeIdentifier)
         profileId = try container.decodeIfPresent(String.self, forKey: .profileId)
@@ -198,6 +206,7 @@ struct PendingSettingWrite: Equatable, Codable {
     func hasSameDesiredState(as other: PendingSettingWrite) -> Bool {
         operation == other.operation && scope == other.scope && clearsDeviceValue == other.clearsDeviceValue
             && onlyWhereProfileScoped == other.onlyWhereProfileScoped
+            && fallbackDeviceValue == other.fallbackDeviceValue
             && owedProfileValue == other.owedProfileValue
     }
 
@@ -208,6 +217,7 @@ struct PendingSettingWrite: Equatable, Codable {
             scope: scope,
             clearsDeviceValue: clearsDeviceValue,
             onlyWhereProfileScoped: onlyWhereProfileScoped,
+            fallbackDeviceValue: fallbackDeviceValue,
             owedProfileValue: owedProfileValue,
             scopeIdentifier: self.scopeIdentifier ?? scopeIdentifier,
             profileId: self.profileId ?? profileId,
@@ -721,6 +731,10 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
             func paint(_ key: SettingKey, _ write: PendingSettingWrite) {
                 if case .set(let value) = write.operation {
                     values[key] = (value, write.scope)
+                } else if let fallback = write.fallbackDeviceValue, let manifestRevision,
+                          !key.acceptsProfileScope(atRevision: manifestRevision) {
+                    // This server keeps the device edit rather than the clear.
+                    values[key] = (fallback, .profileDevice)
                 } else if let owed = write.owedProfileValue {
                     // Clearing this device's value exposes the profile's,
                     // which is the value still owed to it.
@@ -795,6 +809,7 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
                     scope: write.scope,
                     clearsDeviceValue: write.clearsDeviceValue,
                     onlyWhereProfileScoped: write.onlyWhereProfileScoped,
+                    fallbackDeviceValue: write.fallbackDeviceValue,
                     owedProfileValue: write.owedProfileValue,
                     scopeIdentifier: write.scopeIdentifier,
                     profileId: write.profileId
@@ -866,10 +881,18 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
     /// ``PendingSettingWrite/onlyWhereProfileScoped``.
     func enqueueDelete(_ key: SettingKey, onlyWhereProfileScoped: Bool = false) {
         schedule(key) { existing, draining, scopeIdentifier, profileId in
+            // A device edit this clear replaces is kept for a server where
+            // the clear does not apply, or it would be lost there.
+            let replaced = existing ?? draining
+            var fallback = replaced?.fallbackDeviceValue
+            if replaced?.scope == .profileDevice, case .set(let value) = replaced?.operation {
+                fallback = value
+            }
             let next = PendingSettingWrite(
                 operation: .delete,
                 scope: .profileDevice,
                 onlyWhereProfileScoped: onlyWhereProfileScoped,
+                fallbackDeviceValue: fallback,
                 owedProfileValue: Self.owedProfileValue(existing ?? draining),
                 scopeIdentifier: scopeIdentifier,
                 profileId: profileId
@@ -1261,7 +1284,16 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
                         return .retryOnNextTrigger
                     }
                     guard revision >= required else {
-                        // The device value is the only one this server keeps.
+                        // The device value is the only one this server keeps;
+                        // an edit the clear replaced still goes to it.
+                        if let fallback = write.fallbackDeviceValue {
+                            try await transport.putValue(
+                                key: key,
+                                scope: .profileDevice,
+                                value: key.wireValue(fallback, forServerRevision: revision),
+                                profileId: write.profileId
+                            )
+                        }
                         return .settled
                     }
                 }
