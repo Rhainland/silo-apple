@@ -780,12 +780,14 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
         clearingDeviceValue: Bool = false
     ) {
         schedule(key) { existing, draining, scopeIdentifier, profileId in
-            // A queued clear of this device's value is owed too: a profile
-            // edit right after turning the device override off must not
-            // replace the clear and leave the device value in place.
+            // A clear of this device's value, queued or being sent, is owed
+            // too: a profile edit right after turning the device override off
+            // must not replace the clear, or settle while a failed clear is
+            // dropped, and leave the device value in place.
             let owedClear = [existing, draining].contains {
-                $0?.scope == .profile && $0?.clearsDeviceValue == true
-            } || (existing?.operation == .delete && existing?.scope == .profileDevice)
+                ($0?.scope == .profile && $0?.clearsDeviceValue == true)
+                    || ($0?.operation == .delete && $0?.scope == .profileDevice)
+            }
             let next = PendingSettingWrite(
                 operation: .set(value),
                 scope: scope,

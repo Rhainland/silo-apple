@@ -1098,10 +1098,14 @@ final class PlayerSettings {
 
     /// Queue the profile's value for `key`. A value this device holds for the
     /// key would keep hiding it here, so that is deleted in the same write.
+    ///
+    /// Always, not only when ``deviceOverriddenKeys`` lists the key: that set
+    /// is only as fresh as the last refresh, and an edit made before one (an
+    /// offline launch, a reinstall) cannot see a device value already on the
+    /// server. The flusher treats "no device value" as success.
     private func enqueueProfileValue(_ key: SettingKey, value: SettingJSONValue) {
-        let clearsDeviceValue = deviceOverriddenKeys.contains(key)
         deviceOverriddenKeys.remove(key)
-        flusher.enqueue(key, value: value, scope: .profile, clearingDeviceValue: clearsDeviceValue)
+        flusher.enqueue(key, value: value, scope: .profile, clearingDeviceValue: true)
     }
 
     /// Queue clearing this device's own value for `key`, so it inherits again.

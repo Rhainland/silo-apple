@@ -39,7 +39,12 @@ final class SubtitleDisplayScopeTests: XCTestCase {
         let write = try XCTUnwrap(harness.transport.writesByKey()[.playbackSubtitleAppearance])
         XCTAssertEqual(write.scope, .profile)
         XCTAssertEqual(write.value, try SettingJSONValue.encoding(appearance.sanitized()))
-        XCTAssertTrue(harness.transport.deletes().isEmpty, "no device value to clear")
+        // Sent even with no device value known: the flusher treats "nothing
+        // to delete" as success.
+        XCTAssertEqual(
+            harness.transport.scopedDeletes(),
+            [.init(key: .playbackSubtitleAppearance, scope: .profileDevice)]
+        )
         XCTAssertFalse(harness.settings.subtitleUsesDeviceAppearanceOverride)
         XCTAssertEqual(harness.settings.effectiveSubtitleAppearance.fontSize, .xlarge)
 
@@ -177,7 +182,7 @@ final class SubtitleDisplayScopeTests: XCTestCase {
             harness.transport.writes(),
             [.init(key: .playerSubtitleSyncMs, value: .int(-500), profileId: nil, scope: .profile)]
         )
-        XCTAssertTrue(harness.transport.deletes().isEmpty)
+        XCTAssertEqual(harness.transport.scopedDeletes(), [.init(key: .playerSubtitleSyncMs, scope: .profileDevice)])
     }
 
     func testASubtitleOffsetStaysOnThisDeviceWhileTheDeviceKeepsItsOwn() async throws {
@@ -261,6 +266,9 @@ final class SubtitleDisplayScopeTests: XCTestCase {
         await harness.settings.refreshFromServer()
 
         XCTAssertEqual(harness.transport.writesByKey()[.playerSubtitleSyncMs]?.scope, .profile)
+        // No refresh had shown a device offset, but one may be on the server
+        // already, and it would keep hiding the profile offset here.
+        XCTAssertEqual(harness.transport.scopedDeletes(), [.init(key: .playerSubtitleSyncMs, scope: .profileDevice)])
     }
 
     // MARK: - Queue
@@ -295,6 +303,33 @@ final class SubtitleDisplayScopeTests: XCTestCase {
         XCTAssertEqual(
             transport.scopedDeletes(),
             [.init(key: .playbackSubtitleAppearance, scope: .profileDevice)]
+        )
+    }
+
+    /// Turning the override off starts a clear; a profile edit made while it
+    /// is being sent must still clear the device value if that send fails.
+    func testAProfileWriteQueuedDuringAFailingDeviceClearStillClears() async throws {
+        let transport = FakeSettingsTransport()
+        let flusher = PlayerSettingsFlusher(transport: transport, debounce: .seconds(30))
+        _ = try await flusher.effectiveValues(keys: [])
+        transport.failNextDeletes(1, with: .transport(description: "offline"))
+        transport.onDelete = { [weak flusher] _ in
+            transport.onDelete = nil
+            flusher?.enqueue(.playbackSubtitleAppearance, value: ["fontSize": "large"], scope: .profile)
+        }
+
+        flusher.enqueueDelete(.playbackSubtitleAppearance)
+        await flusher.flushNow()
+
+        XCTAssertFalse(flusher.hasPendingWrites)
+        XCTAssertEqual(transport.writes().map(\.scope), [.profile])
+        XCTAssertEqual(
+            transport.scopedDeletes(),
+            [
+                .init(key: .playbackSubtitleAppearance, scope: .profileDevice),
+                .init(key: .playbackSubtitleAppearance, scope: .profileDevice),
+            ],
+            "the failed clear is sent again with the profile write"
         )
     }
 

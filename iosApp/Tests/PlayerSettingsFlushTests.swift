@@ -2436,6 +2436,8 @@ final class FakeSettingsTransport: PlayerSettingsTransport, @unchecked Sendable 
     /// Invoked as each write is attempted, before its outcome is decided —
     /// the seam a test uses to enqueue a newer value mid-drain.
     var onWrite: ((Write) -> Void)?
+    /// Invoked as each delete is attempted, before its outcome is decided.
+    var onDelete: ((Delete) -> Void)?
     let writeGate = SettingsWriteGate()
 
     private let lock = NSLock()
@@ -2557,11 +2559,13 @@ final class FakeSettingsTransport: PlayerSettingsTransport, @unchecked Sendable 
         await writeGate.waitIfBlocked()
         try failIfCancelled()
         lock.lock()
-        recordedDeletes.append(Delete(key: key, scope: scope))
+        let delete = Delete(key: key, scope: scope)
+        recordedDeletes.append(delete)
         let shouldFail = deleteFailures > 0
         if shouldFail { deleteFailures -= 1 }
         let error = deleteError
         lock.unlock()
+        onDelete?(delete)
         if shouldFail { throw error }
     }
 
