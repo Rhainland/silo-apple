@@ -333,6 +333,36 @@ final class SubtitleDisplayScopeTests: XCTestCase {
         )
     }
 
+    /// The device clear is a second request. A profile switch while the
+    /// profile value is sent must not send it for the new profile; the
+    /// original profile's journal keeps the write and replays it.
+    func testAProfileSwitchDuringAProfileWriteLeavesTheDeviceClearToItsOwnProfile() async throws {
+        let suiteName = "settings-journal-clear-switch-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { UserDefaults().removePersistentDomain(forName: suiteName) }
+        let firstScope = "server-a|profile-1|device"
+        let scope = LockedScopeValue(firstScope)
+        let journal = UserDefaultsSettingsWriteJournal(defaults: defaults, scopeProvider: { scope.value })
+        let transport = FakeSettingsTransport()
+        let flusher = PlayerSettingsFlusher(transport: transport, debounce: .seconds(30), journal: journal)
+        _ = try await flusher.effectiveValues(keys: [])
+        transport.onWrite = { _ in
+            transport.onWrite = nil
+            scope.value = "server-a|profile-2|device"
+        }
+
+        flusher.enqueue(.playbackSubtitleAppearance, value: ["fontSize": "large"], scope: .profile, clearingDeviceValue: true)
+        await flusher.flushNow()
+        XCTAssertTrue(transport.deletes().isEmpty, "not sent under the new profile")
+
+        scope.value = firstScope
+        flusher.restorePendingWrites()
+        await flusher.flushNow()
+        XCTAssertEqual(transport.writes().map(\.scope), [.profile, .profile])
+        XCTAssertEqual(transport.scopedDeletes(), [.init(key: .playbackSubtitleAppearance, scope: .profileDevice)])
+        XCTAssertTrue(journal.load().isEmpty)
+    }
+
     /// A failed clear retries the whole write rather than dropping the clear.
     func testAFailedDeviceClearIsRetried() async throws {
         let transport = FakeSettingsTransport()

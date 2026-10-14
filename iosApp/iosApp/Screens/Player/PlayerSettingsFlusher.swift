@@ -1146,6 +1146,13 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
                     profileId: write.profileId
                 )
                 if clearsDeviceValue {
+                    // A second request: the profile may have changed while the
+                    // first was sent. The original partition's journal still
+                    // holds this whole write, and replays it there.
+                    if let journal, write.scopeIdentifier != journal.scopeIdentifier {
+                        log(key, "settings scope changed before the device clear; owed by the original scope's journal", kept: true)
+                        return .leftInOriginalJournal
+                    }
                     do {
                         try await transport.deleteValue(
                             key: key,
