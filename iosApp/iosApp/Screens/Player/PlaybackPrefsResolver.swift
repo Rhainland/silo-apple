@@ -111,7 +111,17 @@ struct SubtitleAutoResolver {
             // audio that will play still covers foreign-language lines, as
             // the settings copy promises and as web and Android do. Nothing
             // when the audio language is unknown or no forced track matches.
-            // An explicit in-session Off never reaches this resolver.
+            //
+            // Reached by every automatic start: the start request's intent
+            // (`initialProtocolV3SubtitleIntent`) when the load carries no
+            // subtitle index, which covers detail-page Play with the server
+            // mode Off, next episode, Up Next and on-deck starts; the
+            // post-load pass (`applyAutoSubtitlePreferencesIfNeeded`) until
+            // the viewer picks a track; and the detail page's Auto preview.
+            // Not reached for an Off the viewer chose: an Off tap in the
+            // player sets the playback's explicit choice and carries `-1`
+            // into its reloads, and an Off picked in the detail page's
+            // selector on this visit launches with `-1`.
             guard inputs.showForced,
                   let audio = inputs.currentAudioLanguage, !audio.isEmpty,
                   let forced = bestLanguageMatch(

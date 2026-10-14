@@ -9,14 +9,95 @@ final class DetailVersionSelectionTests: XCTestCase {
             version: nil,
             signature: nil,
             mode: SubtitleMode.off.rawValue,
+            showForced: false,
             usesDeviceSettings: true
         ))
         XCTAssertEqual(DetailPlaybackFormatting.launchPreferredSubtitleIndex(
             version: nil,
             signature: nil,
             mode: SubtitleMode.off.rawValue,
+            showForced: false,
             usesDeviceSettings: false
         ), -1)
+    }
+
+    /// Server mode Off (profile or series) with show forced on is not an
+    /// explicit Off: Play from the detail page lets the resolver start on the
+    /// forced track in the audio language, like every other entry path. A
+    /// stored signature does not turn dialogue subtitles back on.
+    func testServerOffWithShowForcedLaunchesWithoutAnExplicitOff() {
+        let version = subtitleVersion()
+        let fullEnglish = SubtitleTrackSignature(language: "eng", forced: false)
+        for signature in [nil, fullEnglish] {
+            XCTAssertNil(DetailPlaybackFormatting.launchPreferredSubtitleIndex(
+                version: version,
+                signature: signature,
+                mode: SubtitleMode.off.rawValue,
+                showForced: true,
+                usesDeviceSettings: false
+            ))
+            XCTAssertEqual(DetailPlaybackFormatting.launchPreferredSubtitleIndex(
+                version: version,
+                signature: signature,
+                mode: SubtitleMode.off.rawValue,
+                showForced: false,
+                usesDeviceSettings: false
+            ), -1)
+        }
+        // Outside Off a stored signature still seeds its track.
+        XCTAssertEqual(DetailPlaybackFormatting.launchPreferredSubtitleIndex(
+            version: version,
+            signature: fullEnglish,
+            mode: SubtitleMode.auto.rawValue,
+            showForced: true,
+            usesDeviceSettings: false
+        ), 2)
+    }
+
+    /// The Auto preview names the track that launch then starts on.
+    func testAutoPreviewForServerOffWithShowForcedNamesTheForcedTrack() {
+        let label = DetailPlaybackFormatting.subtitleValueLabel(
+            version: subtitleVersion(),
+            selectedSubtitleTrackIndex: nil,
+            autoContext: .init(
+                preferredLanguage: "en",
+                mode: SubtitleMode.off.rawValue,
+                signature: nil,
+                audioLanguage: "eng",
+                showForced: true
+            )
+        )
+        XCTAssertTrue(label.hasPrefix("Auto: "), label)
+        XCTAssertTrue(label.localizedCaseInsensitiveContains("forced"), label)
+
+        let offLabel = DetailPlaybackFormatting.subtitleValueLabel(
+            version: subtitleVersion(),
+            selectedSubtitleTrackIndex: nil,
+            autoContext: .init(
+                preferredLanguage: "en",
+                mode: SubtitleMode.off.rawValue,
+                signature: nil,
+                audioLanguage: "eng",
+                showForced: false
+            )
+        )
+        XCTAssertEqual(offLabel, "Auto: Off")
+    }
+
+    private func subtitleVersion() -> FileVersion {
+        func subtitle(_ index: Int, _ language: String, forced: Bool = false) -> SubtitleTrack {
+            SubtitleTrack(
+                index: index, codec: "subrip", language: language, title: nil, embeddedTitle: nil,
+                forced: forced, hearingImpaired: false, isDefault: false, external: false, externalPath: nil
+            )
+        }
+        return FileVersion(
+            fileId: 7, fileName: "e1.mkv", resolution: "1280x720", codecVideo: "h264", codecAudio: "aac",
+            hdr: false, container: "mkv", fileSize: 1_000, duration: 60, bitrate: 1_000_000,
+            videoTracks: nil, audioTracks: nil,
+            subtitleTracks: [subtitle(2, "eng"), subtitle(3, "spa"), subtitle(4, "eng", forced: true)],
+            chapters: nil
+        )
     }
 
     func testAutoDisplayPrefersBestVersionOverFirstReturnedVersion() {

@@ -244,18 +244,26 @@ enum DetailPlaybackFormatting {
     /// version's track list. Returns the ffmpeg stream index to
     /// pre-select, `-1` for "Off", or nil when nothing points at a
     /// track in this file ("Auto" — the player's resolver decides).
+    ///
+    /// A server mode of "off" (the profile's, or a series Off) with "show
+    /// forced subtitles" on is not an explicit Off: playback starts on the
+    /// forced track in the audio language, as it does on every other entry
+    /// path and on web and Android. So it returns nil and lets the player's
+    /// resolver pick that track. The mode wins over a stored signature, as it
+    /// does in the resolver.
     static func serverPreferredSubtitleIndex(
         version: FileVersion?,
         signature: SubtitleTrackSignature?,
-        mode: String?
+        mode: String?,
+        showForced: Bool
     ) -> Int? {
+        if SubtitleMode(rawValue: mode ?? "") == .off {
+            return showForced ? nil : -1
+        }
         if let signature,
            let tracks = version?.subtitleTracks,
            let match = bestSignatureMatch(signature, in: tracks) {
             return match.selectionIndex
-        }
-        if SubtitleMode(rawValue: mode ?? "") == .off {
-            return -1
         }
         return nil
     }
@@ -268,13 +276,15 @@ enum DetailPlaybackFormatting {
         version: FileVersion?,
         signature: SubtitleTrackSignature?,
         mode: String?,
+        showForced: Bool,
         usesDeviceSettings: Bool
     ) -> Int? {
         guard !usesDeviceSettings else { return nil }
         return serverPreferredSubtitleIndex(
             version: version,
             signature: signature,
-            mode: mode
+            mode: mode,
+            showForced: showForced
         )
     }
 
