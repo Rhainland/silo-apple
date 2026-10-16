@@ -341,7 +341,7 @@ final class SubtitleDisplayScopeTests: XCTestCase {
     }
 
     /// A failed clear retried after a relaunch waits for the server's
-    /// revision, and a server rolled back below revision 18 keeps the offset.
+    /// revision, and a server rolled back below revision 19 keeps the offset.
     func testALeftoverOffsetClearRetriedAfterARelaunchSparesAnOlderServer() async throws {
         let harness = try PlayerSettingsHarness()
         let journal = InMemoryWriteJournal()

@@ -936,7 +936,7 @@ final class PlayerSettings {
 
     /// Saved like the appearance: for the profile, unless this device keeps
     /// its own subtitle display settings. A server older than manifest
-    /// revision 18 only stores the offset per device, so there it stays a
+    /// revision 19 only stores the offset per device, so there it stays a
     /// device value; while the revision is unknown the flusher decides at send
     /// time.
     func setSubtitleSyncMs(_ milliseconds: Int) {
@@ -1038,7 +1038,7 @@ final class PlayerSettings {
     /// the screen said the profile's applied. A device that keeps its own
     /// subtitle settings (the override is on) keeps its offset.
     ///
-    /// Decided only from a read of a revision 18 or later server for this
+    /// Decided only from a read of a revision 19 or later server for this
     /// scope. The clear goes through the journal like any other, so a failed
     /// request is retried, and a newer offset edit replaces it. Returns true
     /// when the clear reached the server.
@@ -1069,7 +1069,7 @@ final class PlayerSettings {
         }
         // Gated on the revision when sent, like the override switch's clear:
         // a retry after a relaunch must not delete the only offset a server
-        // rolled back below revision 18 keeps.
+        // rolled back below revision 19 keeps.
         deviceOverriddenKeys.remove(.subtitleSyncMs)
         flusher.enqueueDelete(.subtitleSyncMs, onlyWhereProfileScoped: true)
         await flushPendingDeviceSettings()
