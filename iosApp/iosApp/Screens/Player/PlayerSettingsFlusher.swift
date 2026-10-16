@@ -134,6 +134,12 @@ struct PendingSettingWrite: Equatable, Codable {
     /// drop that edit from the profile. Sent at `profile` scope first.
     let owedProfileValue: SettingJSONValue?
 
+    /// For a clear of this device's value left over from a profile write: the
+    /// profile value that write stored, which the clear exposes once it lands.
+    /// Painted over a refresh meanwhile, never sent, and not part of the
+    /// desired state.
+    let storedProfileValue: SettingJSONValue?
+
     /// The (server, profile, device) identity this operation belongs to.
     /// Nil is retained for in-memory/test journals with no scoped identity;
     /// the production journal binds older encoded entries to the scope whose
@@ -161,6 +167,7 @@ struct PendingSettingWrite: Equatable, Codable {
         onlyWhereProfileScoped: Bool = false,
         fallbackDeviceValue: SettingJSONValue? = nil,
         owedProfileValue: SettingJSONValue? = nil,
+        storedProfileValue: SettingJSONValue? = nil,
         scopeIdentifier: String? = nil,
         profileId: String? = nil,
         failedAttempts: Int = 0,
@@ -172,6 +179,7 @@ struct PendingSettingWrite: Equatable, Codable {
         self.onlyWhereProfileScoped = scope == .profileDevice && operation == .delete && onlyWhereProfileScoped
         self.fallbackDeviceValue = self.onlyWhereProfileScoped ? fallbackDeviceValue : nil
         self.owedProfileValue = scope == .profileDevice ? owedProfileValue : nil
+        self.storedProfileValue = scope == .profileDevice && operation == .delete ? storedProfileValue : nil
         self.scopeIdentifier = scopeIdentifier
         self.profileId = profileId
         self.failedAttempts = failedAttempts
@@ -179,7 +187,8 @@ struct PendingSettingWrite: Equatable, Codable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case operation, scope, clearsDeviceValue, onlyWhereProfileScoped, fallbackDeviceValue, owedProfileValue, scopeIdentifier, profileId, failedAttempts, isHeld
+        case operation, scope, clearsDeviceValue, onlyWhereProfileScoped, fallbackDeviceValue, owedProfileValue, storedProfileValue
+        case scopeIdentifier, profileId, failedAttempts, isHeld
     }
 
     init(from decoder: Decoder) throws {
@@ -190,6 +199,7 @@ struct PendingSettingWrite: Equatable, Codable {
         onlyWhereProfileScoped = try container.decodeIfPresent(Bool.self, forKey: .onlyWhereProfileScoped) ?? false
         fallbackDeviceValue = try container.decodeIfPresent(SettingJSONValue.self, forKey: .fallbackDeviceValue)
         owedProfileValue = try container.decodeIfPresent(SettingJSONValue.self, forKey: .owedProfileValue)
+        storedProfileValue = try container.decodeIfPresent(SettingJSONValue.self, forKey: .storedProfileValue)
         scopeIdentifier = try container.decodeIfPresent(String.self, forKey: .scopeIdentifier)
         profileId = try container.decodeIfPresent(String.self, forKey: .profileId)
         failedAttempts = try container.decodeIfPresent(Int.self, forKey: .failedAttempts) ?? 0
@@ -213,6 +223,7 @@ struct PendingSettingWrite: Equatable, Codable {
             clearsDeviceValue: clearsDeviceValue,
             onlyWhereProfileScoped: onlyWhereProfileScoped,
             fallbackDeviceValue: fallbackDeviceValue,
+            storedProfileValue: storedProfileValue,
             scopeIdentifier: scopeIdentifier,
             profileId: profileId,
             failedAttempts: failedAttempts,
@@ -221,11 +232,12 @@ struct PendingSettingWrite: Equatable, Codable {
     }
 
     /// What a profile write that clears this device's value still owes once
-    /// the profile value is stored: the clear alone.
-    func remainingDeviceClear() -> PendingSettingWrite {
+    /// it stored `profileValue`: the clear alone.
+    func remainingDeviceClear(exposing profileValue: SettingJSONValue) -> PendingSettingWrite {
         PendingSettingWrite(
             operation: .delete,
             scope: .profileDevice,
+            storedProfileValue: profileValue,
             scopeIdentifier: scopeIdentifier,
             profileId: profileId,
             failedAttempts: failedAttempts,
@@ -242,6 +254,7 @@ struct PendingSettingWrite: Equatable, Codable {
             onlyWhereProfileScoped: onlyWhereProfileScoped,
             fallbackDeviceValue: fallbackDeviceValue,
             owedProfileValue: owedProfileValue,
+            storedProfileValue: storedProfileValue,
             scopeIdentifier: self.scopeIdentifier ?? scopeIdentifier,
             profileId: self.profileId ?? profileId,
             failedAttempts: failedAttempts,
@@ -814,6 +827,9 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
                           !key.acceptsProfileScope(atRevision: manifestRevision) {
                     // This server keeps the device edit rather than the clear.
                     values[key] = (fallback, .profileDevice)
+                } else if let stored = write.storedProfileValue {
+                    // The clear exposes the profile value already stored.
+                    values[key] = (stored, .profile)
                 } else if let owed = write.owedProfileValue, reachesProfile(key) {
                     // Clearing this device's value exposes the profile's,
                     // which is the value still owed to it.
@@ -1403,7 +1419,7 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
                 if scope == .profile {
                     // With a clear to follow, from here the clear is the only
                     // part owed.
-                    let remainder = clearsDeviceValue ? write.remainingDeviceClear() : nil
+                    let remainder = clearsDeviceValue ? write.remainingDeviceClear(exposing: value) : nil
                     acknowledgeProfileValue(key, value, of: &write, leaving: remainder)
                 }
                 if clearsDeviceValue {

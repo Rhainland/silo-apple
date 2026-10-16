@@ -329,6 +329,25 @@ final class SubtitleDisplayScopeTests: XCTestCase {
         XCTAssertEqual(harness.transport.scopedDeletes(), [.init(key: .playerSubtitleSyncMs, scope: .profileDevice)])
     }
 
+    /// The profile offset is stored but the clear of the older device offset
+    /// keeps failing. A refresh meanwhile still answers with the device
+    /// offset; the offset just saved stays in effect here.
+    func testAStoredProfileOffsetStaysInEffectWhileTheDeviceClearIsOwed() async throws {
+        let harness = try PlayerSettingsHarness()
+        await harness.settings.refreshFromServer()
+        harness.transport.reset()
+        harness.transport.failNextDeletes(100, with: .transport(description: "offline"))
+
+        harness.settings.setSubtitleSyncMs(-500)
+        await harness.settings.flushPendingDeviceSettings()
+        harness.transport.effective = [syncRow(400, at: .profileDevice)]
+        await harness.settings.refreshFromServer()
+
+        XCTAssertEqual(harness.transport.writes().map(\.scope), [.profile])
+        XCTAssertEqual(harness.settings.subtitleSyncMs, -500)
+        XCTAssertFalse(harness.settings.deviceOverriddenKeys.contains(.playerSubtitleSyncMs))
+    }
+
     func testASubtitleOffsetStaysOnThisDeviceWhileTheDeviceKeepsItsOwn() async throws {
         let harness = try PlayerSettingsHarness()
         harness.transport.effective = [appearanceRow(["fontSize": "small"], at: .profileDevice)]
