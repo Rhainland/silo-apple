@@ -420,7 +420,7 @@ final class SettingsConformanceTests: XCTestCase {
                 key.rawValue
             )
         }
-        XCTAssertEqual(SettingKey.playerSubtitleSyncMs.profileScopeRevision, 18)
+        XCTAssertEqual(SettingKey.playerSubtitleSyncMs.profileScopeRevision, 19)
     }
 
     /// A batch read fails as a whole when one of its keys is newer than the

@@ -55,6 +55,8 @@ extension SettingKey {
             return 16
         case .catalogHideUnwatchedEpisodeImages, .catalogHideUnwatchedEpisodeOverviews:
             return 17
+        case .uiNextUpNewReleasesFirst:
+            return 18
         case .catalogMetadataLanguage, .downloadsDefaultQuality, .downloadsKeepWatched,
              .downloadsWifiOnly, .navShowAudiobooks, .playbackAudioLanguage,
              .playbackAutoPlayNext, .playbackAutoPlayNextPreview, .playbackAutoSkipCredits,
@@ -86,7 +88,7 @@ extension SettingKey {
 
     /// The manifest revision that let `player.subtitle_sync_ms` be stored at
     /// `profile` scope. Older servers only accept `profile_device` for it.
-    static let subtitleSyncProfileScopeRevision = 18
+    static let subtitleSyncProfileScopeRevision = 19
 
     /// The manifest revision from which the server accepts this key at
     /// `profile` scope, for a key that gained that scope after it was
