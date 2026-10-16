@@ -8981,7 +8981,7 @@ class PlayerViewModel {
             preferredLanguage: watchDetail.effectiveSubtitleLanguage,
             additionalPreferredLanguages: [],
             mode: SubtitleMode(rawValue: watchDetail.effectiveSubtitleMode ?? ""),
-            showForced: watchDetail.effectiveShowForcedSubtitles ?? false,
+            showForced: watchDetail.showsForcedSubtitles,
             forcedOnly: false,
             preferAccessibilityTracks: false,
             disableWhenNoLanguageMatch: false,

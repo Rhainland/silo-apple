@@ -1026,7 +1026,7 @@ private struct ItemDetailPhoneContent: View {
             version: effectiveVersion(for: detail, versionFileId: preferredVersionFileId),
             signature: detail.effectiveSubtitleTrackSignature,
             mode: detail.effectiveSubtitleMode,
-            showForced: detail.effectiveShowForcedSubtitles ?? false,
+            showForced: detail.showsForcedSubtitles,
             usesDeviceSettings: PlayerSettings.shared.subtitleMatchesSystemAppearance
         )
     }
@@ -1182,7 +1182,7 @@ private struct ItemDetailPhoneContent: View {
             version: effectiveVersion(for: watchDetail, versionFileId: nil),
             signature: watchDetail.effectiveSubtitleTrackSignature,
             mode: watchDetail.effectiveSubtitleMode,
-            showForced: watchDetail.effectiveShowForcedSubtitles ?? false,
+            showForced: watchDetail.showsForcedSubtitles,
             usesDeviceSettings: PlayerSettings.shared.subtitleMatchesSystemAppearance
         )
     }

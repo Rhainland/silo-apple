@@ -724,7 +724,7 @@ struct TVItemDetailView: View {
             version: effectiveVersion(for: detail, versionFileId: preferredVersionFileId),
             signature: detail.effectiveSubtitleTrackSignature,
             mode: detail.effectiveSubtitleMode,
-            showForced: detail.effectiveShowForcedSubtitles ?? false,
+            showForced: detail.showsForcedSubtitles,
             usesDeviceSettings: PlayerSettings.shared.subtitleMatchesSystemAppearance
         )
     }
@@ -814,7 +814,7 @@ struct TVItemDetailView: View {
                 version: effectiveVersion(for: usableCached, versionFileId: nil),
                 signature: usableCached.effectiveSubtitleTrackSignature,
                 mode: usableCached.effectiveSubtitleMode,
-                showForced: usableCached.effectiveShowForcedSubtitles ?? false,
+                showForced: usableCached.showsForcedSubtitles,
                 usesDeviceSettings: PlayerSettings.shared.subtitleMatchesSystemAppearance
             )
         }
@@ -851,7 +851,7 @@ struct TVItemDetailView: View {
                     version: effectiveVersion(for: resolved, versionFileId: nil),
                     signature: resolved.effectiveSubtitleTrackSignature,
                     mode: resolved.effectiveSubtitleMode,
-                    showForced: resolved.effectiveShowForcedSubtitles ?? false,
+                    showForced: resolved.showsForcedSubtitles,
                     usesDeviceSettings: PlayerSettings.shared.subtitleMatchesSystemAppearance
                 )
             }

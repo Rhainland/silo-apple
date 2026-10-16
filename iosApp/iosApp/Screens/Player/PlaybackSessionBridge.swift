@@ -890,7 +890,7 @@ actor PlaybackSessionBridge {
                 ? SubtitleMode(rawValue: watchDetail.effectiveSubtitleMode ?? "")
                 : initialSubtitlePreferences?.mode,
             showForced: initialSubtitlePreferences?.showForced
-                ?? (watchDetail.effectiveShowForcedSubtitles ?? false),
+                ?? watchDetail.showsForcedSubtitles,
             forcedOnly: initialSubtitlePreferences?.forcedOnly ?? false,
             preferAccessibilityTracks: initialSubtitlePreferences?.preferAccessibilityTracks ?? false,
             disableWhenNoLanguageMatch: initialSubtitlePreferences?.disableWhenNoLanguageMatch ?? false,
