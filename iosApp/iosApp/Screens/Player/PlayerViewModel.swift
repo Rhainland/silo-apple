@@ -2489,6 +2489,9 @@ class PlayerViewModel {
                     self.localProtocolV3SubtitleSelection = nil
                 }
                 self.adoptProtocolV3RenewalIntent(from: prepared)
+                if classification == "audio_track_changed" {
+                    self.reopenAutoSubtitlePolicyForAudioChange()
+                }
                 switch Self.protocolV3SidecarRestoreIntent(
                     snapshot: selectedSubtitleSnapshot,
                     selectedSubtitleIndex: prepared.protocolV3?.plan.selectedTracks.subtitle?.index,
@@ -6851,7 +6854,21 @@ class PlayerViewModel {
         persistAudioSelection(track)
         reapplySystemSubtitlePolicy()
         applyAudioTrackSelection(track.trackId, reason: "user_selection")
+        reopenAutoSubtitlePolicyForAudioChange()
+        applyAutoSubtitlePreferencesIfNeeded()
         scheduleHideControls()
+    }
+
+    /// The server-preference subtitle pick depends on the audio language:
+    /// Auto hides subtitles for audio already in the subtitle language, and
+    /// Off shows the forced track for it. After an audio switch the automatic
+    /// pass runs again with the new audio, unless the viewer picked a
+    /// subtitle. On the V3 path this runs when the audio replan commits, so
+    /// the pass sees the new plan. System-caption mode re-runs through
+    /// `reapplySystemSubtitlePolicy` instead.
+    private func reopenAutoSubtitlePolicyForAudioChange() {
+        guard !settings.subtitleMatchesSystemAppearance, !hasExplicitSubtitleChoice else { return }
+        prefsResolvedForCurrentItem = false
     }
 
     /// Subtitle selection state a user pick changes optimistically, so the
