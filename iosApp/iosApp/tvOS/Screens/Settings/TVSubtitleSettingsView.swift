@@ -130,7 +130,10 @@ struct TVSubtitleSettingsPane: View {
         }
         .disabled(viewModel.subtitleMatchesSystemAppearance)
 
-        TVSettingsNestedGroup(enabled: appearanceEditable) {
+        TVSettingsNestedGroup(
+            enabled: appearanceEditable,
+            disabledHint: "Turn off Use Device Settings to make changes"
+        ) {
             pickerRow("Font Size", options: TVSettingsOptions.subtitleSize,
                       selection: viewModel.subtitleAppearance.fontSize.rawValue, kind: .fontSize)
             pickerRow("Font Family", options: TVSettingsOptions.fontFamily,
