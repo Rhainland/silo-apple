@@ -54,7 +54,18 @@ enum ProtocolV3SubtitleSelection: Equatable {
         guard plan.subtitle.mode != PlaybackProtocolV3.SubtitleMode.burnIn else { return false }
         if self == .off { return true }
         guard let item = inventoryItem(in: plan) else { return false }
-        return isMounted || (item.delivery == "sidecar"
+        if isMounted { return true }
+        // A transcode carries an embedded text track inside its own stream
+        // (`hls_subtitle_renditions_v1`). Mounting the inventory sidecar
+        // instead would demux the whole source file before the first cue, so
+        // the pick goes to the server; a server that cannot emit the rendition
+        // answers with a sidecar plan on the same transport.
+        if plan.delivery == PlaybackProtocolV3.PlanDelivery.transcodeHLS,
+           item.source == "embedded",
+           !SubtitleCodecClassifier.isBitmap(item.codec) {
+            return false
+        }
+        return (item.delivery == "sidecar"
             && item.url?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false)
     }
 }

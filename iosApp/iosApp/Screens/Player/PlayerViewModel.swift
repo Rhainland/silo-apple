@@ -9106,6 +9106,9 @@ class PlayerViewModel {
     private func canRenderAsSecondarySubtitle(_ track: PlayerTrack) -> Bool {
         guard let plan = activePreparedProtocolV3?.plan else { return true }
         if SubtitleTrackIdSpace.isAILive(track.trackId) { return false }
+        // AVPlayer draws the stream's rendition itself; the overlay that
+        // renders secondary subtitles never receives its cues.
+        if aetherPlaybackController.isHLSSubtitleRendition(appTrackID: track.trackId) { return false }
         if let selection = ProtocolV3SubtitleSelection(track: track, plan: plan),
            let streamIndex = selection.embeddedStreamIndex(for: track, in: plan),
            let codec = track.codec,
