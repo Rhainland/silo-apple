@@ -340,6 +340,55 @@ final class SubtitleDisplayScopeTests: XCTestCase {
         XCTAssertEqual(harness.settings.subtitleSyncMs, 300)
     }
 
+    /// A failed clear retried after a relaunch waits for the server's
+    /// revision, and a server rolled back below revision 18 keeps the offset.
+    func testALeftoverOffsetClearRetriedAfterARelaunchSparesAnOlderServer() async throws {
+        let harness = try PlayerSettingsHarness()
+        let journal = InMemoryWriteJournal()
+        let first = FakeSettingsTransport()
+        first.effective = [syncRow(400, at: .profileDevice)]
+        first.failNextDeletes(1, with: .transport(description: "offline"))
+        let settings = PlayerSettings(
+            defaults: harness.defaults,
+            flusher: PlayerSettingsFlusher(transport: first, debounce: .milliseconds(10), journal: journal)
+        )
+        await settings.refreshFromServer()
+        XCTAssertEqual(first.deletes(), [.playerSubtitleSyncMs])
+
+        let relaunch = FakeSettingsTransport()
+        relaunch.revision = SettingKey.subtitleSyncProfileScopeRevision - 1
+        relaunch.effective = [syncRow(400, at: .profileDevice)]
+        let relaunched = PlayerSettings(
+            defaults: harness.defaults,
+            flusher: PlayerSettingsFlusher(transport: relaunch, debounce: .milliseconds(10), journal: journal)
+        )
+        await relaunched.refreshFromServer()
+        XCTAssertTrue(relaunch.deletes().isEmpty)
+        XCTAssertEqual(relaunched.subtitleSyncMs, 400)
+    }
+
+    /// An older build's device offset still owed when a current server is
+    /// first read lands later; the one-time clear waits for it.
+    func testALeftoverOffsetStillOwedIsClearedOnceItLands() async throws {
+        let harness = try PlayerSettingsHarness()
+        let journal = InMemoryWriteJournal()
+        journal.stored = [
+            .playerSubtitleSyncMs: PendingSettingWrite(operation: .set(.int(400)), scope: .profileDevice),
+        ]
+        let transport = FakeSettingsTransport()
+        transport.failNextWrites(1, with: .transport(description: "offline"))
+        transport.effective = [syncRow(400, at: .profileDevice)]
+        let settings = PlayerSettings(
+            defaults: harness.defaults,
+            flusher: PlayerSettingsFlusher(transport: transport, debounce: .milliseconds(10), journal: journal)
+        )
+        await settings.refreshFromServer()
+        XCTAssertTrue(transport.deletes().isEmpty)
+
+        await settings.refreshFromServer()
+        XCTAssertEqual(transport.scopedDeletes(), [.init(key: .playerSubtitleSyncMs, scope: .profileDevice)])
+    }
+
     func testALeftoverDeviceOffsetIsClearedAndRepaintedInOneRefresh() async throws {
         let harness = try PlayerSettingsHarness()
         harness.transport.effective = [syncRow(400, at: .profileDevice)]

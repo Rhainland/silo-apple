@@ -1057,13 +1057,21 @@ final class PlayerSettings {
         if let currentScope = Self.currentScopeIdentifier, !isMigrationComplete(for: currentScope) {
             return false
         }
-        defaults.set(true, forKey: doneKey)
-        guard !subtitleUsesDeviceAppearanceOverride,
-              deviceOverriddenKeys.contains(.subtitleSyncMs),
-              !flusher.unsettledKeys.contains(.subtitleSyncMs) else {
+        // A timing write still owed can be an older build's device offset
+        // that lands later; decide once it has settled.
+        guard !flusher.unsettledKeys.contains(.subtitleSyncMs) else {
             return false
         }
-        enqueueDeviceClear(.subtitleSyncMs)
+        defaults.set(true, forKey: doneKey)
+        guard !subtitleUsesDeviceAppearanceOverride,
+              deviceOverriddenKeys.contains(.subtitleSyncMs) else {
+            return false
+        }
+        // Gated on the revision when sent, like the override switch's clear:
+        // a retry after a relaunch must not delete the only offset a server
+        // rolled back below revision 18 keeps.
+        deviceOverriddenKeys.remove(.subtitleSyncMs)
+        flusher.enqueueDelete(.subtitleSyncMs, onlyWhereProfileScoped: true)
         await flushPendingDeviceSettings()
         return !flusher.unsettledKeys.contains(.subtitleSyncMs)
     }
