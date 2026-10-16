@@ -54,49 +54,64 @@ final class DetailVersionSelectionTests: XCTestCase {
         ), 2)
     }
 
-    /// The Auto preview names the track that launch then starts on.
+    /// The Auto preview names the track that launch then starts on: the
+    /// forced track in the audio language, with the audio language resolved
+    /// as the start request resolves it. The audio track here carries no
+    /// language, so only the server's effective audio language says Spanish.
     func testAutoPreviewForServerOffWithShowForcedNamesTheForcedTrack() {
-        let label = DetailPlaybackFormatting.subtitleValueLabel(
-            version: subtitleVersion(),
-            selectedSubtitleTrackIndex: nil,
-            autoContext: .init(
-                preferredLanguage: "en",
-                mode: SubtitleMode.off.rawValue,
-                signature: nil,
-                audioLanguage: "eng",
-                showForced: true
-            )
+        let version = subtitleVersion(
+            audioLanguage: nil,
+            effectiveAudioLanguage: "spa",
+            extraSubtitles: [Self.subtitle(5, "spa", forced: true)]
         )
-        XCTAssertTrue(label.hasPrefix("Auto: "), label)
-        XCTAssertTrue(label.localizedCaseInsensitiveContains("forced"), label)
-
-        let offLabel = DetailPlaybackFormatting.subtitleValueLabel(
-            version: subtitleVersion(),
-            selectedSubtitleTrackIndex: nil,
-            autoContext: .init(
-                preferredLanguage: "en",
-                mode: SubtitleMode.off.rawValue,
-                signature: nil,
-                audioLanguage: "eng",
-                showForced: false
-            )
-        )
-        XCTAssertEqual(offLabel, "Auto: Off")
-    }
-
-    private func subtitleVersion() -> FileVersion {
-        func subtitle(_ index: Int, _ language: String, forced: Bool = false) -> SubtitleTrack {
-            SubtitleTrack(
-                index: index, codec: "subrip", language: language, title: nil, embeddedTitle: nil,
-                forced: forced, hearingImpaired: false, isDefault: false, external: false, externalPath: nil
+        func label(showForced: Bool) -> String {
+            DetailPlaybackFormatting.subtitleValueLabel(
+                version: version,
+                selectedSubtitleTrackIndex: nil,
+                autoContext: .init(
+                    version: version,
+                    selectedAudioTrackIndex: nil,
+                    preferredLanguage: "en",
+                    mode: SubtitleMode.off.rawValue,
+                    signature: nil,
+                    showForced: showForced
+                )
             )
         }
-        return FileVersion(
+        let spanishForced = DetailPlaybackFormatting.subtitleValueLabel(
+            version: version,
+            selectedSubtitleTrackIndex: 5
+        )
+        XCTAssertEqual(label(showForced: true), "Auto: \(spanishForced)")
+        XCTAssertEqual(label(showForced: false), "Auto: Off")
+    }
+
+    private static func subtitle(_ index: Int, _ language: String, forced: Bool = false) -> SubtitleTrack {
+        SubtitleTrack(
+            index: index, codec: "subrip", language: language, title: nil, embeddedTitle: nil,
+            forced: forced, hearingImpaired: false, isDefault: false, external: false, externalPath: nil
+        )
+    }
+
+    private func subtitleVersion(
+        audioLanguage: String? = "eng",
+        effectiveAudioLanguage: String? = nil,
+        extraSubtitles: [SubtitleTrack] = []
+    ) -> FileVersion {
+        FileVersion(
             fileId: 7, fileName: "e1.mkv", resolution: "1280x720", codecVideo: "h264", codecAudio: "aac",
             hdr: false, container: "mkv", fileSize: 1_000, duration: 60, bitrate: 1_000_000,
-            videoTracks: nil, audioTracks: nil,
-            subtitleTracks: [subtitle(2, "eng"), subtitle(3, "spa"), subtitle(4, "eng", forced: true)],
-            chapters: nil
+            videoTracks: nil,
+            audioTracks: [AudioTrack(
+                index: 1, codec: "aac", channels: 2, channelLayout: "stereo", bitrate: 128_000,
+                sampleRate: 48_000, language: audioLanguage, title: nil, embeddedTitle: nil, isDefault: true
+            )],
+            subtitleTracks: [
+                Self.subtitle(2, "eng"), Self.subtitle(3, "spa"), Self.subtitle(4, "eng", forced: true),
+            ] + extraSubtitles,
+            chapters: nil,
+            effectiveAudioTrackIndex: 0,
+            effectiveAudioLanguage: effectiveAudioLanguage
         )
     }
 

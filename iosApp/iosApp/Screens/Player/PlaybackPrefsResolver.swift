@@ -61,7 +61,8 @@ struct SubtitleAutoResolver {
         /// Language of the audio track currently playing. Used by
         /// "auto" mode to skip subs when audio matches the user's
         /// preferred subtitle language (e.g. English audio + English
-        /// sub preference → no subs).
+        /// sub preference → no subs), and by "off" to find the forced
+        /// track in that language.
         let currentAudioLanguage: String?
         /// The file's container (`FileVersion.container`). Decides which
         /// embedded bitmap tracks this player renders without a burn-in; nil
@@ -109,8 +110,9 @@ struct SubtitleAutoResolver {
             // Off turns dialogue subtitles off, not forced ones: with "show
             // forced subtitles" on, the forced track in the language of the
             // audio that will play still covers foreign-language lines, as
-            // the settings copy promises and as web and Android do. Nothing
-            // when the audio language is unknown or no forced track matches.
+            // the settings copy promises and as web does (Android follows in
+            // silo-android#572). Nothing when the audio language is unknown or
+            // no forced track matches.
             //
             // Reached by every automatic start: the start request's intent
             // (`initialProtocolV3SubtitleIntent`) when the load carries no
