@@ -314,6 +314,66 @@ final class SubtitleDisplayScopeTests: XCTestCase {
 
     // MARK: - Timing
 
+    /// Older builds saved every Delay change as this device's own offset
+    /// without turning the override on. On a server that stores the offset per
+    /// profile that leftover is cleared once, a failed clear is retried, and an
+    /// offset the device holds later is left alone.
+    func testALeftoverDeviceOffsetIsClearedOnceOnACurrentServer() async throws {
+        let harness = try PlayerSettingsHarness()
+        harness.transport.effective = [syncRow(400, at: .profileDevice)]
+        harness.transport.failNextDeletes(1, with: .transport(description: "offline"))
+        await harness.settings.refreshFromServer()
+        XCTAssertFalse(harness.settings.subtitleUsesDeviceAppearanceOverride)
+        XCTAssertEqual(harness.transport.scopedDeletes(), [.init(key: .playerSubtitleSyncMs, scope: .profileDevice)])
+
+        harness.transport.reset()
+        harness.transport.effective = [syncRow(-250, at: .profile)]
+        await harness.settings.refreshFromServer()
+        XCTAssertEqual(harness.transport.scopedDeletes(), [.init(key: .playerSubtitleSyncMs, scope: .profileDevice)])
+        XCTAssertEqual(harness.settings.subtitleSyncMs, -250)
+        XCTAssertFalse(harness.settings.deviceOverriddenKeys.contains(.playerSubtitleSyncMs))
+
+        harness.transport.reset()
+        harness.transport.effective = [syncRow(300, at: .profileDevice)]
+        await harness.settings.refreshFromServer()
+        XCTAssertTrue(harness.transport.deletes().isEmpty)
+        XCTAssertEqual(harness.settings.subtitleSyncMs, 300)
+    }
+
+    func testALeftoverDeviceOffsetIsClearedAndRepaintedInOneRefresh() async throws {
+        let harness = try PlayerSettingsHarness()
+        harness.transport.effective = [syncRow(400, at: .profileDevice)]
+        // The server answers with the profile's offset once the clear lands.
+        let profileRow = syncRow(-250, at: .profile)
+        harness.transport.onDelete = { [transport = harness.transport] _ in
+            transport.effective = [profileRow]
+        }
+        await harness.settings.refreshFromServer()
+        XCTAssertEqual(harness.transport.deletes(), [.playerSubtitleSyncMs])
+        XCTAssertEqual(harness.settings.subtitleSyncMs, -250)
+    }
+
+    /// A device that keeps its own subtitle settings chose its offset.
+    func testADeviceOffsetIsKeptWhileTheOverrideIsOn() async throws {
+        let harness = try PlayerSettingsHarness()
+        harness.transport.effective = [
+            appearanceRow(["fontSize": "small"], at: .profileDevice),
+            syncRow(400, at: .profileDevice),
+        ]
+        await harness.settings.refreshFromServer()
+        XCTAssertTrue(harness.transport.deletes().isEmpty)
+        XCTAssertEqual(harness.settings.subtitleSyncMs, 400)
+    }
+
+    func testALeftoverDeviceOffsetIsKeptOnAnOlderServer() async throws {
+        let harness = try PlayerSettingsHarness()
+        harness.transport.revision = SettingKey.subtitleSyncProfileScopeRevision - 1
+        harness.transport.effective = [syncRow(400, at: .profileDevice)]
+        await harness.settings.refreshFromServer()
+        XCTAssertTrue(harness.transport.deletes().isEmpty)
+        XCTAssertEqual(harness.settings.subtitleSyncMs, 400)
+    }
+
     func testASubtitleOffsetIsSavedForTheProfileOnACurrentServer() async throws {
         let harness = try PlayerSettingsHarness()
         await harness.settings.refreshFromServer()
