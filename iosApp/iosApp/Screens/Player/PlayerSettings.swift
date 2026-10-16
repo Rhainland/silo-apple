@@ -1005,9 +1005,10 @@ final class PlayerSettings {
         // The device's own offset goes too, but only where the profile can
         // hold one: on an older server the device value is the only offset.
         // Before the revision is known (an offline launch) the flusher makes
-        // that call once a read reports it.
-        let clearsOffset = deviceOverriddenKeys.contains(.subtitleSyncMs)
-            && knownManifestRevision.map { SettingKey.subtitleSyncMs.acceptsProfileScope(atRevision: $0) } != false
+        // that call once a read reports it. Sent whether or not
+        // ``deviceOverriddenKeys`` lists it, for the reason
+        // ``enqueueProfileValue(_:value:)`` gives; no device offset is success.
+        let clearsOffset = serverAcceptsProfileScope(for: .subtitleSyncMs)
         if clearsOffset {
             cleared.append(.subtitleSyncMs)
         }
@@ -1109,6 +1110,11 @@ final class PlayerSettings {
     /// server. The flusher treats "no device value" as success.
     private func enqueueProfileValue(_ key: SettingKey, value: SettingJSONValue) {
         deviceOverriddenKeys.remove(key)
+        // An unfinished one-time import must not later bring back this
+        // device's older cached value as a device value over this edit.
+        if let scopeID = Self.currentScopeIdentifier {
+            retireMigration(of: [key], for: scopeID)
+        }
         flusher.enqueue(key, value: value, scope: .profile, clearingDeviceValue: true)
     }
 
@@ -1351,6 +1357,14 @@ final class PlayerSettings {
             return
         }
         let hasDeviceOverride = entry.scope == .profileDevice
+        if hasDeviceOverride && flusher.unsettledClears.contains(.subtitleAppearance) {
+            // The answer still shows the device value a clear on its way is
+            // removing, and says nothing about the profile's. The override
+            // stays off, so the next edit goes to the profile as the user
+            // chose rather than back onto this device.
+            subtitleUsesDeviceAppearanceOverride = false
+            return
+        }
         subtitleUsesDeviceAppearanceOverride = hasDeviceOverride
         // A stored appearance is a sparse override the schema merges over the
         // contract default, and SubtitleAppearance's decoder already fills each

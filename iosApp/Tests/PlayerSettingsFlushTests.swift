@@ -247,7 +247,7 @@ final class PlayerSettingsFlushTests: XCTestCase {
             debounce: .seconds(30),
             journal: journal
         )
-        XCTAssertEqual(flusher.unsettledValues(), [.playerAudioSyncMs: .int(-500)],
+        XCTAssertEqual(flusher.unsettledScopedValues().mapValues(\.value), [.playerAudioSyncMs: .int(-500)],
                        "precondition: the previous run's op was restored")
 
         flusher.enqueue(.playerAudioSyncMs, value: .int(250))
@@ -651,7 +651,7 @@ final class PlayerSettingsFlushTests: XCTestCase {
         XCTAssertEqual(transport.writes().count, 3, "a held change must not be replayed on its own")
         XCTAssertTrue(flusher.hasPendingWrites, "an exhausted budget must not drop the write")
         XCTAssertEqual(journal.load()[.playerSubtitleSyncMs]?.isHeld, true)
-        XCTAssertEqual(flusher.unsettledValues(), [.playerSubtitleSyncMs: .int(-250)])
+        XCTAssertEqual(flusher.unsettledScopedValues().mapValues(\.value), [.playerSubtitleSyncMs: .int(-250)])
 
         // "Try Again" sends it with a fresh budget.
         transport.succeedFromNowOn()
@@ -2678,6 +2678,14 @@ final class InMemoryWriteJournal: PlayerSettingsWriteJournal, @unchecked Sendabl
         if let persisted = contents[key],
            persisted.operation == write.operation {
             contents.removeValue(forKey: key)
+        }
+        lock.unlock()
+    }
+
+    func replace(_ key: SettingKey, matching write: PendingSettingWrite, with remainder: PendingSettingWrite) {
+        lock.lock()
+        if let persisted = contents[key], persisted.hasSameDesiredState(as: write) {
+            contents[key] = remainder
         }
         lock.unlock()
     }
