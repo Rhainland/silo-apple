@@ -1917,6 +1917,27 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertEqual(ordinals, DownloadedSubtitleOrdinals(published: ["11": 2, "12": 3], next: 4))
     }
 
+    /// An audio switch re-runs the automatic subtitle pass while its own
+    /// replan is still loading. A pick the new plan lacks (a burned-in track
+    /// to replace or remove) must be held for that replan's exit, not dropped.
+    func testAutomaticSubtitlePickDuringAReplanIsHeldUntilItCommits() {
+        typealias Action = PlayerViewModel.AutomaticProtocolV3SubtitlePlanAction
+        func action(pick: Int?, plan: Int?, committed: Bool, replanning: Bool) -> Action {
+            PlayerViewModel.automaticProtocolV3SubtitlePlanAction(
+                pickCombinedIndex: pick, planCombinedIndex: plan,
+                loadCommitted: committed, replanInFlight: replanning
+            )
+        }
+        // Replace the burned-in track, or turn it off, mid audio replan.
+        XCTAssertEqual(action(pick: 5, plan: 3, committed: true, replanning: true), .holdUntilCommitted)
+        XCTAssertEqual(action(pick: nil, plan: 3, committed: false, replanning: true), .holdUntilCommitted)
+        // The start's own uncommitted load, as before.
+        XCTAssertEqual(action(pick: 5, plan: 3, committed: false, replanning: false), .holdUntilCommitted)
+        XCTAssertEqual(action(pick: 5, plan: 3, committed: true, replanning: false), .replan)
+        XCTAssertEqual(action(pick: 3, plan: 3, committed: true, replanning: true), .keepPlan)
+        XCTAssertEqual(action(pick: nil, plan: nil, committed: false, replanning: true), .keepPlan)
+    }
+
     func testBurnInSelectionSurvivesInventoryBeforeAndAfterLoadEstablishes() async {
         let model = PlayerViewModel()
         let plan = makePlan(selectedSubtitleIndex: 3, subtitleMode: "burn_in",

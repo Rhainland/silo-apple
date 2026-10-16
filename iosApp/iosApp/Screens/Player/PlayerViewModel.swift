@@ -972,12 +972,12 @@ class PlayerViewModel {
     /// don't keep re-evaluating (and overriding the user) on every
     /// subsequent track-list update.
     private var prefsResolvedForCurrentItem: Bool = false
-    /// A caption pick that arrived before the current V3 load committed and
-    /// therefore could not replan yet. The resolved pick itself is kept, not
-    /// the preference snapshot that produced it: a system caption request
-    /// resolves from the OS language and would be lost if the generic
-    /// preference snapshot were rerun in its place. Drained once the load's
-    /// server transition commits.
+    /// A caption pick that arrived before the current V3 load or replan
+    /// committed and therefore could not replan yet. The resolved pick itself
+    /// is kept, not the preference snapshot that produced it: a system
+    /// caption request resolves from the OS language and would be lost if the
+    /// generic preference snapshot were rerun in its place. Drained once the
+    /// load's server transition commits, or when the replan task exits.
     private var deferredAutoSubtitlePick: SubtitleAutoSelection?
     private var resolvedServerUrl: String = ""
     private var currentWatchDetail: WatchDetail?
@@ -2362,6 +2362,7 @@ class PlayerViewModel {
             let priorResolvedServerUrl = self.resolvedServerUrl
             let priorPrefsForCurrentItem = self.prefsForCurrentItem
             let priorPrefsResolvedForCurrentItem = self.prefsResolvedForCurrentItem
+            let priorDeferredAutoSubtitlePick = self.deferredAutoSubtitlePick
             // Captured when the replan replaces them, not here: a
             // markers_updated event can land while the replan is in flight.
             var replacedMarkers: ReplacedMarkerRanges?
@@ -2392,6 +2393,9 @@ class PlayerViewModel {
                 self.resolvedServerUrl = priorResolvedServerUrl
                 self.prefsForCurrentItem = priorPrefsForCurrentItem
                 self.prefsResolvedForCurrentItem = priorPrefsResolvedForCurrentItem
+                // A pick held for this replan was resolved against its plan
+                // and audio, which no longer apply.
+                self.deferredAutoSubtitlePick = priorDeferredAutoSubtitlePick
             }
             var uncommittedPrepared: PreparedPlayback?
             var chainedLoadFailureRecovery: (position: Double, classification: String, message: String)?
@@ -7369,6 +7373,30 @@ class PlayerViewModel {
         }
     }
 
+    enum AutomaticProtocolV3SubtitlePlanAction: Equatable {
+        /// The plan already has the pick.
+        case keepPlan
+        /// Held in `deferredAutoSubtitlePick` until the running load or
+        /// replan commits; staging a replan now would be rolled back or
+        /// rejected as busy.
+        case holdUntilCommitted
+        case replan
+    }
+
+    /// What an automatic subtitle pick does to the active V3 plan. An audio
+    /// switch re-runs the automatic pass while its own replan is still
+    /// loading, so a pick the new plan lacks is held for that replan's exit
+    /// rather than dropped.
+    static func automaticProtocolV3SubtitlePlanAction(
+        pickCombinedIndex: Int?,
+        planCombinedIndex: Int?,
+        loadCommitted: Bool,
+        replanInFlight: Bool
+    ) -> AutomaticProtocolV3SubtitlePlanAction {
+        guard pickCombinedIndex != planCombinedIndex else { return .keepPlan }
+        return loadCommitted && !replanInFlight ? .replan : .holdUntilCommitted
+    }
+
     static func isUnexpectedBackwardPlaybackTime(
         _ candidate: Double,
         currentTime: Double,
@@ -9042,7 +9070,6 @@ class PlayerViewModel {
         if applyLocalProtocolV3SubtitleSelection(track, reason: "auto_preference") { return true }
         guard let activePreparedProtocolV3,
               let version = currentSelectedVersion,
-              protocolV3ReplanTask == nil,
               currentWatchDetail != nil else {
             return false
         }
@@ -9060,7 +9087,13 @@ class PlayerViewModel {
         let planIndex = activePreparedProtocolV3.plan.subtitle.mode == PlaybackProtocolV3.SubtitleMode.off
             ? nil
             : activePreparedProtocolV3.plan.selectedSubtitleCombinedIndex
-        guard combinedIndex != planIndex else {
+        let action = Self.automaticProtocolV3SubtitlePlanAction(
+            pickCombinedIndex: combinedIndex,
+            planCombinedIndex: planIndex,
+            loadCommitted: committedProtocolV3LoadEpoch != nil,
+            replanInFlight: protocolV3ReplanTask != nil
+        )
+        guard action != .keepPlan else {
             return false
         }
         // A replan here is a full engine reload on top of a picture that is
@@ -9071,9 +9104,11 @@ class PlayerViewModel {
         // Inventory arrives as soon as the engine starts loading, before the
         // start's server transition has committed. A replan staged then rolls
         // that transition back and retires the session the engine is opening.
-        // Hold the pick until the load commits; the owning load task drains
-        // it through `reapplyDeferredAutoSubtitlePolicyIfNeeded`.
-        guard committedProtocolV3LoadEpoch != nil else {
+        // A replan still loading (an audio switch re-runs this pass) would
+        // reject another as busy. Hold the pick until the load commits; the
+        // owning load or replan task drains it through
+        // `reapplyDeferredAutoSubtitlePolicyIfNeeded`.
+        guard action == .replan else {
             deferredAutoSubtitlePick = track.map(SubtitleAutoSelection.select) ?? .disable
             return true
         }
