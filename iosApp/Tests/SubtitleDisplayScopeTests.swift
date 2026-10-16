@@ -637,6 +637,57 @@ final class SubtitleDisplayScopeTests: XCTestCase {
         XCTAssertEqual(transport.writesByKey()[.playbackSubtitleAppearance]?.value, ["fontSize": "small"])
     }
 
+    /// The refusal is reported even when the device edit sent with it has to
+    /// be retried, and only once.
+    func testARefusedOwedProfileValueIsReportedWhenTheDeviceEditIsRetried() async throws {
+        let transport = FakeSettingsTransport()
+        let flusher = PlayerSettingsFlusher(transport: transport, debounce: .seconds(30))
+        _ = try await flusher.effectiveValues(keys: [])
+        let rejected = LockedKeys()
+        flusher.observeRejections { rejected.append($0) }
+        transport.failNextWrites(1, with: .invalidValue(message: "refused"))
+        // The second attempt, this device's edit, fails transiently.
+        let attempts = LockedKeys()
+        transport.onAttemptStart = {
+            attempts.append(.playbackSubtitleAppearance)
+            guard attempts.value.count == 2 else { return }
+            transport.failNextWrites(1, with: .transport(description: "offline"))
+        }
+
+        flusher.enqueue(.playbackSubtitleAppearance, value: ["fontSize": "large"], scope: .profile, clearingDeviceValue: true)
+        flusher.enqueue(.playbackSubtitleAppearance, value: ["fontSize": "small"])
+        await flusher.flushNow()
+        XCTAssertEqual(rejected.value, [.playbackSubtitleAppearance])
+        XCTAssertTrue(flusher.hasPendingWrites, "the device edit is still owed")
+
+        transport.succeedFromNowOn()
+        await flusher.flushNow()
+        XCTAssertFalse(flusher.hasPendingWrites)
+        XCTAssertEqual(transport.writes().map(\.scope), [.profile, .profileDevice, .profileDevice])
+        XCTAssertEqual(rejected.value, [.playbackSubtitleAppearance])
+    }
+
+    /// A clear that failed earlier in the running drain is still owed, so a
+    /// refresh landing meanwhile does not read the device value it removes as
+    /// this device's own.
+    func testAClearThatFailedEarlierInTheDrainStillCountsAsOwed() async throws {
+        let transport = FakeSettingsTransport()
+        let flusher = PlayerSettingsFlusher(transport: transport, debounce: .seconds(30))
+        _ = try await flusher.effectiveValues(keys: [])
+        transport.failNextDeletes(1, with: .transport(description: "offline"))
+        let clearsDuringDrain = LockedKeys()
+        transport.onWrite = { [weak flusher] write in
+            guard write.key == .playerHdrEnabled, let flusher else { return }
+            clearsDuringDrain.set(Array(flusher.unsettledClears))
+        }
+
+        flusher.enqueueDelete(.playbackSubtitleAppearance)
+        flusher.enqueue(.playerHdrEnabled, value: .bool(false))
+        await flusher.flushNow()
+
+        XCTAssertEqual(clearsDuringDrain.value, [.playbackSubtitleAppearance])
+    }
+
     /// A pending profile offset on a server that stores offsets only per
     /// device lands on this device's row, and reads as this device's own.
     func testAPendingProfileOffsetReadsAsThisDevicesOwnOnAnOlderServer() async throws {

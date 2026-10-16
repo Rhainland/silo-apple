@@ -275,10 +275,16 @@ protocol PlayerSettingsWriteJournal: AnyObject, Sendable {
     /// newer, different write to the same key; a newer write of the same
     /// value is already true on the server.
     func retire(_ key: SettingKey, matching write: PendingSettingWrite)
-    /// Replace one operation with what is left of it once its first request
-    /// landed, in the partition it was captured from. Matched like
-    /// ``retire(_:matching:)``, so a newer write to the key is left alone.
-    func replace(_ key: SettingKey, matching write: PendingSettingWrite, with remainder: PendingSettingWrite)
+    /// Record that `write` stored `profileValue`, in the partition it was
+    /// captured from: the entry becomes `remainder` (removed when nil) if it is
+    /// still `write`, matched like ``retire(_:matching:)``; a newer entry that
+    /// carries the same value as owed drops it, since it is stored now.
+    func acknowledge(
+        _ key: SettingKey,
+        storing profileValue: SettingJSONValue,
+        matching write: PendingSettingWrite,
+        leaving remainder: PendingSettingWrite?
+    )
 }
 
 extension PlayerSettingsWriteJournal {
@@ -362,28 +368,53 @@ final class UserDefaultsSettingsWriteJournal: PlayerSettingsWriteJournal, @unche
     }
 
     func retire(_ key: SettingKey, matching write: PendingSettingWrite) {
-        update(key, matching: write, to: nil)
+        update(key, in: write.scopeIdentifier) { persisted in
+            persisted.hasSameDesiredState(as: write) ? .remove : .keep
+        }
     }
 
-    func replace(_ key: SettingKey, matching write: PendingSettingWrite, with remainder: PendingSettingWrite) {
-        update(key, matching: write, to: remainder)
+    func acknowledge(
+        _ key: SettingKey,
+        storing profileValue: SettingJSONValue,
+        matching write: PendingSettingWrite,
+        leaving remainder: PendingSettingWrite?
+    ) {
+        update(key, in: write.scopeIdentifier) { persisted in
+            if persisted.hasSameDesiredState(as: write) {
+                return remainder.map(EntryChange.replace) ?? .remove
+            }
+            if persisted.owedProfileValue == profileValue {
+                return .replace(persisted.droppingOwedProfileValue())
+            }
+            return .keep
+        }
     }
 
-    /// Set `key` in `write`'s partition to `next`, or remove it when nil, if
-    /// the stored entry still asks for what `write` does.
-    private func update(_ key: SettingKey, matching write: PendingSettingWrite, to next: PendingSettingWrite?) {
-        guard let storageKey = storageKey(for: write.scopeIdentifier),
+    private enum EntryChange {
+        case keep
+        case remove
+        case replace(PendingSettingWrite)
+    }
+
+    /// Rewrite `key`'s entry in one partition, as `change` decides from it.
+    private func update(
+        _ key: SettingKey,
+        in scopeIdentifier: String?,
+        _ change: (PendingSettingWrite) -> EntryChange
+    ) {
+        guard let storageKey = storageKey(for: scopeIdentifier),
               let data = defaults.data(forKey: storageKey) else {
             return
         }
         do {
             var stored = try SettingsWireCoding.makeDecoder()
                 .decode([String: PendingSettingWrite].self, from: data)
-            guard let persisted = stored[key.rawValue],
-                  persisted.hasSameDesiredState(as: write) else {
-                return
+            guard let persisted = stored[key.rawValue] else { return }
+            switch change(persisted) {
+            case .keep: return
+            case .remove: stored.removeValue(forKey: key.rawValue)
+            case .replace(let next): stored[key.rawValue] = next
             }
-            stored[key.rawValue] = next
             guard !stored.isEmpty else {
                 defaults.removeObject(forKey: storageKey)
                 return
@@ -467,6 +498,9 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
     /// `inFlight` until then, yet still owed: the journal has to keep them, and
     /// an op queued meanwhile has to inherit what they still owe.
     private var failedInDrain: [SettingKey: PendingSettingWrite] = [:]
+    /// Keys whose owed profile value the running drain had refused, reported
+    /// once when it finishes whatever happens to the rest of their write.
+    private var refusedInDrain: Set<SettingKey> = []
     private var debounceTask: Task<Void, Never>?
     /// Bumped every time the debounce window is re-armed, so a waking timer can
     /// tell whether it is still the current one before it retires the
@@ -788,10 +822,7 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
                     values.removeValue(forKey: key)
                 }
             }
-            for (key, write) in inFlight where write.scopeIdentifier == activeJournalScope {
-                paint(key, write)
-            }
-            for (key, write) in pending {
+            for (key, write) in unsettledLocked() {
                 paint(key, write)
             }
             return values
@@ -812,10 +843,7 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
                 return key.acceptsProfileScope(atRevision: manifestRevision)
             }
             var keys: Set<SettingKey> = []
-            for (key, write) in inFlight where write.scopeIdentifier == activeJournalScope {
-                if clears(key, write) { keys.insert(key) }
-            }
-            for (key, write) in pending {
+            for (key, write) in unsettledLocked() {
                 if clears(key, write) {
                     keys.insert(key)
                 } else {
@@ -828,9 +856,23 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
 
     /// Keys with any change still owed to the server, clears included.
     var unsettledKeys: Set<SettingKey> {
-        lock.withLock {
-            Set(pending.keys).union(inFlight.filter { $0.value.scopeIdentifier == activeJournalScope }.keys)
+        lock.withLock { Set(unsettledLocked().map(\.key)) }
+    }
+
+    /// Every op still owed for the active partition, oldest first, so a later
+    /// entry for a key is the newer one: failed earlier in the running drain,
+    /// then being sent, then queued. Caller must hold `lock`.
+    private func unsettledLocked() -> [(key: SettingKey, write: PendingSettingWrite)] {
+        var entries: [(key: SettingKey, write: PendingSettingWrite)] = []
+        for draining in [failedInDrain, inFlight] {
+            for (key, write) in draining where write.scopeIdentifier == activeJournalScope {
+                entries.append((key, write))
+            }
         }
+        for (key, write) in pending {
+            entries.append((key, write))
+        }
+        return entries
     }
 
     /// "Discard held change": forget every held change for the active
@@ -1174,8 +1216,8 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
             }
         }
 
-        typealias Completion = ([CheckedContinuation<Void, Never>], (@Sendable (SettingKey) -> Void)?)
-        let (resumed, rejectionObserver) = lock.withLock { () -> Completion in
+        typealias Completion = ([CheckedContinuation<Void, Never>], (@Sendable (SettingKey) -> Void)?, Set<SettingKey>)
+        let (resumed, rejectionObserver, refused) = lock.withLock { () -> Completion in
             let currentScopeIdentifier = journal?.scopeIdentifier
             let retryable = failedInDrain
             for (key, write) in retryable
@@ -1203,14 +1245,16 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
             if let attempt = retrying.min() {
                 scheduleRetryLocked(attempt: attempt)
             }
-            return (resumed, self.rejectionObserver)
+            let refused = refusedInDrain
+            refusedInDrain.removeAll()
+            return (resumed, self.rejectionObserver, refused)
         }
 
         for continuation in resumed {
             continuation.resume()
         }
         publishHeldKeys()
-        for key in rejected {
+        for key in rejected + refused.subtracting(rejected).sorted(by: { $0.rawValue < $1.rawValue }) {
             rejectionObserver?(key)
         }
     }
@@ -1245,37 +1289,35 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
 
     // MARK: - Sending
 
-    /// Record that the first request of `write` landed, so only `remainder` is
-    /// owed: a retry, a retried held change or a replay after relaunch sends
-    /// that alone instead of repeating a request the server already took. On
-    /// the profile row a repeat is not harmless, since another device may
-    /// have saved a newer value in between.
-    private func acknowledgeFirstRequest(
+    /// Record that `write` stored `profileValue`, so only `remainder` is owed
+    /// (nothing when nil): a retry, a retried held change or a replay after
+    /// relaunch sends that alone instead of repeating a request the server
+    /// already took. On the profile row a repeat is not harmless, since another
+    /// device may have saved a newer value in between.
+    ///
+    /// One lock section, so an op queued meanwhile either sees the remainder
+    /// or has its owed copy of the stored value dropped here.
+    private func acknowledgeProfileValue(
         _ key: SettingKey,
+        _ profileValue: SettingJSONValue,
         of write: inout PendingSettingWrite,
-        leaving remainder: PendingSettingWrite
+        leaving remainder: PendingSettingWrite?
     ) {
         let original = write
-        write = remainder
+        if let remainder {
+            write = remainder
+        }
         lock.withLock {
             if inFlight[key] == original {
                 inFlight[key] = remainder
             }
+            if let queued = pending[key], queued.scopeIdentifier == original.scopeIdentifier,
+               queued.owedProfileValue == profileValue {
+                pending[key] = queued.droppingOwedProfileValue()
+            }
             // The partition the write came from, which may no longer be the
             // active one; persisting covers the active one.
-            journal?.replace(key, matching: original, with: remainder)
-            persistLocked()
-        }
-    }
-
-    /// A profile value for `key` was stored. An op queued since that carries
-    /// the same value as owed (it replaced this write while it was being
-    /// sent) no longer owes it.
-    private func noteProfileValueStored(_ key: SettingKey, _ value: SettingJSONValue, in scopeIdentifier: String?) {
-        lock.withLock {
-            guard let queued = pending[key], queued.scopeIdentifier == scopeIdentifier,
-                  queued.owedProfileValue == value else { return }
-            pending[key] = queued.droppingOwedProfileValue()
+            journal?.acknowledge(key, storing: profileValue, matching: original, leaving: remainder)
             persistLocked()
         }
     }
@@ -1284,7 +1326,7 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
     ///
     /// A write can take two requests: the profile value it owes, or a profile
     /// value and the clear of this device's value. Once the first lands, only
-    /// the rest is owed (see ``acknowledgeFirstRequest(_:of:leaving:)``).
+    /// the rest is owed (see ``acknowledgeProfileValue(_:_:of:leaving:)``).
     private func send(_ key: SettingKey, _ write: inout PendingSettingWrite) async -> FlushOutcome {
         if let journal, write.scopeIdentifier != journal.scopeIdentifier {
             log(
@@ -1294,7 +1336,6 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
             )
             return .leftInOriginalJournal
         }
-        var profileValueRefused = false
         do {
             if let owed = write.owedProfileValue {
                 var profileValue: SettingJSONValue? = owed
@@ -1318,11 +1359,10 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
                         // be refused the same way. This device's own edit in
                         // the same write still goes.
                         log(key, "owed profile value refused: \(error)", kept: false)
-                        profileValueRefused = true
+                        lock.withLock { _ = refusedInDrain.insert(key) }
                     }
-                    noteProfileValueStored(key, owed, in: write.scopeIdentifier)
                     let remainder = write.droppingOwedProfileValue()
-                    acknowledgeFirstRequest(key, of: &write, leaving: remainder)
+                    acknowledgeProfileValue(key, owed, of: &write, leaving: remainder)
                     if let journal, write.scopeIdentifier != journal.scopeIdentifier {
                         log(key, "settings scope changed after the owed profile value; the rest is owed by the original scope's journal", kept: true)
                         return .leftInOriginalJournal
@@ -1361,12 +1401,12 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
                     profileId: write.profileId
                 )
                 if scope == .profile {
-                    noteProfileValueStored(key, value, in: write.scopeIdentifier)
+                    // With a clear to follow, from here the clear is the only
+                    // part owed.
+                    let remainder = clearsDeviceValue ? write.remainingDeviceClear() : nil
+                    acknowledgeProfileValue(key, value, of: &write, leaving: remainder)
                 }
                 if clearsDeviceValue {
-                    // A second request, and from here the only part owed.
-                    let remainder = write.remainingDeviceClear()
-                    acknowledgeFirstRequest(key, of: &write, leaving: remainder)
                     // The profile may have changed while the first request was
                     // sent. The original partition's journal now holds the
                     // clear, and replays it there.
@@ -1406,7 +1446,7 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
                 }
                 try await transport.deleteValue(key: key, scope: write.scope, profileId: write.profileId)
             }
-            return profileValueRefused ? .rejected : .settled
+            return .settled
         } catch let error as SettingsAPIError {
             return outcome(for: error, key: key, write: write)
         } catch is CancellationError {

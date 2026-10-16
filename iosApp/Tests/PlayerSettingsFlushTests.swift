@@ -2682,10 +2682,19 @@ final class InMemoryWriteJournal: PlayerSettingsWriteJournal, @unchecked Sendabl
         lock.unlock()
     }
 
-    func replace(_ key: SettingKey, matching write: PendingSettingWrite, with remainder: PendingSettingWrite) {
+    func acknowledge(
+        _ key: SettingKey,
+        storing profileValue: SettingJSONValue,
+        matching write: PendingSettingWrite,
+        leaving remainder: PendingSettingWrite?
+    ) {
         lock.lock()
-        if let persisted = contents[key], persisted.hasSameDesiredState(as: write) {
-            contents[key] = remainder
+        if let persisted = contents[key] {
+            if persisted.hasSameDesiredState(as: write) {
+                contents[key] = remainder
+            } else if persisted.owedProfileValue == profileValue {
+                contents[key] = persisted.droppingOwedProfileValue()
+            }
         }
         lock.unlock()
     }
