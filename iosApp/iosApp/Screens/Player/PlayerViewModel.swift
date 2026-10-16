@@ -9074,7 +9074,9 @@ class PlayerViewModel {
         // publishes its legible option; the controller applies the pick then.
         let isPendingRendition = trackID.map { aetherPlaybackController.isHLSSubtitleRendition(appTrackID: $0) } == true
         if !isBurnedIn, trackID == nil || engineID != nil || isPendingRendition {
-            if aetherPlaybackController.engine.activeSubtitleTrackIndex != engineID {
+            // An unpublished rendition still has to reach the controller, which
+            // holds the pick until AVPlayer offers the option.
+            if aetherPlaybackController.engine.activeSubtitleTrackIndex != engineID || isPendingRendition && engineID == nil {
                 applySubtitleTrackSelection(trackID, reason: "restored_local_selection")
             }
         } else if committedProtocolV3LoadEpoch != nil {
