@@ -8895,17 +8895,18 @@ class PlayerViewModel {
             return
         }
 
-        // Until the engine reports which audio track is playing, use the one
-        // the start planned, so this pass resolves exactly as the start
-        // request did. Treating the audio as unknown here made Auto pick full
-        // subtitles where the audio already matched the subtitle language,
-        // and a next episode could keep that pick.
-        let audioLang = audioTracks
-            .first(where: { $0.trackId == selectedAudioId })?
-            .lang
+        // When the playing track carries no usable language (none, blank or
+        // "und"), resolve it as the start request did: by that track's
+        // position, or, before the engine reports a track, by the one the
+        // start planned. Treating the audio as unknown here made Auto pick
+        // full subtitles where the audio already matched the subtitle
+        // language, and a next episode could keep that pick.
+        let selectedAudio = audioTracks.first(where: { $0.trackId == selectedAudioId })
+        let audioLang = selectedAudio?.normalizedLanguageCode
             ?? PlaybackSessionBridge.startAudioLanguage(
                 version: currentSelectedVersion,
-                audioOrdinal: activePreparedProtocolV3?.plan.selectedTracks.audio?.index
+                audioOrdinal: selectedAudio.flatMap(audioSelectionIndex(for:))
+                    ?? activePreparedProtocolV3?.plan.selectedTracks.audio?.index
                     ?? lastLoadRequest?.preferredAudioTrackIndex
                     ?? currentSelectedVersion?.effectiveAudioTrackIndex
             )
