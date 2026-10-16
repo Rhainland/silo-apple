@@ -123,7 +123,8 @@ struct SubtitleAutoResolver {
             // Not reached for an Off the viewer chose: an Off tap in the
             // player sets the playback's explicit choice and carries `-1`
             // into its reloads, and an Off picked in the detail page's
-            // selector on this visit launches with `-1`.
+            // selector on this visit launches with `-1`, also after the
+            // viewer returns from the player.
             guard inputs.showForced,
                   let audio = inputs.currentAudioLanguage, !audio.isEmpty,
                   let forced = bestLanguageMatch(

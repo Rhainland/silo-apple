@@ -268,6 +268,15 @@ enum DetailPlaybackFormatting {
         return nil
     }
 
+    /// Whether a subtitle picked in the detail selector survives the page
+    /// reloading, as it does when the viewer returns from the player. Off and
+    /// Auto always do; a track only while the reloaded version still offers
+    /// it. Matches tvOS, whose selector state outlives the player.
+    static func keepsManualSubtitlePick(_ index: Int?, isAvailable: (Int) -> Bool) -> Bool {
+        guard let index, index >= 0 else { return true }
+        return isAvailable(index)
+    }
+
     /// A server-remembered track is useful for reflecting the server policy
     /// in the pre-play selector, but it is not a manual choice made during
     /// this visit. Device-settings mode must start on Apple's caption policy

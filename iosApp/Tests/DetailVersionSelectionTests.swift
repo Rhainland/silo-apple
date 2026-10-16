@@ -21,6 +21,29 @@ final class DetailVersionSelectionTests: XCTestCase {
         ), -1)
     }
 
+    /// A subtitle picked in the iPhone and iPad detail selector stays when the
+    /// viewer returns from the player, as on tvOS. Server mode Off with show
+    /// forced on reseeds to Auto (the forced track), so an explicit Off has to
+    /// survive the reload rather than be re-derived from the server.
+    func testAManualSubtitlePickSurvivesTheReloadAfterThePlayer() {
+        let offered: Set<Int> = [2, 3]
+        func keeps(_ index: Int?) -> Bool {
+            DetailPlaybackFormatting.keepsManualSubtitlePick(index) { offered.contains($0) }
+        }
+        XCTAssertTrue(keeps(-1), "Off")
+        XCTAssertTrue(keeps(nil), "Auto")
+        XCTAssertTrue(keeps(3))
+        XCTAssertFalse(keeps(7), "a track the reloaded version no longer has")
+        // What the reload would otherwise show instead of that Off.
+        XCTAssertNil(DetailPlaybackFormatting.launchPreferredSubtitleIndex(
+            version: subtitleVersion(),
+            signature: nil,
+            mode: SubtitleMode.off.rawValue,
+            showForced: true,
+            usesDeviceSettings: false
+        ))
+    }
+
     /// Server mode Off (profile or series) with show forced on is not an
     /// explicit Off: Play from the detail page lets the resolver start on the
     /// forced track in the audio language, like every other entry path. A
