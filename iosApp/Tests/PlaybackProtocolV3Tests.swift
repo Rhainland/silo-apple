@@ -479,6 +479,37 @@ final class PlaybackProtocolV3Tests: XCTestCase {
             pendingEmbeddedIndex: nil, pendingSidecarID: nil))
     }
 
+    /// An Off the viewer chose survives adopting the server's off plan, so a
+    /// retry starts fully off. Without an explicit choice an off plan stays
+    /// automatic, and a server mode Off with forced subtitles on starts on the
+    /// forced track in the audio language again.
+    func testAdoptingAnOffPlanKeepsAnExplicitOffForRetry() {
+        let version = makeVersion(container: "mkv", videoCodec: "h264", audioCodec: "aac", subtitleTracks: [
+            makeSubtitle(index: 11, codec: "srt", external: false, path: nil),
+            makeSubtitle(index: 12, codec: "srt", external: false, path: nil, forced: true),
+        ])
+        let plan = makePlan(container: "mkv", subtitleMode: "off")
+        let request = PlayerViewModel.LoadRequest(
+            contentId: "movie", preferredFileId: 42, preferredAudioTrackIndex: nil,
+            preferredSubtitleTrackIndex: nil, preferredSidecarSubtitleTrackId: nil,
+            startFromBeginning: false
+        )
+        func retryStart(keepsExplicitOff: Bool) -> Int? {
+            let retry = request.adoptingProtocolV3Intent(
+                plan: plan, selectedVersion: version, activeQualityId: "original",
+                keepsExplicitOff: keepsExplicitOff
+            )
+            return PlaybackSessionBridge.initialProtocolV3SubtitleIntent(
+                version: version, explicitFFmpegIndex: retry.preferredSubtitleTrackIndex,
+                explicitCombinedIndex: retry.preferredProtocolV3SubtitleIndex,
+                preferredLanguage: "en", mode: .off, showForced: true,
+                trackSignature: nil, currentAudioLanguage: "eng"
+            ).ffmpegStreamIndex
+        }
+        XCTAssertNil(retryStart(keepsExplicitOff: true))
+        XCTAssertEqual(retryStart(keepsExplicitOff: false), 12)
+    }
+
     func testRenewalPreservesBurnInBeforeItsPickerSelectionPublishes() {
         let version = makeVersion(container: "mkv", videoCodec: "h264", audioCodec: "aac")
         let plan = makePlan(selectedSubtitleIndex: 7, subtitleMode: "burn_in",

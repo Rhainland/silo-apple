@@ -1097,10 +1097,16 @@ class PlayerViewModel {
         /// Refresh the inputs used by session renewal from an adopted V3 plan.
         /// Player track lists are transient and may already be empty when a
         /// failed transport reports that its server session disappeared.
+        ///
+        /// `keepsExplicitOff` is set when the viewer chose the subtitles
+        /// themselves. An off plan then stays an explicit Off (`-1`), so a
+        /// retry or renewal starts fully off instead of letting the automatic
+        /// policy pick a forced track for a server-side mode Off.
         func adoptingProtocolV3Intent(
             plan: PlaybackV3Plan,
             selectedVersion: FileVersion,
-            activeQualityId: String
+            activeQualityId: String,
+            keepsExplicitOff: Bool = false
         ) -> LoadRequest {
             // Shared resolution order; see
             // `PlaybackV3Plan.selectedSubtitleInventoryItem`. An `off` plan
@@ -1129,7 +1135,7 @@ class PlayerViewModel {
             var request = copyForRecovery(
                 preferredFileId: plan.effectiveMediaFileId,
                 preferredAudioTrackIndex: plan.selectedTracks.audio?.index,
-                preferredSubtitleTrackIndex: embeddedFFmpegIndex,
+                preferredSubtitleTrackIndex: isSubtitleOff && keepsExplicitOff ? -1 : embeddedFFmpegIndex,
                 preferredSidecarSubtitleTrackId: sidecarTrackId,
                 offlineDownloadId: offlineDownloadId
             )
@@ -4813,7 +4819,8 @@ class PlayerViewModel {
         let adopted = lastLoadRequest.adoptingProtocolV3Intent(
             plan: protocolV3.plan,
             selectedVersion: prepared.selectedVersion,
-            activeQualityId: prepared.activeQualityId
+            activeQualityId: prepared.activeQualityId,
+            keepsExplicitOff: hasExplicitSubtitleChoice
         )
         // A seek candidate still carries the server's frozen subtitle. Save
         // the user's newer choice before loading: a failed candidate can be
