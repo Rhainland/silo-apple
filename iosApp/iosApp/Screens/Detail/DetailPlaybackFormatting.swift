@@ -270,10 +270,18 @@ enum DetailPlaybackFormatting {
 
     /// Whether a subtitle picked in the detail selector survives the page
     /// reloading, as it does when the viewer returns from the player. Off and
-    /// Auto always do; a track only while the reloaded version still offers
-    /// it. Matches tvOS, whose selector state outlives the player.
-    static func keepsManualSubtitlePick(_ index: Int?, isAvailable: (Int) -> Bool) -> Bool {
+    /// Auto always do. A track index belongs to one file, so a track pick
+    /// stays only while the reloaded page shows the file it was picked on and
+    /// that file still offers it. Matches tvOS, whose selector state outlives
+    /// the player.
+    static func keepsManualSubtitlePick(
+        _ index: Int?,
+        pickedFileId: Int?,
+        reloadedFileId: Int?,
+        isAvailable: (Int) -> Bool
+    ) -> Bool {
         guard let index, index >= 0 else { return true }
+        guard let pickedFileId, pickedFileId == reloadedFileId else { return false }
         return isAvailable(index)
     }
 

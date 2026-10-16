@@ -977,7 +977,8 @@ class PlayerViewModel {
     /// is kept, not the preference snapshot that produced it: a system
     /// caption request resolves from the OS language and would be lost if the
     /// generic preference snapshot were rerun in its place. Drained once the
-    /// load's server transition commits, or when the replan task exits.
+    /// load's server transition commits, or when the replan task (or a seek
+    /// it queued) exits. A newer automatic decision replaces it.
     private var deferredAutoSubtitlePick: SubtitleAutoSelection?
     private var resolvedServerUrl: String = ""
     private var currentWatchDetail: WatchDetail?
@@ -6400,7 +6401,10 @@ class PlayerViewModel {
             self.seekReplanTask = nil
             switch result {
             case .completed:
-                break
+                // A seek a replan queued completes here when it needs no
+                // replan of its own, so this is the last chance to apply a
+                // caption pick held for that replan.
+                self.reapplyDeferredAutoSubtitlePolicyIfNeeded()
             case .requiresReplan(let sourceSeconds):
                 if let protocolV3 = self.activePreparedProtocolV3,
                    protocolV3.serverFeatures.contains(PlaybackProtocolV3.seekReanchorFeature) {
@@ -9046,6 +9050,12 @@ class PlayerViewModel {
     /// alone" case (no preference points anywhere); `disable` and
     /// `select` actually mutate state.
     private func applyAutoSubtitle(_ pick: SubtitleAutoSelection) {
+        if pick != .noChange {
+            // A newer automatic decision replaces one still held for a load
+            // or replan; the held one was resolved for audio that may since
+            // have changed again.
+            deferredAutoSubtitlePick = nil
+        }
         switch pick {
         case .noChange:
             return

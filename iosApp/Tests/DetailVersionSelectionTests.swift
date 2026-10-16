@@ -27,13 +27,23 @@ final class DetailVersionSelectionTests: XCTestCase {
     /// survive the reload rather than be re-derived from the server.
     func testAManualSubtitlePickSurvivesTheReloadAfterThePlayer() {
         let offered: Set<Int> = [2, 3]
-        func keeps(_ index: Int?) -> Bool {
-            DetailPlaybackFormatting.keepsManualSubtitlePick(index) { offered.contains($0) }
+        func keeps(_ index: Int?, pickedOn picked: Int? = 10, reloaded: Int? = 10) -> Bool {
+            DetailPlaybackFormatting.keepsManualSubtitlePick(
+                index,
+                pickedFileId: picked,
+                reloadedFileId: reloaded
+            ) { offered.contains($0) }
         }
         XCTAssertTrue(keeps(-1), "Off")
         XCTAssertTrue(keeps(nil), "Auto")
         XCTAssertTrue(keeps(3))
         XCTAssertFalse(keeps(7), "a track the reloaded version no longer has")
+        // The reload can show another version, for example the default one
+        // after a play too short to record the file. The same index there is
+        // another stream, so the pick is reseeded; Off and Auto still stay.
+        XCTAssertFalse(keeps(3, pickedOn: 11), "a track picked on another file")
+        XCTAssertTrue(keeps(-1, pickedOn: 11, reloaded: 10))
+        XCTAssertTrue(keeps(nil, pickedOn: nil, reloaded: 10))
         // What the reload would otherwise show instead of that Off.
         XCTAssertNil(DetailPlaybackFormatting.launchPreferredSubtitleIndex(
             version: subtitleVersion(),

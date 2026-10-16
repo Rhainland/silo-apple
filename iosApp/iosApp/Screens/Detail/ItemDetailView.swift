@@ -343,6 +343,9 @@ private struct ItemDetailPhoneContent: View {
     @State private var preferredAudioTrackIndex: Int?
     @State private var preferredSubtitleTrackIndex: Int?
     @State private var preferredSubtitleTrackWasManuallySelected = false
+    /// The file a manual subtitle track pick was made on; its index means
+    /// nothing on another version.
+    @State private var preferredSubtitleTrackFileId: Int?
     @State private var preferredNextUpFileId: Int?
     @State private var preferredNextUpAudioTrackIndex: Int?
     @State private var preferredNextUpSubtitleTrackIndex: Int?
@@ -419,6 +422,7 @@ private struct ItemDetailPhoneContent: View {
             if !isReturning || !preferredSubtitleTrackWasManuallySelected {
                 preferredSubtitleTrackIndex = nil
                 preferredSubtitleTrackWasManuallySelected = false
+                preferredSubtitleTrackFileId = nil
             }
             if isReturning {
                 if let playback = takePlaybackReturn() {
@@ -848,6 +852,7 @@ private struct ItemDetailPhoneContent: View {
                         versionFileId: fileId,
                         candidate: preferredSubtitleTrackIndex
                     )
+                    preferredSubtitleTrackFileId = effectiveVersion(for: detail, versionFileId: fileId)?.fileId
                 },
                 onSelectAudioTrack: { index in
                     preferredAudioTrackIndex = sanitizedAudioTrackIndex(
@@ -869,6 +874,10 @@ private struct ItemDetailPhoneContent: View {
                         versionFileId: preferredVersionFileId,
                         candidate: index
                     )
+                    preferredSubtitleTrackFileId = effectiveVersion(
+                        for: detail,
+                        versionFileId: preferredVersionFileId
+                    )?.fileId
                     persistSubtitleSelection(
                         prefKey: prefKey(for: detail),
                         version: effectiveVersion(for: detail, versionFileId: preferredVersionFileId),
@@ -1037,12 +1046,15 @@ private struct ItemDetailPhoneContent: View {
     }
 
     /// Re-derive the seeded subtitle from the current detail unless the user
-    /// picked one on this visit and the reloaded version still offers it.
+    /// picked one on this visit and the reloaded page still shows it: the
+    /// same file, which still offers that track.
     private func reseedSubtitleOverride() {
         if preferredSubtitleTrackWasManuallySelected {
             guard let detail = viewModel.detail else { return }
             let keepsPick = DetailPlaybackFormatting.keepsManualSubtitlePick(
-                preferredSubtitleTrackIndex
+                preferredSubtitleTrackIndex,
+                pickedFileId: preferredSubtitleTrackFileId,
+                reloadedFileId: effectiveVersion(for: detail, versionFileId: preferredVersionFileId)?.fileId
             ) { index in
                 sanitizedSubtitleTrackIndex(
                     for: detail,
@@ -1052,6 +1064,7 @@ private struct ItemDetailPhoneContent: View {
             }
             if keepsPick { return }
             preferredSubtitleTrackWasManuallySelected = false
+            preferredSubtitleTrackFileId = nil
         }
         preferredSubtitleTrackIndex = nil
         seedSubtitleOverrideIfNeeded()
