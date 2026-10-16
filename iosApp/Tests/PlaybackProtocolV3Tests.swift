@@ -180,9 +180,12 @@ final class PlaybackProtocolV3Tests: XCTestCase {
     func testEmbeddedTextPickOnTranscodeReplansInsteadOfMountingItsSidecar() {
         let transcode = makeHLSRenditionPlan()
         let other = ProtocolV3SubtitleSelection.track("file:42:subtitle:8")
-        XCTAssertFalse(other.canApplyLocally(to: transcode, isMounted: false))
-        XCTAssertTrue(other.canApplyLocally(to: transcode, isMounted: true))
-        XCTAssertTrue(ProtocolV3SubtitleSelection.off.canApplyLocally(to: transcode, isMounted: false))
+        XCTAssertFalse(other.canApplyLocally(to: transcode, isMounted: false, serverCarriesSubtitleRenditions: true))
+        XCTAssertTrue(other.canApplyLocally(to: transcode, isMounted: true, serverCarriesSubtitleRenditions: true))
+        XCTAssertTrue(ProtocolV3SubtitleSelection.off.canApplyLocally(to: transcode, isMounted: false, serverCarriesSubtitleRenditions: true))
+        // A server that never carries renditions answers a replan with the
+        // same sidecar, so the client keeps mounting it locally.
+        XCTAssertTrue(other.canApplyLocally(to: transcode, isMounted: false))
 
         let external = makePlan(
             delivery: "server_transcode_hls", streamProtocol: "hls", container: "hls", subtitleMode: "off",

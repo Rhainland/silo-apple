@@ -507,13 +507,17 @@ final class AetherPlaybackController {
     /// published as a natively rendered, non-external track. The playlist
     /// declares exactly one; sidecars the engine injects are external.
     private var hlsSubtitleRenditionEngineID: Int? {
+        hlsSubtitleRenditionEngineID(in: engine.subtitleTracks)
+    }
+
+    private func hlsSubtitleRenditionEngineID(in tracks: [TrackInfo]) -> Int? {
         guard activeSpec?.hlsSubtitleRenditionAppTrackID != nil else { return nil }
-        return engine.subtitleTracks.first { $0.isNativelyRenderedSubtitle && !$0.isExternal }?.id
+        return tracks.first { $0.isNativelyRenderedSubtitle && !$0.isExternal }?.id
     }
 
     /// Applies a rendition pick that arrived before its legible option.
-    private func applyPendingHLSSubtitleRenditionSelection() {
-        guard pendingHLSSubtitleRenditionSelection, let engineID = hlsSubtitleRenditionEngineID else { return }
+    private func applyPendingHLSSubtitleRenditionSelection(in tracks: [TrackInfo]) {
+        guard pendingHLSSubtitleRenditionSelection, let engineID = hlsSubtitleRenditionEngineID(in: tracks) else { return }
         pendingHLSSubtitleRenditionSelection = false
         engine.selectSubtitleTrack(index: engineID)
     }
@@ -901,10 +905,15 @@ final class AetherPlaybackController {
         )
         .sink { [weak self] in
             guard let self, !isRegisteringExternalSubtitle else { return }
-            applyPendingHLSSubtitleRenditionSelection()
             publish(.inventoryChanged)
         }
         .store(in: &subscriptions)
+
+        // `@Published` emits before the property changes, so the pending pick
+        // resolves against the emitted list rather than `engine.subtitleTracks`.
+        engine.$subtitleTracks
+            .sink { [weak self] tracks in self?.applyPendingHLSSubtitleRenditionSelection(in: tracks) }
+            .store(in: &subscriptions)
 
         // The audio pipeline the engine built, once it settles: TrueHD Atmos
         // rendered for its heights reads "… Atmos → APAC 7.1.4", the channel

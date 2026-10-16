@@ -50,17 +50,21 @@ enum ProtocolV3SubtitleSelection: Equatable {
         return streamIndex
     }
 
-    func canApplyLocally(to plan: PlaybackV3Plan, isMounted: Bool) -> Bool {
+    /// `serverCarriesSubtitleRenditions`: the attempt's server negotiated
+    /// `hls_subtitle_renditions_v1`, so it can carry an embedded text track in
+    /// a transcode's own stream.
+    func canApplyLocally(to plan: PlaybackV3Plan, isMounted: Bool, serverCarriesSubtitleRenditions: Bool = false) -> Bool {
         guard plan.subtitle.mode != PlaybackProtocolV3.SubtitleMode.burnIn else { return false }
         if self == .off { return true }
         guard let item = inventoryItem(in: plan) else { return false }
         if isMounted { return true }
-        // A transcode carries an embedded text track inside its own stream
-        // (`hls_subtitle_renditions_v1`). Mounting the inventory sidecar
-        // instead would demux the whole source file before the first cue, so
-        // the pick goes to the server; a server that cannot emit the rendition
-        // answers with a sidecar plan on the same transport.
-        if plan.delivery == PlaybackProtocolV3.PlanDelivery.transcodeHLS,
+        // A transcode carries an embedded text track inside its own stream.
+        // Mounting the inventory sidecar instead would demux the whole source
+        // file before the first cue, so the pick goes to the server; a server
+        // that cannot emit the rendition this time answers with a sidecar plan
+        // on the same transport.
+        if serverCarriesSubtitleRenditions,
+           plan.delivery == PlaybackProtocolV3.PlanDelivery.transcodeHLS,
            item.source == "embedded",
            !SubtitleCodecClassifier.isBitmap(item.codec) {
             return false
