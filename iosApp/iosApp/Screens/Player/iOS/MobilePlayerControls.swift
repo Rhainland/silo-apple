@@ -382,11 +382,11 @@ struct MobilePlayerControls: View {
     private func actionRowContent(style: ActionRowStyle) -> some View {
         // The Audio & Subtitles pill is only inert when the picker would have
         // nothing at all in it. A track-less file can still offer subtitle
-        // search (and the explanation when search isn't configured), so those
-        // entry points keep the sheet reachable.
+        // search when the server has a provider, so that entry point keeps
+        // the sheet reachable.
         let noTracks = viewModel.audioTracks.isEmpty
             && viewModel.subtitleTracks.isEmpty
-            && !viewModel.subtitleSearchVisible
+            && !viewModel.subtitleSearchEnabled
             && !aiSubtitlesAvailable
         return HStack(spacing: 8) {
             if viewModel.hasQualityChoice {
