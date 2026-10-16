@@ -6,13 +6,14 @@ texts are bundled beside this file and are available from Settings > About >
 Acknowledgements.
 
 AetherEngine
-  Revision: 23889c5be4ae1195cacb93d4168c6d9487fcf668 (upstream release
+  Revision: b0712217abb7399aeb21f875bcc7c26e7af92fd8 (upstream release
   7.36.0, through upstream commit 74c81b3c, plus Silo patches for subtitle renditions,
   source timing, primary ASS routing with normalized secondary/PiP text,
   refreshable authorization for native HLS, sidecar subtitles and fonts,
-  dense subtitle catch-up, audio-switch tracking, and playback recovery)
+  dense subtitle catch-up, audio-switch tracking, playback recovery, and
+  resuming forward-only sources)
   License: GNU LGPL version 3 with the upstream Apple Store / DRM exception
-  Source (modified, as built): https://github.com/Silo-Server/AetherEngine/tree/23889c5be4ae1195cacb93d4168c6d9487fcf668
+  Source (modified, as built): https://github.com/Silo-Server/AetherEngine/tree/b0712217abb7399aeb21f875bcc7c26e7af92fd8
   Upstream base: https://github.com/superuser404notfound/AetherEngine/tree/74c81b3c5a0047e1b0229805c20562910367b0e5
   Rebuild: the Package.swift and source tree at that revision
 
@@ -133,8 +134,9 @@ SwiftAssRenderer, SwiftLibass, and local ASS rendering
   manifest, and instructions for rebuilding with a modified library are
   published as Silo-source-<app-commit>.tar.gz at:
   https://github.com/Silo-Server/silo-apple/releases
-  Tagged builds place the archive on their release; manually dispatched
-  TestFlight builds use a source-<app-commit> release. The TestFlight build's
+  Each TestFlight build places the archive on its vX.Y.Z-beta.<build>
+  release (earlier builds used a source-<app-commit> release), and each
+  sideload build on its own release. The TestFlight build's
   What to Test notes include the exact archive URL. Builds from the release
   and sideload workflows also show it at the top of these acknowledgements
   and behind Settings > About > Source Code on iPhone and iPad; other builds
