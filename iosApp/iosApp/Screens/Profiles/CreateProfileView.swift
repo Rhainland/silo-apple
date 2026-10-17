@@ -701,6 +701,24 @@ struct CreateProfileView: View {
     // MARK: - Submit
 
     private func createProfile() async {
+        isLoading = true
+        formError = nil
+        defer { isLoading = false }
+
+        // Without the support answer a Kids profile would be created with
+        // requests allowed, the server's default. The form stays editable
+        // during this read, so the checks below run after it, on the values
+        // that are sent.
+        if requestsAllowedSupported == nil {
+            await loadRequestsSupport()
+        }
+        guard let requestsAllowedSupported else {
+            formError = CreateProfileFailure(
+                message: "Couldn't reach the server to check this profile's request settings. Try again."
+            )
+            return
+        }
+
         guard !name.trimmingCharacters(in: .whitespaces).isEmpty else {
             formError = CreateProfileFailure(title: "Name Required", message: "Please enter a name.")
             return
@@ -716,22 +734,6 @@ struct CreateProfileView: View {
             formError = CreateProfileFailure(
                 title: "Choose a Library",
                 message: "Select at least one library for this child profile."
-            )
-            return
-        }
-
-        isLoading = true
-        formError = nil
-        defer { isLoading = false }
-
-        // Without the support answer a Kids profile would be created with
-        // requests allowed, the server's default.
-        if requestsAllowedSupported == nil {
-            await loadRequestsSupport()
-        }
-        guard let requestsAllowedSupported else {
-            formError = CreateProfileFailure(
-                message: "Couldn't reach the server to check this profile's request settings. Try again."
             )
             return
         }
