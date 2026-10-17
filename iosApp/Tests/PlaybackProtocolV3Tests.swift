@@ -155,6 +155,11 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertNil(controller.aetherSubtitleID(forAppID: rowID))
         controller.selectSubtitleTrack(id: rowID)
         XCTAssertNil(controller.engine.activeSubtitleTrackIndex)
+        XCTAssertTrue(controller.hasPendingHLSSubtitleRenditionSelection)
+        // Off while the pick waits cancels it, so the option is not selected
+        // when AVPlayer publishes it.
+        controller.selectSubtitleTrack(id: nil)
+        XCTAssertFalse(controller.hasPendingHLSSubtitleRenditionSelection)
     }
 
     func testHLSSubtitleRenditionRejectsContradictoryPlans() {

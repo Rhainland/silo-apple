@@ -9034,7 +9034,8 @@ class PlayerViewModel {
             }
         }
         let engineID = track.flatMap { aetherPlaybackController.aetherSubtitleID(forAppID: $0.trackId) }
-        if aetherPlaybackController.engine.activeSubtitleTrackIndex != engineID {
+        if aetherPlaybackController.engine.activeSubtitleTrackIndex != engineID
+            || aetherPlaybackController.hasPendingHLSSubtitleRenditionSelection {
             applySubtitleTrackSelection(track?.trackId, reason: reason)
         }
         lastLoadRequest = lastLoadRequest?.adoptingLocalProtocolV3SubtitleSelection(selection, plan: plan)
@@ -9076,7 +9077,8 @@ class PlayerViewModel {
         if !isBurnedIn, trackID == nil || engineID != nil || isPendingRendition {
             // An unpublished rendition still has to reach the controller, which
             // holds the pick until AVPlayer offers the option.
-            if aetherPlaybackController.engine.activeSubtitleTrackIndex != engineID || isPendingRendition && engineID == nil {
+            if aetherPlaybackController.engine.activeSubtitleTrackIndex != engineID || isPendingRendition && engineID == nil
+                || aetherPlaybackController.hasPendingHLSSubtitleRenditionSelection {
                 applySubtitleTrackSelection(trackID, reason: "restored_local_selection")
             }
         } else if committedProtocolV3LoadEpoch != nil {

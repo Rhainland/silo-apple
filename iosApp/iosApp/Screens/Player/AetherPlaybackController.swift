@@ -498,6 +498,14 @@ final class AetherPlaybackController {
         return appSubtitleIDByAetherID[id] ?? Int64(id)
     }
 
+    /// Whether a rendition pick waits for AVPlayer to publish its option.
+    /// Off still has to reach `selectSubtitleTrack` then, even though the
+    /// engine already reports no subtitle, or the option would be selected
+    /// when it appears.
+    var hasPendingHLSSubtitleRenditionSelection: Bool {
+        pendingHLSSubtitleRenditionSelection
+    }
+
     /// Whether a picker row is the active plan's in-stream subtitle rendition.
     func isHLSSubtitleRendition(appTrackID: Int64) -> Bool {
         activeSpec?.hlsSubtitleRenditionAppTrackID == appTrackID
