@@ -41,9 +41,10 @@ final class SubtitleProvidersStore {
     /// moment later on a server that really has no providers.
     private(set) var isAvailable = true
 
-    /// Bumped on every `reset()` so a probe that finishes after a sign-out
-    /// or profile switch discards its result instead of repopulating the
-    /// next account's flag.
+    /// Bumped on every `reset()` and `refresh()`, so a probe that finishes
+    /// after a sign-out, a profile switch, or a newer probe discards its
+    /// result instead of overwriting a newer answer or the next account's
+    /// flag.
     private var generation = 0
 
     private let api: SiloAI
@@ -53,6 +54,7 @@ final class SubtitleProvidersStore {
     }
 
     func refresh() async {
+        generation &+= 1
         let gen = generation
         let status = try? await api.subtitleProvidersStatus()
         guard gen == generation else { return }

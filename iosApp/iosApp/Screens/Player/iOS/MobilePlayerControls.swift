@@ -377,6 +377,23 @@ struct MobilePlayerControls: View {
             actionRowContent(style: .icons)
         }
         .frame(maxWidth: .infinity)
+        // A track-less file on a server last seen without a provider leaves
+        // the pill inert, so the sheet's own provider refresh cannot run.
+        // Ask again each time the controls show, so a provider added
+        // meanwhile makes search reachable.
+        .onAppear {
+            if trackPickerIsEmpty, viewModel.subtitleSearchVisible, !viewModel.subtitleSearchEnabled {
+                viewModel.refreshSubtitleProviders()
+            }
+        }
+    }
+
+    /// The Audio & Subtitles picker would have nothing in it apart from
+    /// subtitle search.
+    private var trackPickerIsEmpty: Bool {
+        viewModel.audioTracks.isEmpty
+            && viewModel.subtitleTracks.isEmpty
+            && !aiSubtitlesAvailable
     }
 
     private func actionRowContent(style: ActionRowStyle) -> some View {
@@ -384,10 +401,7 @@ struct MobilePlayerControls: View {
         // nothing at all in it. A track-less file can still offer subtitle
         // search when the server has a provider, so that entry point keeps
         // the sheet reachable.
-        let noTracks = viewModel.audioTracks.isEmpty
-            && viewModel.subtitleTracks.isEmpty
-            && !viewModel.subtitleSearchEnabled
-            && !aiSubtitlesAvailable
+        let noTracks = trackPickerIsEmpty && !viewModel.subtitleSearchEnabled
         return HStack(spacing: 8) {
             if viewModel.hasQualityChoice {
                 qualityMenu(compact: style != .full)
