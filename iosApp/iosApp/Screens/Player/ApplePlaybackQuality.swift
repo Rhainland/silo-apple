@@ -156,14 +156,18 @@ enum ApplePlaybackQuality {
     /// the cap, or the highest at that resolution when uncapped. A same-named
     /// rung is not trusted, since the server's `1080p-medium` is not Apple's.
     /// When no rung fits, the session's own id is kept and no row matches.
-    /// When the source itself fits the pair, the server can play it
+    /// When the plan's source itself fits the pair (no taller than the saved
+    /// resolution, and a known bitrate within any cap), the server plays it
     /// unchanged and no rung names what plays: the bare resolution is
-    /// returned, which no plan of that source lists as a rung.
+    /// returned, which no plan of that source lists as a rung. The source
+    /// comes from the plan's descriptor; API v2 drops the menu's source entry.
     static func planQualityId(
         clientQualityId: String,
         bandwidthCapKbps: Int?,
         isServerOwned: Bool,
-        availableQualities: [PlaybackV3AvailableQuality]
+        availableQualities: [PlaybackV3AvailableQuality],
+        sourceHeight: Int?,
+        sourceBitrateKbps: Int?
     ) -> String {
         let clientId = protocolV3QualityId(clientQualityId)
         guard clientId != autoId,
@@ -173,10 +177,9 @@ enum ApplePlaybackQuality {
         }
         let resolution = AppleQualityAxes.split(clientId).resolution
         let cap = bandwidthCapKbps.flatMap(positiveBitrate)
-        if let source = availableQualities.first(where: \.preservesSource),
-           let sourceHeight = source.height, sourceHeight > 0,
+        if let sourceHeight, sourceHeight > 0,
            let height = Int(resolution.dropLast()), sourceHeight <= height,
-           cap.map({ source.bitrateKbps <= $0 }) ?? true {
+           cap.map({ cap in sourceBitrateKbps.map { $0 > 0 && $0 <= cap } ?? false }) ?? true {
             return resolution
         }
         let atResolution = playbackOptions(serverQualities: availableQualities).filter {

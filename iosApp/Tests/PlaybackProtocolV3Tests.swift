@@ -2770,14 +2770,31 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertFalse(settingsFallback.isServerOwned)
     }
 
-    /// The server's current ladder, with the source entry it lists first.
+    /// The server's current ladder as API v2 sends it, without a source entry.
     private static let serverLadder: [PlaybackV3AvailableQuality] = [
-        ("original", 1_080, 15_000), ("1080p-high", 1_080, 10_000), ("1080p-medium", 1_080, 6_000),
-        ("1080p-low", 1_080, 3_000), ("720p-high", 720, 4_000), ("720p-medium", 720, 2_000),
-        ("720p-low", 720, 1_500), ("480p", 480, 1_000),
+        ("1080p-high", 1_080, 10_000), ("1080p-medium", 1_080, 6_000), ("1080p-low", 1_080, 3_000),
+        ("720p-high", 720, 4_000), ("720p-medium", 720, 2_000), ("720p-low", 720, 1_500), ("480p", 480, 1_000),
     ].map { label, height, bitrate in
         PlaybackV3AvailableQuality(label: label, displayName: nil, height: height,
-                                   bitrateKbps: bitrate, preservesSource: label == "original")
+                                   bitrateKbps: bitrate, preservesSource: false)
+    }
+
+    /// The plan rung for a quality and cap, on a plan of a 15 Mbps 1080p
+    /// source unless `source` says otherwise.
+    private func planRung(
+        _ clientQualityId: String?,
+        cap: Int?,
+        isServerOwned: Bool = false,
+        source: (height: Int?, bitrateKbps: Int?) = (1_080, 15_000)
+    ) -> String {
+        ApplePlaybackQuality.planQualityId(
+            clientQualityId: clientQualityId ?? ApplePlaybackQuality.autoId,
+            bandwidthCapKbps: cap,
+            isServerOwned: isServerOwned,
+            availableQualities: Self.serverLadder,
+            sourceHeight: source.height,
+            sourceBitrateKbps: source.bitrateKbps
+        )
     }
 
     /// A saved pair resolves to the plan's rung at its resolution within its
@@ -2789,12 +2806,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
                 preferredQualityOverride: nil,
                 settingsQuality: AppleQualityAxes(resolution: resolution, bitrateKbps: cap)
             )
-            return ApplePlaybackQuality.planQualityId(
-                clientQualityId: session.preferredQuality ?? ApplePlaybackQuality.autoId,
-                bandwidthCapKbps: session.bandwidthCapKbps,
-                isServerOwned: false,
-                availableQualities: Self.serverLadder
-            )
+            return planRung(session.preferredQuality, cap: session.bandwidthCapKbps)
         }
         XCTAssertEqual(AppleQualityAxes.join(resolution: "1080p", bitrateKbps: 3_000), "1080p-8")
         XCTAssertEqual(resolve("1080p", 3_000), "1080p-low")
@@ -2806,29 +2818,25 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         // Nothing at the resolution fits: the session keeps its own id and
         // no menu row matches it.
         XCTAssertEqual(resolve("1080p", 2_000), "1080p-8")
-        XCTAssertEqual(resolve("2160p", nil), "2160p")
         let resolved = ApplePlaybackQuality.planQualityId(
-            clientQualityId: "1080p-8", bandwidthCapKbps: 3_000, isServerOwned: false, availableQualities: []
+            clientQualityId: "1080p-8", bandwidthCapKbps: 3_000, isServerOwned: false,
+            availableQualities: [], sourceHeight: 1_080, sourceBitrateKbps: 15_000
         )
         XCTAssertEqual(resolved, "1080p-8")
     }
 
-    /// When the 15 Mbps 1080p source fits the saved pair the server can play
-    /// it unchanged, so no rung is named. Above the saved resolution the
-    /// source is transcoded and the best rung within the cap is.
+    /// When the plan's source fits the saved pair the server plays it
+    /// unchanged, so no rung is named, even though the menu lists rungs at
+    /// that resolution. A taller source is transcoded and the best rung
+    /// within the cap is named.
     func testASavedQualityTheSourceFitsNamesNoRung() {
-        func resolve(_ client: String, _ cap: Int?, _ ladder: [PlaybackV3AvailableQuality]) -> String {
-            ApplePlaybackQuality.planQualityId(
-                clientQualityId: client, bandwidthCapKbps: cap, isServerOwned: false, availableQualities: ladder
-            )
-        }
-        XCTAssertEqual(resolve("1080p-high", nil, Self.serverLadder), "1080p")
-        XCTAssertEqual(resolve("1080p-high", 20_000, Self.serverLadder), "1080p")
-        let uhdSource = [PlaybackV3AvailableQuality(
-            label: "original", displayName: nil, height: 2_160, bitrateKbps: 60_000, preservesSource: true
-        )] + Self.serverLadder.dropFirst()
-        XCTAssertEqual(resolve("1080p-high", nil, uhdSource), "1080p-high", "uncapped takes the best rung")
-        XCTAssertEqual(resolve("2160p", nil, uhdSource), "2160p")
+        XCTAssertEqual(planRung("1080p-high", cap: nil), "1080p")
+        XCTAssertEqual(planRung("1080p-high", cap: 20_000), "1080p")
+        XCTAssertEqual(planRung("1080p-high", cap: 20_000, source: (1_080, nil)), "1080p-high",
+                       "an unknown source bitrate under a cap is transcoded")
+        XCTAssertEqual(planRung("1080p-high", cap: nil, source: (2_160, 60_000)), "1080p-high",
+                       "uncapped takes the best rung")
+        XCTAssertEqual(planRung("2160p", cap: nil, source: (2_160, 60_000)), "2160p")
     }
 
     /// A rung picked from the plan's menu is already a plan identity, even
@@ -2839,12 +2847,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
             settingsQuality: AppleQualityAxes(resolution: "1080p", bitrateKbps: 3_000)
         )
         XCTAssertEqual(
-            ApplePlaybackQuality.planQualityId(
-                clientQualityId: reload.preferredQuality ?? ApplePlaybackQuality.autoId,
-                bandwidthCapKbps: reload.bandwidthCapKbps,
-                isServerOwned: true,
-                availableQualities: Self.serverLadder
-            ),
+            planRung(reload.preferredQuality, cap: reload.bandwidthCapKbps, isServerOwned: true),
             "1080p-medium"
         )
         let selection = ApplePlaybackQuality.protocolV3Selection(
@@ -2853,12 +2856,8 @@ final class PlaybackProtocolV3Tests: XCTestCase {
             autoBandwidthCapKbps: 3_000
         )
         XCTAssertEqual(
-            ApplePlaybackQuality.planQualityId(
-                clientQualityId: selection.clientQualityId,
-                bandwidthCapKbps: selection.bandwidthCapKbps,
-                isServerOwned: selection.isServerOwned,
-                availableQualities: Self.serverLadder
-            ),
+            planRung(selection.clientQualityId, cap: selection.bandwidthCapKbps,
+                     isServerOwned: selection.isServerOwned),
             "1080p-medium"
         )
     }
@@ -2870,12 +2869,8 @@ final class PlaybackProtocolV3Tests: XCTestCase {
             axes: AppleQualityAxes(resolution: "720p", bitrateKbps: 1_500)
         )
         XCTAssertEqual(
-            ApplePlaybackQuality.planQualityId(
-                clientQualityId: selection.clientQualityId,
-                bandwidthCapKbps: selection.bandwidthCapKbps,
-                isServerOwned: selection.isServerOwned,
-                availableQualities: Self.serverLadder
-            ),
+            planRung(selection.clientQualityId, cap: selection.bandwidthCapKbps,
+                     isServerOwned: selection.isServerOwned),
             "720p-low"
         )
     }

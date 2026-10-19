@@ -450,6 +450,11 @@ actor PlaybackSessionBridge {
         /// by the active plan. Recovery replans must keep that identifier
         /// instead of translating it through the local Settings ladder.
         var usesServerQualityPreference: Bool
+        /// Display only: the quality is the viewer's in-player pick, so the
+        /// player names its plan rung as picked rather than resolving it as
+        /// a saved pair. Unlike `usesServerQualityPreference` it is also true
+        /// for a start that carries the pick, and never changes a request.
+        var qualityIsViewerPick: Bool
         /// The independent bandwidth ceiling captured for this attempt. Every
         /// replan must repeat it or recovery silently widens the connection.
         var bandwidthCapKbps: Int?
@@ -1258,6 +1263,7 @@ actor PlaybackSessionBridge {
             attemptCount: 1,
             clientQualityId: staged.clientQualityId,
             usesServerQualityPreference: false,
+            qualityIsViewerPick: qualityIsViewerPick,
             bandwidthCapKbps: staged.bandwidthCapKbps,
             snapshot: staged.snapshot,
             serverFeatures: staged.serverFeatures,
@@ -1290,7 +1296,9 @@ actor PlaybackSessionBridge {
                 clientQualityId: staged.clientQualityId,
                 bandwidthCapKbps: staged.bandwidthCapKbps,
                 isServerOwned: qualityIsViewerPick,
-                availableQualities: staged.plan.availableQualities
+                availableQualities: staged.plan.availableQualities,
+                sourceHeight: staged.plan.source.height,
+                sourceBitrateKbps: staged.plan.source.bitrateKbps
             ),
             protocolV3: preparedV3
         )
@@ -1518,6 +1526,8 @@ actor PlaybackSessionBridge {
             ?? active.clientQualityId
         let requestedUsesServerQualityPreference = qualitySelection?.isServerOwned
             ?? active.usesServerQualityPreference
+        let requestedQualityIsViewerPick = qualitySelection?.isServerOwned
+            ?? active.qualityIsViewerPick
         let requestedQualityPreference = qualitySelection?.serverPreference
             ?? (requestedUsesServerQualityPreference
                 ? requestedClientQualityId
@@ -1722,6 +1732,7 @@ actor PlaybackSessionBridge {
             active.plan = nextPlan
             active.clientQualityId = requestedClientQualityId
             active.usesServerQualityPreference = requestedUsesServerQualityPreference
+            active.qualityIsViewerPick = requestedQualityIsViewerPick
             active.bandwidthCapKbps = requestedBandwidthCapKbps
             stageProtocolV3Transition(
                 candidateSessionId: nextSessionId,
@@ -1751,8 +1762,10 @@ actor PlaybackSessionBridge {
                 activeQualityId: ApplePlaybackQuality.planQualityId(
                     clientQualityId: requestedClientQualityId,
                     bandwidthCapKbps: requestedBandwidthCapKbps,
-                    isServerOwned: requestedUsesServerQualityPreference,
-                    availableQualities: nextPlan.availableQualities
+                    isServerOwned: requestedQualityIsViewerPick,
+                    availableQualities: nextPlan.availableQualities,
+                    sourceHeight: nextPlan.source.height,
+                    sourceBitrateKbps: nextPlan.source.bitrateKbps
                 ),
                 protocolV3: preparedV3
             )
