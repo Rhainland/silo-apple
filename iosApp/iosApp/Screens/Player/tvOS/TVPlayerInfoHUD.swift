@@ -817,8 +817,8 @@ private struct VideoPane: View {
                                     HUDPickerPresentation(
                                         title: "Quality",
                                         options: qualityOptions,
-                                        // No row is checked while a fixed saved
-                                        // resolution sets the quality.
+                                        // No row is checked when the plan
+                                        // lists no rung for the session.
                                         selection: viewModel.highlightedQualityOptionId ?? "",
                                         onSelect: { viewModel.switchQuality($0) }
                                     )
@@ -928,7 +928,8 @@ private struct VideoPane: View {
             return error
         }
         return viewModel.qualityOptions.first(where: { $0.id == viewModel.activeQualityId })?.labelWithBitrate
-            ?? ApplePlaybackQuality.displayNameWithBitrate(for: viewModel.activeQualityId)
+            // A local rung's bitrate is not the session's cap, so it is not shown.
+            ?? ApplePlaybackQuality.displayName(for: viewModel.activeQualityId)
     }
 
     private var qualityOptions: [HUDDropdownOption] {

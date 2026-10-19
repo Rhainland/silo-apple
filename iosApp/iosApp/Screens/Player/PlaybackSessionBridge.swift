@@ -1278,10 +1278,15 @@ actor PlaybackSessionBridge {
             watchDetail: watchDetail,
             selectedVersion: staged.selectedVersion,
             session: staged.session,
-            // The session's preference, whether or not this plan lists a rung
-            // for it: a fixed saved resolution must not read as Auto. Which
-            // menu row lights is the player's call.
-            activeQualityId: ApplePlaybackQuality.protocolV3QualityId(staged.clientQualityId),
+            // The plan's rung for the session's preference: a fixed saved
+            // resolution must neither read as Auto nor name a local rung the
+            // plan's menu does not list.
+            activeQualityId: ApplePlaybackQuality.planQualityId(
+                clientQualityId: staged.clientQualityId,
+                bandwidthCapKbps: staged.bandwidthCapKbps,
+                isServerOwned: false,
+                availableQualities: staged.plan.availableQualities
+            ),
             protocolV3: preparedV3
         )
     }
@@ -1738,7 +1743,12 @@ actor PlaybackSessionBridge {
                 watchDetail: watchDetail,
                 selectedVersion: selectedVersion,
                 session: nextSession,
-                activeQualityId: ApplePlaybackQuality.protocolV3QualityId(requestedClientQualityId),
+                activeQualityId: ApplePlaybackQuality.planQualityId(
+                    clientQualityId: requestedClientQualityId,
+                    bandwidthCapKbps: requestedBandwidthCapKbps,
+                    isServerOwned: requestedUsesServerQualityPreference,
+                    availableQualities: nextPlan.availableQualities
+                ),
                 protocolV3: preparedV3
             )
         }

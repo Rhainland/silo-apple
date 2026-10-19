@@ -2770,6 +2770,86 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertFalse(settingsFallback.isServerOwned)
     }
 
+    /// The server's current ladder, with the source entry it lists first.
+    private static let serverLadder: [PlaybackV3AvailableQuality] = [
+        ("original", 1_080, 15_000), ("1080p-high", 1_080, 10_000), ("1080p-medium", 1_080, 6_000),
+        ("1080p-low", 1_080, 3_000), ("720p-high", 720, 4_000), ("720p-medium", 720, 2_000),
+        ("720p-low", 720, 1_500), ("480p", 480, 1_000),
+    ].map { label, height, bitrate in
+        PlaybackV3AvailableQuality(label: label, displayName: nil, height: height,
+                                   bitrateKbps: bitrate, preservesSource: label == "original")
+    }
+
+    /// A saved pair resolves to the plan's rung at its resolution within its
+    /// cap, not to the local rung `join` named. 1080p at 3 Mbps joins as the
+    /// local 8 Mbps `1080p-8`, which the plan does not list.
+    func testASavedQualityResolvesToThePlansRungWithinItsCap() {
+        func resolve(_ resolution: String, _ cap: Int?) -> String {
+            let session = PlaybackSessionBridge.startQuality(
+                preferredQualityOverride: nil,
+                settingsQuality: AppleQualityAxes(resolution: resolution, bitrateKbps: cap)
+            )
+            return ApplePlaybackQuality.planQualityId(
+                clientQualityId: session.preferredQuality ?? ApplePlaybackQuality.autoId,
+                bandwidthCapKbps: session.bandwidthCapKbps,
+                isServerOwned: false,
+                availableQualities: Self.serverLadder
+            )
+        }
+        XCTAssertEqual(AppleQualityAxes.join(resolution: "1080p", bitrateKbps: 3_000), "1080p-8")
+        XCTAssertEqual(resolve("1080p", 3_000), "1080p-low")
+        XCTAssertEqual(resolve("1080p", 8_000), "1080p-medium", "the local 1080p-8 is not the server's")
+        XCTAssertEqual(resolve("1080p", 12_000), "1080p-high", "the local 1080p-medium names a 12 Mbps rung")
+        XCTAssertEqual(resolve("1080p", nil), "1080p-high", "uncapped takes the best rung at the resolution")
+        XCTAssertEqual(resolve("720p", 2_000), "720p-medium")
+        XCTAssertEqual(resolve("auto", 3_000), "auto")
+
+        // Nothing at the resolution fits: the session keeps its own id and
+        // no menu row matches it.
+        XCTAssertEqual(resolve("1080p", 2_000), "1080p-8")
+        XCTAssertEqual(resolve("2160p", nil), "2160p")
+        let resolved = ApplePlaybackQuality.planQualityId(
+            clientQualityId: "1080p-8", bandwidthCapKbps: 3_000, isServerOwned: false, availableQualities: []
+        )
+        XCTAssertEqual(resolved, "1080p-8")
+    }
+
+    /// A rung picked from the plan's menu is already a plan identity, even
+    /// when a local rung shares its name.
+    func testAPickedPlanRungKeepsItsId() {
+        let selection = ApplePlaybackQuality.protocolV3Selection(
+            requestedQualityId: "1080p-medium",
+            availableQualities: Self.serverLadder,
+            autoBandwidthCapKbps: 3_000
+        )
+        XCTAssertEqual(
+            ApplePlaybackQuality.planQualityId(
+                clientQualityId: selection.clientQualityId,
+                bandwidthCapKbps: selection.bandwidthCapKbps,
+                isServerOwned: selection.isServerOwned,
+                availableQualities: Self.serverLadder
+            ),
+            "1080p-medium"
+        )
+    }
+
+    /// A connection change replans with the other saved pair, which resolves
+    /// against the new plan like a start does.
+    func testTheCellularPairResolvesAgainstTheReplannedLadder() {
+        let selection = ApplePlaybackQuality.protocolV3Selection(
+            axes: AppleQualityAxes(resolution: "720p", bitrateKbps: 1_500)
+        )
+        XCTAssertEqual(
+            ApplePlaybackQuality.planQualityId(
+                clientQualityId: selection.clientQualityId,
+                bandwidthCapKbps: selection.bandwidthCapKbps,
+                isServerOwned: selection.isServerOwned,
+                availableQualities: Self.serverLadder
+            ),
+            "720p-low"
+        )
+    }
+
     func testPlannedQualityMenuKeepsServerOrderAndShowsBitrateForCappedRungs() {
         // A plan that offers a lower-resolution version ("1080p") beside
         // transcode rungs of the 4K source.

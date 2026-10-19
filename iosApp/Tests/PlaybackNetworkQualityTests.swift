@@ -168,24 +168,29 @@ final class PlaybackNetworkQualityTests: XCTestCase {
         XCTAssertEqual(start.bandwidthCapKbps, 20_000)
     }
 
-    /// Auto lights only while the session's preference is auto, a fixed rung
-    /// only when the viewer picked it, and a fixed saved resolution lights
-    /// nothing, even beside a rung of the same name, so Auto stays a choice.
-    func testTheMenuLightsAutoOnlyForAnAutoPreference() {
+    /// The menu lights the rung the session plays at, picked or saved, and
+    /// Auto only while the session's preference is auto. A rung the plan
+    /// does not list lights nothing.
+    func testTheMenuLightsTheSessionsRung() {
         let model = PlayerViewModel()
         defer { model.cleanup() }
+        model.qualityOptions = [ApplePlaybackQuality.auto] + ["1080p-low", "720p-medium"].map {
+            ApplePlaybackQualityOption(id: $0, label: $0, resolution: "", bitrateKbps: 0, isAuto: false)
+        }
 
         model.activeQualityId = ApplePlaybackQuality.autoId
         XCTAssertEqual(model.highlightedQualityOptionId, ApplePlaybackQuality.autoId)
 
-        // Saved 1080p, source plays as-is: the session's id is the saved rung.
-        model.activeQualityId = "1080p-high"
+        // A saved 1080p at 3 Mbps the bridge resolved to the plan's rung.
+        model.activeQualityId = "1080p-low"
+        XCTAssertEqual(model.highlightedQualityOptionId, "1080p-low", "a saved quality lights its rung")
+        // A saved quality no rung fits.
+        model.activeQualityId = "1080p-8"
         XCTAssertNil(model.highlightedQualityOptionId)
-        model.activeQualityId = "720p"
-        XCTAssertNil(model.highlightedQualityOptionId, "a saved 720p does not light the plan's 720p row")
 
-        model.recordViewerQualityPick("720p", forContentId: "episode-1", onMeteredNetwork: false)
-        XCTAssertEqual(model.highlightedQualityOptionId, "720p", "the rung the viewer picked lights")
+        model.recordViewerQualityPick("720p-medium", forContentId: "episode-1", onMeteredNetwork: false)
+        model.activeQualityId = "720p-medium"
+        XCTAssertEqual(model.highlightedQualityOptionId, "720p-medium", "the rung the viewer picked lights")
     }
 
     /// One quality switch at a time: a pick while one is in flight is ignored

@@ -144,6 +144,40 @@ enum ApplePlaybackQuality {
         return [auto] + planned
     }
 
+    /// The plan rung a session plays at, so the pill and the checked menu row
+    /// name a quality the plan actually lists.
+    ///
+    /// A server-owned id (a rung picked from this plan's menu) is already a
+    /// plan identity. A saved settings pair is not: `join` mapped it onto
+    /// Apple's local ladder, whose ids and bitrates differ from the server's
+    /// (a saved 1080p at 3 Mbps joins as the local 8 Mbps `1080p-8`, which no
+    /// plan lists). That pair is resolved from what the session sent: the
+    /// plan's rung at the saved resolution with the highest bitrate within
+    /// the cap, or the highest at that resolution when uncapped. A same-named
+    /// rung is not trusted, since the server's `1080p-medium` is not Apple's.
+    /// When no rung fits, the session's own id is kept and no row matches.
+    static func planQualityId(
+        clientQualityId: String,
+        bandwidthCapKbps: Int?,
+        isServerOwned: Bool,
+        availableQualities: [PlaybackV3AvailableQuality]
+    ) -> String {
+        let clientId = protocolV3QualityId(clientQualityId)
+        guard clientId != autoId,
+              !isServerOwned,
+              settingsOptions.contains(where: { $0.id == clientId }) else {
+            return clientId
+        }
+        let resolution = AppleQualityAxes.split(clientId).resolution
+        let atResolution = playbackOptions(serverQualities: availableQualities).filter {
+            !$0.isAuto && $0.resolution == resolution
+        }
+        let candidates = bandwidthCapKbps.flatMap(positiveBitrate).map { cap in
+            atResolution.filter { $0.bitrateKbps <= cap }
+        } ?? atResolution
+        return candidates.max(by: { $0.bitrateKbps < $1.bitrateKbps })?.id ?? clientId
+    }
+
     /// Whether the plan offers a fixed quality to pick. Auto is added by the
     /// client, so a menu holding only Auto is no choice.
     static func hasChoice(among options: [ApplePlaybackQualityOption]) -> Bool {

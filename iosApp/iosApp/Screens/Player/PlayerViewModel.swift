@@ -3524,16 +3524,16 @@ class PlayerViewModel {
         explicitQualityPick.map { $0.contentId == contentId } ?? false
     }
 
-    /// The in-player menu row to light. Auto only while the session's
-    /// preference is auto; a fixed rung only when the viewer picked it for
-    /// this title. A fixed saved resolution (1080p, say) lights nothing, even
-    /// when a rung shares its name, so Auto stays a choice the viewer can make.
+    /// The in-player menu row to light: the rung the session plays at,
+    /// whether the viewer picked it or a saved setting resolved to it (the
+    /// bridge maps a saved pair onto the plan's rungs). Auto lights only
+    /// while the session's preference is auto, so a fixed saved quality
+    /// leaves Auto a choice the viewer can make. A session whose rung the
+    /// plan does not list lights nothing.
     var highlightedQualityOptionId: String? {
         let active = ApplePlaybackQuality.protocolV3QualityId(activeQualityId)
         if active == ApplePlaybackQuality.autoId { return ApplePlaybackQuality.autoId }
-        guard let pick = explicitQualityPick,
-              ApplePlaybackQuality.protocolV3QualityId(pick.qualityId) == active else { return nil }
-        return active
+        return qualityOptions.contains(where: { $0.id == active }) ? active : nil
     }
 
     func playOnDeckItemNow(_ item: PlayerOnDeckItem) {
@@ -6275,8 +6275,9 @@ class PlayerViewModel {
         let resolvedQualityId = activePreparedProtocolV3 == nil
             ? ApplePlaybackQuality.normalizeStoredId(qualityId)
             : ApplePlaybackQuality.protocolV3QualityId(qualityId)
-        // Compared with the lit row, not the session preference: a fixed
-        // saved resolution lights nothing, so its rung stays a real pick.
+        // Compared with the lit row, not the session preference: a session
+        // whose rung the plan does not list lights nothing, so any row stays
+        // a real pick.
         guard resolvedQualityId != highlightedQualityOptionId || qualitySwitchError != nil else { return }
 
         let target = currentTime.isFinite ? max(0, currentTime) : 0
