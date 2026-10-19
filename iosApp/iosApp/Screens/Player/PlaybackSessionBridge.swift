@@ -895,6 +895,7 @@ actor PlaybackSessionBridge {
             profileId: profileId,
             qualityPreference: start.qualityPreference,
             bandwidthCapKbps: start.bandwidthCapKbps,
+            qualityIsViewerPick: preferredQualityOverride != nil,
             startPosition: effectiveStartPosition,
             // Without an explicit pick, send the server's own detail-resolved
             // effective audio index so a movie's remembered track survives.
@@ -1018,6 +1019,7 @@ actor PlaybackSessionBridge {
         profileId: String,
         qualityPreference: String?,
         bandwidthCapKbps: Int?,
+        qualityIsViewerPick: Bool,
         startPosition: Double?,
         audioTrackIndex: Int?,
         subtitleTrackIndex: Int?,
@@ -1041,7 +1043,7 @@ actor PlaybackSessionBridge {
             subtitleCombinedIndex: resolvedSubtitleCombinedIndex,
             allowAlternateVersions: allowAlternateVersions
         )
-        return adoptProtocolV3Start(staged, watchDetail: watchDetail)
+        return adoptProtocolV3Start(staged, watchDetail: watchDetail, qualityIsViewerPick: qualityIsViewerPick)
     }
 
     /// The session a start/replan decision allocated, if any. A terminal
@@ -1233,9 +1235,12 @@ actor PlaybackSessionBridge {
         }
     }
 
+    /// `qualityIsViewerPick`: the start carries the viewer's in-player pick
+    /// for this title, a plan rung, rather than the saved settings.
     private func adoptProtocolV3Start(
         _ staged: StagedProtocolV3Start,
-        watchDetail: WatchDetail
+        watchDetail: WatchDetail,
+        qualityIsViewerPick: Bool
     ) -> PreparedPlayback {
         stageProtocolV3Transition(
             candidateSessionId: staged.sessionId,
@@ -1284,7 +1289,7 @@ actor PlaybackSessionBridge {
             activeQualityId: ApplePlaybackQuality.planQualityId(
                 clientQualityId: staged.clientQualityId,
                 bandwidthCapKbps: staged.bandwidthCapKbps,
-                isServerOwned: false,
+                isServerOwned: qualityIsViewerPick,
                 availableQualities: staged.plan.availableQualities
             ),
             protocolV3: preparedV3

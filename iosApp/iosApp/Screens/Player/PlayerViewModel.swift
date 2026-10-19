@@ -6275,10 +6275,15 @@ class PlayerViewModel {
         let resolvedQualityId = activePreparedProtocolV3 == nil
             ? ApplePlaybackQuality.normalizeStoredId(qualityId)
             : ApplePlaybackQuality.protocolV3QualityId(qualityId)
-        // Compared with the lit row, not the session preference: a session
-        // whose rung the plan does not list lights nothing, so any row stays
-        // a real pick.
-        guard resolvedQualityId != highlightedQualityOptionId || qualitySwitchError != nil else { return }
+        // Only the viewer's own pick, or Auto, is already in force. A row lit
+        // by the saved settings is still a pick: it holds the rung for this
+        // title over connection changes.
+        let isAlreadyPicked = resolvedQualityId == highlightedQualityOptionId
+            && (resolvedQualityId == ApplePlaybackQuality.autoId
+                || explicitQualityPick.map {
+                    ApplePlaybackQuality.protocolV3QualityId($0.qualityId) == resolvedQualityId
+                } == true)
+        guard !isAlreadyPicked || qualitySwitchError != nil else { return }
 
         let target = currentTime.isFinite ? max(0, currentTime) : 0
         // Read once: the request and the pick's record must agree on which

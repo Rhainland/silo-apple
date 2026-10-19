@@ -193,6 +193,26 @@ final class PlaybackNetworkQualityTests: XCTestCase {
         XCTAssertEqual(model.highlightedQualityOptionId, "720p-medium", "the rung the viewer picked lights")
     }
 
+    /// Picking the row a saved quality lit is still a pick, so it can hold
+    /// the rung over connection changes; picking the viewer's own pick again
+    /// does nothing. (With no session, a switch that runs ends in an error.)
+    func testPickingTheSavedRungIsAPick() {
+        let model = PlayerViewModel()
+        defer { model.cleanup() }
+        model.qualityOptions = [ApplePlaybackQuality.auto, ApplePlaybackQualityOption(
+            id: "720p-medium", label: "720p Medium", resolution: "720p", bitrateKbps: 2_000, isAuto: false
+        )]
+        model.activeQualityId = "720p-medium"
+
+        model.recordViewerQualityPick("720p-medium", forContentId: nil, onMeteredNetwork: false)
+        model.switchQuality("720p-medium")
+        XCTAssertNil(model.qualitySwitchError, "the viewer's own pick is already in force")
+
+        model.recordViewerQualityPick(ApplePlaybackQuality.autoId, forContentId: nil, onMeteredNetwork: false)
+        model.switchQuality("720p-medium")
+        XCTAssertNotNil(model.qualitySwitchError, "the saved rung's row runs a switch")
+    }
+
     /// One quality switch at a time: a pick while one is in flight is ignored
     /// rather than racing it and clearing its state. (Without the guard this
     /// model, with no session, would end the switch with an error.)

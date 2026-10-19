@@ -2800,7 +2800,6 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertEqual(resolve("1080p", 3_000), "1080p-low")
         XCTAssertEqual(resolve("1080p", 8_000), "1080p-medium", "the local 1080p-8 is not the server's")
         XCTAssertEqual(resolve("1080p", 12_000), "1080p-high", "the local 1080p-medium names a 12 Mbps rung")
-        XCTAssertEqual(resolve("1080p", nil), "1080p-high", "uncapped takes the best rung at the resolution")
         XCTAssertEqual(resolve("720p", 2_000), "720p-medium")
         XCTAssertEqual(resolve("auto", 3_000), "auto")
 
@@ -2814,9 +2813,40 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertEqual(resolved, "1080p-8")
     }
 
+    /// When the 15 Mbps 1080p source fits the saved pair the server can play
+    /// it unchanged, so no rung is named. Above the saved resolution the
+    /// source is transcoded and the best rung within the cap is.
+    func testASavedQualityTheSourceFitsNamesNoRung() {
+        func resolve(_ client: String, _ cap: Int?, _ ladder: [PlaybackV3AvailableQuality]) -> String {
+            ApplePlaybackQuality.planQualityId(
+                clientQualityId: client, bandwidthCapKbps: cap, isServerOwned: false, availableQualities: ladder
+            )
+        }
+        XCTAssertEqual(resolve("1080p-high", nil, Self.serverLadder), "1080p")
+        XCTAssertEqual(resolve("1080p-high", 20_000, Self.serverLadder), "1080p")
+        let uhdSource = [PlaybackV3AvailableQuality(
+            label: "original", displayName: nil, height: 2_160, bitrateKbps: 60_000, preservesSource: true
+        )] + Self.serverLadder.dropFirst()
+        XCTAssertEqual(resolve("1080p-high", nil, uhdSource), "1080p-high", "uncapped takes the best rung")
+        XCTAssertEqual(resolve("2160p", nil, uhdSource), "2160p")
+    }
+
     /// A rung picked from the plan's menu is already a plan identity, even
-    /// when a local rung shares its name.
+    /// when a local rung shares its name, mid-stream or carried to a reload.
     func testAPickedPlanRungKeepsItsId() {
+        let reload = PlaybackSessionBridge.startQuality(
+            preferredQualityOverride: "1080p-medium",
+            settingsQuality: AppleQualityAxes(resolution: "1080p", bitrateKbps: 3_000)
+        )
+        XCTAssertEqual(
+            ApplePlaybackQuality.planQualityId(
+                clientQualityId: reload.preferredQuality ?? ApplePlaybackQuality.autoId,
+                bandwidthCapKbps: reload.bandwidthCapKbps,
+                isServerOwned: true,
+                availableQualities: Self.serverLadder
+            ),
+            "1080p-medium"
+        )
         let selection = ApplePlaybackQuality.protocolV3Selection(
             requestedQualityId: "1080p-medium",
             availableQualities: Self.serverLadder,
