@@ -71,14 +71,15 @@ class SearchViewModel {
     /// Whether any library the profile sees groups box sets
     /// (`Library.browsesBoxSets`). Servers without box sets never report one,
     /// so they get no box set lookup at all. A change looks again for the
-    /// search on screen, so libraries that arrive after it still add their
-    /// box sets.
+    /// current search once it has decided on box sets, even while its titles
+    /// are still loading, so libraries that arrive after that still add
+    /// theirs. Before that point the search itself reads the new value.
     var boxSetsEnabled = false {
         didSet {
-            guard boxSetsEnabled != oldValue, hasSearched else { return }
-            let trimmed = query.trimmingCharacters(in: .whitespaces)
-            guard !trimmed.isEmpty else { return }
-            startBoxSetSearch(for: trimmed, generation: generation)
+            guard boxSetsEnabled != oldValue,
+                  let boxSetQuery,
+                  boxSetQuery.generation == generation else { return }
+            startBoxSetSearch(for: boxSetQuery.text, generation: generation)
         }
     }
 
@@ -117,6 +118,9 @@ class SearchViewModel {
     private var searchTask: Task<Void, Never>?
     private var peopleTask: Task<Void, Never>?
     private var boxSetTask: Task<Void, Never>?
+    /// The query and search generation the box set lookup last ran or was
+    /// skipped for, so a change to `boxSetsEnabled` can redo it.
+    private var boxSetQuery: (text: String, generation: Int)?
     private let api: SiloAPI
     /// Only the Search screen shows people; pickers that reuse this model
     /// never ask for them.
@@ -324,6 +328,7 @@ class SearchViewModel {
     /// failed read shows none rather than failing the titles around it.
     private func startBoxSetSearch(for query: String, generation searchGeneration: Int) {
         boxSetTask?.cancel()
+        boxSetQuery = (query, searchGeneration)
         guard searchesBoxSets else {
             boxSets = []
             isSearchingBoxSets = false
@@ -349,6 +354,7 @@ class SearchViewModel {
     private func cancelBoxSetSearch() {
         boxSetTask?.cancel()
         boxSetTask = nil
+        boxSetQuery = nil
         boxSets = []
         isSearchingBoxSets = false
     }
