@@ -201,6 +201,79 @@ final class BoxSetTests: XCTestCase {
         XCTAssertEqual(model.results.map(\.contentId), ["hp1"])
     }
 
+    func testLibrariesArrivingWhileTitlesLoadAddTheirBoxSets() async throws {
+        let api = try await api()
+        stub.reply(path: Self.boxSetSearchPath, 200, #"{"items":[\#(harryPotter)]}"#)
+        stub.reply(path: Self.catalogPath, 200, #"{"items":[\#(movie("hp1", "Philosopher's Stone", year: 2001, played: false))],"page":{"has_more":false},"total":1,"total_exact":true}"#)
+        stub.hold(path: Self.catalogPath)
+        let model = searchModel(api, boxSetsEnabled: false)
+        let search = Task { await model.performSearch() }
+        await stub.waitUntilHeld()
+        XCTAssertTrue(model.isSearching)
+        XCTAssertFalse(model.hasSearched, "the first search is still waiting for its titles")
+
+        model.boxSetsEnabled = true
+        stub.release()
+        await search.value
+        await waitForBoxSets(model)
+
+        XCTAssertEqual(boxSetSearches, ["potter"])
+        XCTAssertEqual(model.boxSets.map(\.id), ["1241"])
+        XCTAssertEqual(model.results.map(\.contentId), ["hp1"])
+    }
+
+    func testLibrariesArrivingBeforeTheSearchDecidesAskOnce() async throws {
+        let api = try await api()
+        let capabilitiesPath = "/api/v2/catalog/search/capabilities"
+        stub.reply(path: capabilitiesPath, 200, #"{"revision":"r","state":"available","allowed":true,"people_media_scope":true,"video_with_episodes_scope":true}"#)
+        stub.reply(path: Self.boxSetSearchPath, 200, #"{"items":[\#(harryPotter)]}"#)
+        stub.reply(path: Self.catalogPath, 200, #"{"items":[],"page":{"has_more":false},"total":0,"total_exact":true}"#)
+        stub.hold(path: capabilitiesPath)
+        let model = SearchViewModel(api: api, includesEpisodes: true, includesBoxSets: true)
+        model.audiobooksEnabled = false
+        model.query = "potter"
+        let search = Task { await model.performSearch() }
+        await stub.waitUntilHeld()
+
+        // The search reads the flag itself once its scope is known.
+        model.boxSetsEnabled = true
+        stub.release()
+        await search.value
+        await waitForBoxSets(model)
+
+        XCTAssertEqual(boxSetSearches, ["potter"], "one lookup, not one from the flag and one from the search")
+        XCTAssertEqual(model.boxSets.map(\.id), ["1241"])
+    }
+
+    func testNewQueryReplacesBoxSetsWhenItsLookupAnswers() async throws {
+        let api = try await api()
+        stub.sequence(path: Self.boxSetSearchPath, [
+            .json(200, #"{"items":[\#(harryPotter)]}"#),
+            .json(200, #"{"items":[]}"#),
+        ])
+        stub.reply(path: Self.catalogPath, 200, #"{"items":[],"page":{"has_more":false},"total":0,"total_exact":true}"#)
+        let model = searchModel(api, boxSetsEnabled: true)
+        await model.performSearch()
+        await waitForBoxSets(model)
+        XCTAssertEqual(model.boxSets.map(\.id), ["1241"])
+
+        model.query = "heat"
+        stub.hold(path: Self.boxSetSearchPath)
+        let search = Task { await model.performSearch() }
+        await stub.waitUntilHeld()
+        // Like the titles, the section keeps the last answer until the new
+        // one arrives rather than blanking on every query.
+        XCTAssertEqual(model.boxSets.map(\.id), ["1241"])
+        XCTAssertTrue(model.isSearchingBoxSets)
+
+        stub.release()
+        await search.value
+        await waitForBoxSets(model)
+
+        XCTAssertEqual(boxSetSearches, ["potter", "heat"])
+        XCTAssertTrue(model.boxSets.isEmpty, "no Harry Potter card left behind for the new query")
+    }
+
     func testSeriesSearchLeavesBoxSetsOut() async throws {
         let api = try await api()
         stub.reply(path: Self.catalogPath, 200, #"{"items":[],"page":{"has_more":false},"total":0,"total_exact":true}"#)
