@@ -5,6 +5,12 @@ extension ResolvedSection {
         let type = sectionType.lowercased()
         return type == "continue_watching" || type == "in_progress"
     }
+
+    /// Rows whose cards Home can dismiss: Continue Watching, and Next Up
+    /// when the profile shows it as its own row.
+    var offersHomeDismissal: Bool {
+        isContinueWatchingSection || sectionType.lowercased() == "next_up"
+    }
 }
 
 /// A single section row on the home screen.
@@ -46,9 +52,6 @@ struct SectionRow: View {
     var onMoveDown: (() -> Void)? = nil
     /// Live tvOS ownership gate for context-menu focus restoration.
     var focusRestorationOwner: Binding<Bool>? = nil
-    #if !os(tvOS)
-    @State private var detailBrowseOriginID = UUID().uuidString
-    #endif
     /// Reports watched changes for rows without an owning model's handler.
     @State private var watchedFeedback = MediaActionFeedback()
 
@@ -157,9 +160,11 @@ struct SectionRow: View {
             focusRequest: focusRequest,
             focusRequestItemId: focusRequestItemId,
             detailReturnFocusRequest: detailReturnFocusRequest,
-            onRemoveFromContinueWatching: isContinueWatching ? onRemoveFromContinueWatching : nil,
+            onRemoveFromContinueWatching: section.offersHomeDismissal ? onRemoveFromContinueWatching : nil,
             onOpenContextDetail: nil,
             showsPlayInContextMenu: isContinueWatching,
+            // Home is the only caller with a removal handler.
+            showsSavedPlaybackMetadata: isContinueWatching && onRemoveFromContinueWatching != nil,
             onSetWatched: { item, played in
                 await setWatched(item, played: played)
             },
@@ -172,15 +177,6 @@ struct SectionRow: View {
             focusRestorationOwner: focusRestorationOwner
         )
         .mediaActionFeedback(watchedFeedback)
-        #if !os(tvOS)
-        .environment(
-            \.itemDetailBrowseSource,
-            ItemDetailBrowseSource(
-                originID: detailBrowseOriginID,
-                contentIDs: section.items.map(\.contentId)
-            )
-        )
-        #endif
     }
 
     private func playItem(_ item: SectionItem) {

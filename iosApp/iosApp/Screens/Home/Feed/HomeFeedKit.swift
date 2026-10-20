@@ -147,16 +147,14 @@ private struct HomeCardTap<Label: View>: View {
 
     @Environment(AppRouter.self) private var router
     @Environment(\.browseLibraryId) private var browseLibraryId
-    @Environment(\.itemDetailBrowseSource) private var detailBrowseSource
 
     var body: some View {
         Button {
             if let onTap { onTap(); return }
             if let continueWatchingItem {
-                router.presentContinueWatchingDetail(for: continueWatchingItem, libraryId: browseLibraryId, browseSource: detailBrowseSource)
+                router.presentContinueWatchingDetail(for: continueWatchingItem, libraryId: browseLibraryId)
             } else {
-                router.presentItemDetail(contentId: contentId, libraryId: browseLibraryId, browseSource: detailBrowseSource
-                )
+                router.presentItemDetail(contentId: contentId, libraryId: browseLibraryId)
             }
         } label: {
             label()
@@ -238,7 +236,7 @@ private struct HomeCardMenu: ViewModifier {
 
         if let onRemoveFromContinueWatching {
             Button(role: .destructive, action: onRemoveFromContinueWatching) {
-                Label("Remove from Continue Watching", systemImage: "xmark.circle")
+                Label(HomeDismissal.menuTitle(for: item), systemImage: "xmark.circle")
             }
         }
     }

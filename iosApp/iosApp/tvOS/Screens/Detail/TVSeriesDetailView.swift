@@ -389,7 +389,7 @@ struct TVSeriesDetailView: View {
                     ? nil
                     : matchingPlaybackDetail?.effectiveSubtitleTrackSignature,
                 preferredSubtitleLanguage: profilePrefsStore.preferredSubtitleLanguage,
-                showForcedSubtitles: matchingPlaybackDetail?.effectiveShowForcedSubtitles ?? false
+                showForcedSubtitles: matchingPlaybackDetail?.showsForcedSubtitles ?? true
             ),
             showsPlaybackSummary: isLoadingEpisodes || playbackEpisode != nil,
             backdropHeight: TVDetailLayout.heroHeight,
@@ -397,7 +397,8 @@ struct TVSeriesDetailView: View {
             // so the first viewport bottoms out on the episode rail: the season
             // row lands at ~690 and the rail finishes just above the bottom
             // safe area with Cast & Crew fully below the fold.
-            heroHeight: TVDetailLayout.heroHeight,
+            heroHeight: TVDetailLayout.heroHeight - heroLift,
+            topInset: TVDetailLayout.heroTopInset - heroLift,
             // Reserves the action controls plus the fixed three-line synopsis slot.
             editorialReservedHeight: 435,
             metadataReservedHeight: 36,
@@ -542,8 +543,7 @@ struct TVSeriesDetailView: View {
                     subtitleSignature: nextUpSubtitleOverrideCleared
                         ? nil
                         : matchingPlaybackDetail?.effectiveSubtitleTrackSignature,
-                    showForcedSubtitles: matchingPlaybackDetail?.effectiveShowForcedSubtitles
-                        ?? false,
+                    showForcedSubtitles: matchingPlaybackDetail?.showsForcedSubtitles ?? true,
                     preferredSubtitleLanguage: profilePrefsStore.preferredSubtitleLanguage,
                     onSelectVersion: onSelectNextUpVersion,
                     onSelectAudioTrack: onSelectNextUpAudioTrack,
@@ -850,9 +850,12 @@ struct TVSeriesDetailView: View {
     private var episodeRailReservedHeight: CGFloat {
         TVEpisodeRail.anchoredHeight(
             cardWidth: SiloTheme.thumbnailCardWidth * uiCustomization.cardPresentation.posterSize.scale,
-            cardHeightRatio: SiloTheme.thumbnailCardHeight / SiloTheme.thumbnailCardWidth,
-            showsTitle: uiCustomization.cardPresentation.caption.showsTitle
+            cardHeightRatio: SiloTheme.thumbnailCardHeight / SiloTheme.thumbnailCardWidth
         )
+    }
+
+    private var heroLift: CGFloat {
+        TVDetailLayout.seriesHeroLift(for: uiCustomization.cardPresentation.posterSize)
     }
 
     private func focusSupportingRail() {

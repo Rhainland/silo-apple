@@ -18,10 +18,6 @@ struct CatalogGrid: View {
     @State private var uiCustomization = UICustomizationPreferences.shared
     @State private var gridWidth: CGFloat = 0
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
-    #if !os(tvOS)
-    @State private var detailBrowseOriginID = UUID().uuidString
-    @State private var detailBrowseSource: ItemDetailBrowseSource?
-    #endif
 
     #if os(tvOS)
     private var columns: [GridItem] {
@@ -110,17 +106,6 @@ struct CatalogGrid: View {
         } action: { width in
             guard abs(width - gridWidth) >= 0.5 else { return }
             gridWidth = width
-        }
-        #endif
-        #if !os(tvOS)
-        .environment(\.itemDetailBrowseSource, detailBrowseSource)
-        // Keyed on a hash of the ordered IDs rather than the ID array: a paged
-        // grid holds thousands of items and this runs on each body pass.
-        .onChange(of: ItemsFingerprint(items), initial: true) {
-            detailBrowseSource = ItemDetailBrowseSource(
-                originID: detailBrowseOriginID,
-                contentIDs: items.map(\.contentId)
-            )
         }
         #endif
 
@@ -240,18 +225,3 @@ private struct IndexedItems: RandomAccessCollection {
         Entry(index: position, item: items[position])
     }
 }
-
-#if !os(tvOS)
-/// Changes when a paged list is replaced, extended, or reordered at its ends.
-private struct ItemsFingerprint: Equatable {
-    let count: Int
-    let orderedIDsHash: Int
-
-    init(_ items: [BrowseItem]) {
-        count = items.count
-        var hasher = Hasher()
-        for item in items { hasher.combine(item.contentId) }
-        orderedIDsHash = hasher.finalize()
-    }
-}
-#endif

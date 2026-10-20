@@ -16,38 +16,51 @@ enum TVDetailLayout {
     static let bodySectionSpacing: CGFloat = 64
     static let sectionHeaderSpacing: CGFloat = 14
     static let pageBottomPadding: CGFloat = 140
+
+    /// At the Large card size the Series episode rail's two-line caption runs
+    /// past the bottom of the pinned first screen, so the Series hero gives up
+    /// this much of its empty top inset and the season row and rail move up.
+    static func seriesHeroLift(for posterSize: CardPosterSize) -> CGFloat {
+        posterSize == .large ? 32 : 0
+    }
 }
 
-/// Fully opaque page surface sampled from the title artwork. The sampled tint
-/// is composited over black, so this remains a cheap, solid background rather
-/// than a live material or blur. Artwork itself lives inside the scrolling
-/// hero and therefore leaves the screen naturally as the viewer moves down.
+/// Fully opaque page surface sampled from the title artwork. The base tint is
+/// composited over black, so the art's fade blends into the same dim tint as
+/// before; the accent and shadow washes from the root landings carry Home's
+/// colors around it. Artwork itself lives inside the scrolling hero and
+/// therefore leaves the screen naturally as the viewer moves down.
 struct TVDetailPageSurface<Content: View>: View {
     let backdropURL: String?
     @ViewBuilder let content: () -> Content
 
-    @State private var sampledTint = Color(red: 0.04, green: 0.12, blue: 0.14)
+    private static var fallbackTints: HeroBackdropPalette.Tints {
+        .flat(Color(red: 0.04, green: 0.12, blue: 0.14))
+    }
+
+    @State private var sampledTints = Self.fallbackTints
 
     var body: some View {
         ZStack {
             Color.black
-            sampledTint.opacity(0.42)
+            sampledTints.base.opacity(0.42)
+            TVBackdropTintWash(tints: sampledTints, includesBase: false)
             content()
         }
         .ignoresSafeArea()
         .task(id: backdropURL) {
             guard let rawURL = backdropURL,
                   let url = URL(string: rawURL) else {
-                sampledTint = Color(red: 0.04, green: 0.12, blue: 0.14)
+                sampledTints = Self.fallbackTints
                 return
             }
 
-            if let cached = HeroBackdropPalette.cachedTint(for: url) {
-                sampledTint = cached
+            if let cached = HeroBackdropPalette.cachedTints(for: url) {
+                sampledTints = cached
             }
-            if let tint = await HeroBackdropPalette.tintColor(for: url),
+            if let tints = await HeroBackdropPalette.tints(for: url),
                !Task.isCancelled {
-                sampledTint = tint
+                sampledTints = tints
             }
         }
     }
@@ -94,6 +107,9 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
     /// coupled, which is the default behavior for every other detail page.
     var backdropHeight: CGFloat? = nil
     var heroHeight: CGFloat = TVDetailLayout.heroHeight
+    /// Space above the title block. Series trims it at the Large card size so
+    /// its taller episode rail stays on the first screen.
+    var topInset: CGFloat = TVDetailLayout.heroTopInset
     /// Episode mode narrows only the editorial column. The logo keeps the
     /// same leading/top anchor while long episode copy wraps before it reaches
     /// the backdrop subject.
@@ -197,7 +213,7 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .focusSection()
         }
-        .padding(.top, TVDetailLayout.heroTopInset)
+        .padding(.top, topInset)
         .padding(.horizontal, TVDetailLayout.horizontalInset)
         .frame(
             maxWidth: .infinity,
@@ -536,7 +552,7 @@ struct TVDecodedLogoTitle<Fallback: View>: View {
     var body: some View {
         Group {
             if let normalizedLogoURL {
-                let request = ImageRequest(artwork: normalizedLogoURL)
+                let request = PosterImageCache.titleLogoRequest(for: normalizedLogoURL)
                 let cachedImage = ImagePipeline.shared.cache[request]?.image
                 LazyImage(
                     request: request,
