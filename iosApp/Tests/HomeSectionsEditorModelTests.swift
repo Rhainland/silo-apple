@@ -1,0 +1,107 @@
+import Foundation
+import XCTest
+@testable import Silo
+
+/// The Home Sections editor saves the profile's layout on the server: a
+/// reorder or show/hide sends the whole override set and refreshes Home, and
+/// a refused save puts the last saved layout back on screen.
+@MainActor
+final class HomeSectionsEditorModelTests: XCTestCase {
+    private var stub = APIv2TestStub()
+
+    private func row(_ id: String, hidden: Bool = false) -> String {
+        #"{"id":"\#(id)","section_type":"recently_added","title":"Row \#(id)","default_title":"Row \#(id)","featured":false,"item_limit":20,"hidden":\#(hidden),"is_custom":false,"customized":false,"position":0}"#
+    }
+
+    private func model() async throws -> HomeSectionsEditorModel {
+        stub = APIv2TestStub()
+        let name = "HomeSectionsEditorModelTests.\(UUID().uuidString)"
+        let suite = try XCTUnwrap(UserDefaults(suiteName: name))
+        addTeardownBlock { UserDefaults().removePersistentDomain(forName: name) }
+        let tokens = TokenStore(keychain: SharedKeychain(service: name, accessGroup: nil),
+            defaults: SharedDefaults(suite: suite, standard: suite))
+        await tokens.switchActiveServer(serverId: "home-editor-test")
+        await tokens.setServerUrl("https://editor.example")
+        await tokens.setProfileId("profile-one")
+        let http = HTTPClient(session: stub.makeSession(), tokenStore: tokens)
+        var next = 0
+        return HomeSectionsEditorModel(api: SiloAPI(http: http, tokenStore: tokens),
+                                       newID: { next += 1; return "new-\(next)" })
+    }
+
+    private func serveLayout() {
+        stub.reply(path: "/api/v2/profile/sections/settings", 200, #"{"items":[\#(row("a")),\#(row("b")),\#(row("c", hidden: true))]}"#)
+        stub.reply(path: "/api/v2/profile/sections", 200,
+            #"{"items":[{"id":"o-b","section_id":"b","position":1,"hidden":false,"removed":false,"section_type":"","title":"Mine","featured":null,"item_limit":null,"is_user_added":false,"user_section_type":"","user_title":"","created_at":null,"updated_at":null}]}"#)
+    }
+
+    private func savedOverrides() throws -> [[String: Any]] {
+        let put = try XCTUnwrap(stub.requests.last { $0.method == "PUT" })
+        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(put.body)) as? [String: Any])
+        return try XCTUnwrap(body["overrides"] as? [[String: Any]])
+    }
+
+    func testReorderSavesTheWholeLayoutAndRefreshesHome() async throws {
+        let editor = try await model()
+        serveLayout()
+        await editor.load()
+        XCTAssertEqual(editor.rows.map(\.id), ["a", "b", "c"])
+
+        stub.sequence([.json(204, "")])
+        let refreshed = expectation(forNotification: .homeSectionsShouldRefresh, object: nil)
+        await editor.move(fromOffsets: IndexSet(integer: 0), toOffset: 3).value
+
+        await fulfillment(of: [refreshed], timeout: 5)
+        XCTAssertEqual(editor.rows.map(\.id), ["b", "c", "a"])
+        XCTAssertNil(editor.saveError)
+        let overrides = try savedOverrides()
+        XCTAssertEqual(overrides.map { $0["id"] as? String }, ["o-b", "new-1", "new-2"])
+        XCTAssertEqual(overrides.map { $0["section_id"] as? String }, ["b", "c", "a"])
+        XCTAssertEqual(overrides.map { $0["position"] as? Int }, [0, 1, 2])
+        XCTAssertEqual(overrides.map { $0["hidden"] as? Bool }, [false, true, false])
+        XCTAssertEqual(overrides.first?["title"] as? String, "Mine")
+    }
+
+    func testMoveDownAndShowingARowSaveTheirChange() async throws {
+        let editor = try await model()
+        serveLayout()
+        await editor.load()
+
+        stub.sequence([.json(204, ""), .json(204, "")])
+        await editor.move(id: "a", by: 1).value
+        await editor.setHidden(false, id: "c").value
+
+        XCTAssertEqual(editor.rows.map(\.id), ["b", "a", "c"])
+        XCTAssertEqual(editor.rows.map(\.hidden), [false, false, false])
+        let overrides = try savedOverrides()
+        XCTAssertEqual(overrides.map { $0["section_id"] as? String }, ["b", "a", "c"])
+        XCTAssertEqual(overrides.map { $0["hidden"] as? Bool }, [false, false, false])
+        // The second save reuses the override the first one created.
+        XCTAssertEqual(overrides.map { $0["id"] as? String }, ["o-b", "new-1", "new-2"])
+    }
+
+    func testRefusedSaveShowsAnErrorAndRestoresTheSavedOrder() async throws {
+        let editor = try await model()
+        serveLayout()
+        await editor.load()
+
+        stub.sequence([.json(422, #"{"type":"https://siloserver.org/docs/api/v2/problems/validation_failed","title":"Validation failed","status":422,"detail":"Bad set."}"#)])
+        await editor.move(fromOffsets: IndexSet(integer: 2), toOffset: 0).value
+
+        XCTAssertEqual(editor.rows.map(\.id), ["a", "b", "c"])
+        XCTAssertEqual(editor.rows.map(\.hidden), [false, false, true])
+        XCTAssertNotNil(editor.saveError)
+    }
+
+    func testFailedLoadIsReportedInsteadOfAnEmptyList() async throws {
+        let editor = try await model()
+        stub.reply(path: "/api/v2/profile/sections/settings", 503,
+            #"{"type":"https://siloserver.org/docs/api/v2/problems/dependency_unavailable","title":"Unavailable","status":503,"detail":"Down"}"#)
+        stub.reply(path: "/api/v2/profile/sections", 200, #"{"items":[]}"#)
+
+        await editor.load()
+
+        guard case .failed = editor.phase else { return XCTFail("expected a load failure, got \(editor.phase)") }
+        XCTAssertTrue(editor.rows.isEmpty)
+    }
+}
