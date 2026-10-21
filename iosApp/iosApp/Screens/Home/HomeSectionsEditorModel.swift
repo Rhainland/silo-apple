@@ -38,12 +38,16 @@ final class HomeSectionsEditorModel {
         self.newID = newID
     }
 
-    /// Reads the layout once every queued save has landed. An edit made
-    /// while the read is in flight wins: the read is dropped, because it may
-    /// predate that edit's save, and the edit's own save carries on.
+    /// Reads the layout once every queued save has landed, including one
+    /// queued while this waited. An edit made while the read is in flight
+    /// wins: the read is dropped, because it may predate that edit's save,
+    /// and the edit's own save carries on.
     func load() async {
-        await saveChain?.value
-        let generation = editGeneration
+        var generation: Int
+        repeat {
+            generation = editGeneration
+            await saveChain?.value
+        } while generation != editGeneration
         if rows.isEmpty { phase = .loading }
         do {
             let layout = try await api.profileHomeLayout()

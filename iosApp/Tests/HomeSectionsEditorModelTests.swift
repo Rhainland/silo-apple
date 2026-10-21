@@ -138,6 +138,30 @@ final class HomeSectionsEditorModelTests: XCTestCase {
         XCTAssertEqual(overrides.map { $0["section_id"] as? String }, ["b", "a", "c"])
     }
 
+    func testAReloadWaitsForAnEditQueuedWhileItWaitsForEarlierSaves() async throws {
+        let editor = try await model()
+        serveLayout()
+        await editor.load()
+        let settingsReads = {
+            self.stub.requests.filter { $0.method == "GET" && $0.path == "/api/v2/profile/sections/settings" }.count
+        }
+
+        stub.sequence(path: "/api/v2/profile/sections", [.json(204, ""), .json(204, "")])
+        stub.hold(path: "/api/v2/profile/sections")
+        let first = editor.move(id: "a", by: 1)
+        await stub.waitUntilHeld()
+        let reload = Task { await editor.load() }
+        await Task.yield() // the reload is now waiting for the first save
+        let second = editor.setHidden(true, id: "b")
+        stub.release()
+        await first.value
+        await second.value
+
+        XCTAssertEqual(settingsReads(), 1, "the reload read the layout before the edit queued during its wait was saved")
+        await reload.value
+        XCTAssertEqual(settingsReads(), 2)
+    }
+
     func testFailedLoadIsReportedInsteadOfAnEmptyList() async throws {
         let editor = try await model()
         stub.reply(path: "/api/v2/profile/sections/settings", 503,
