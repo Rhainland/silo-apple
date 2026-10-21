@@ -153,11 +153,16 @@ final class HomeSectionsEditorModelTests: XCTestCase {
         let reload = Task { await editor.load() }
         await Task.yield() // the reload is now waiting for the first save
         let second = editor.setHidden(true, id: "b")
+        // Let the first save land and park the second one.
         stub.release()
+        stub.hold(path: "/api/v2/profile/sections")
         await first.value
-        await second.value
+        await stub.waitUntilHeld()
 
-        XCTAssertEqual(settingsReads(), 1, "the reload read the layout before the edit queued during its wait was saved")
+        let readWhileSaving = await eventually(timeout: .milliseconds(500)) { settingsReads() > 1 }
+        XCTAssertFalse(readWhileSaving, "the reload read the layout while the edit queued during its wait was still saving")
+        stub.release()
+        await second.value
         await reload.value
         XCTAssertEqual(settingsReads(), 2)
     }
