@@ -93,6 +93,51 @@ final class HomeSectionsEditorModelTests: XCTestCase {
         XCTAssertNotNil(editor.saveError)
     }
 
+    func testAnEditQueuedBehindASaveStillSavesAfterTheEditorCloses() async throws {
+        var editor: HomeSectionsEditorModel? = try await model()
+        serveLayout()
+        await editor?.load()
+
+        stub.sequence([.json(204, ""), .json(204, "")])
+        stub.hold(path: "/api/v2/profile/sections")
+        let first = try XCTUnwrap(editor).move(id: "a", by: 1)
+        await stub.waitUntilHeld()
+        let second = try XCTUnwrap(editor).setHidden(true, id: "b")
+        editor = nil // Done or Back while the first save is in flight.
+        stub.release()
+        await first.value
+        await second.value
+
+        let puts = stub.requests.filter { $0.method == "PUT" }
+        XCTAssertEqual(puts.count, 2, "the second edit must not be dropped")
+        let overrides = try savedOverrides()
+        XCTAssertEqual(overrides.map { $0["section_id"] as? String }, ["b", "a", "c"])
+        XCTAssertEqual(overrides.map { $0["hidden"] as? Bool }, [true, false, true])
+    }
+
+    func testAReloadThatOverlapsAnEditKeepsTheEdit() async throws {
+        let editor = try await model()
+        serveLayout()
+        await editor.load()
+
+        stub.hold(path: "/api/v2/profile/sections/settings")
+        let reload = Task { await editor.load() }
+        await stub.waitUntilHeld()
+        try await waitUntil("the reload's override read") {
+            stub.requests.filter { $0.method == "GET" && $0.path == "/api/v2/profile/sections" }.count == 2
+        }
+        stub.sequence([.json(204, "")])
+        let edit = editor.move(id: "a", by: 1)
+        stub.release()
+        await reload.value
+        await edit.value
+
+        XCTAssertEqual(editor.rows.map(\.id), ["b", "a", "c"])
+        XCTAssertNil(editor.saveError)
+        let overrides = try savedOverrides()
+        XCTAssertEqual(overrides.map { $0["section_id"] as? String }, ["b", "a", "c"])
+    }
+
     func testFailedLoadIsReportedInsteadOfAnEmptyList() async throws {
         let editor = try await model()
         stub.reply(path: "/api/v2/profile/sections/settings", 503,

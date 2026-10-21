@@ -474,13 +474,46 @@ private struct TVHomeSectionsCustomizationSheet: View {
         .focusSection()
         .defaultFocus($focusedControl, .done, priority: .userInitiated)
         .onAppear(perform: claimFocus)
-        .onChange(of: focusedControl) { _, target in
-            if target == nil, !isClosing {
-                claimFocus()
-            }
+        .onChange(of: focusedControl) { previous, target in
+            // Restore focus only when the focused control itself went away
+            // (a reload dropped its row, Try Again finished, an arrow
+            // disabled). Ordinary focus movement is left to the focus engine.
+            guard target == nil, !isClosing, let previous, !isAvailable(previous) else { return }
+            focusedControl = replacement(for: previous)
         }
         .onExitCommand(perform: close)
         .onDisappear { isClosing = true }
+    }
+
+    /// Whether `target` is still on screen and enabled.
+    private func isAvailable(_ target: FocusTarget) -> Bool {
+        switch target {
+        case .done:
+            return true
+        case .edit:
+            return model.phase == .loaded && model.rows.count > 1
+        case .retry:
+            if case .failed = model.phase { return true }
+            return false
+        case .moveUp(let id):
+            return isEditing && model.canMove(id: id, by: -1)
+        case .moveDown(let id):
+            return isEditing && model.canMove(id: id, by: 1)
+        case .visibility(let id):
+            return model.phase == .loaded && model.rows.contains { $0.id == id }
+        }
+    }
+
+    /// The nearest control that is still available: the same row's eye for
+    /// a row control, otherwise Done.
+    private func replacement(for target: FocusTarget) -> FocusTarget {
+        switch target {
+        case .moveUp(let id), .moveDown(let id), .visibility(let id):
+            let eye = FocusTarget.visibility(id)
+            return isAvailable(eye) ? eye : .done
+        case .done, .edit, .retry:
+            return .done
+        }
     }
 
     private var editorControlsCard: some View {
@@ -617,10 +650,9 @@ private struct TVHomeSectionsCustomizationSheet: View {
         }
     }
 
-    /// Claim an always-enabled control inside this presented focus scope. If
-    /// tvOS briefly clears the sheet's focus while resolving a swipe, the nil
-    /// observer above reclaims it here instead of allowing the settings rows
-    /// behind the full-screen presentation to become the active graph.
+    /// Seed focus on the always-enabled Done control as the sheet appears,
+    /// so the settings rows behind the full-screen presentation never become
+    /// the active graph.
     private func claimFocus() {
         guard !isClosing else { return }
         focusedControl = .done

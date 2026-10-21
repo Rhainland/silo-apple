@@ -16,9 +16,10 @@ final class ProfileHomeLayoutTests: XCTestCase {
         return { next += 1; return "new-\(next)" }
     }
 
-    func testEveryRowGetsItsListPositionAndUnsavedAdminRowsGetANewOverride() {
+    func testAReorderGivesEveryRowItsListPositionAndUnsavedAdminRowsANewOverride() {
         let overrides = ProfileHomeLayout.overrides(
             rows: [row("b"), row("a", hidden: true)],
+            baseline: [row("a"), row("b")],
             saved: [],
             newID: ids()
         )
@@ -42,6 +43,7 @@ final class ProfileHomeLayoutTests: XCTestCase {
 
         let overrides = ProfileHomeLayout.overrides(
             rows: [row("custom-1", hidden: true, custom: true), row("b"), row("a")],
+            baseline: [row("a"), row("custom-1", custom: true), row("b")],
             saved: [renamed, built, removed],
             newID: ids()
         )
@@ -63,12 +65,67 @@ final class ProfileHomeLayoutTests: XCTestCase {
     func testASavedOverrideWithoutAnIdGetsOne() {
         let overrides = ProfileHomeLayout.overrides(
             rows: [row("a")],
+            baseline: [row("a", hidden: true)],
             saved: [APIv2SectionOverride(id: "", sectionId: "a", position: 4, hidden: true, title: "Mine")],
             newID: ids()
         )
 
         XCTAssertEqual(overrides, [
             APIv2SectionOverride(id: "new-1", sectionId: "a", position: 0, hidden: false, title: "Mine"),
+        ])
+    }
+
+    func testHidingARowOnAFreshProfileSavesOnlyThatRowAndNoPositions() {
+        let overrides = ProfileHomeLayout.overrides(
+            rows: [row("a"), row("b", hidden: true), row("c")],
+            baseline: [row("a"), row("b"), row("c")],
+            saved: [],
+            newID: ids()
+        )
+
+        // Rows the profile never ordered keep following the admin's order.
+        XCTAssertEqual(overrides, [
+            APIv2SectionOverride(id: "new-1", sectionId: "b", position: nil, hidden: true),
+        ])
+    }
+
+    func testHidingARowWithoutAnOrderKeepsEverySavedOverrideAsItWas() {
+        let renamed = APIv2SectionOverride(id: "o-a", sectionId: "a", position: nil, hidden: false, title: "Mine")
+        let built = APIv2SectionOverride(
+            id: "custom-1", sectionId: "", position: 3, hidden: false, isUserAdded: true,
+            userSectionType: "hidden_gems", userTitle: "Gems"
+        )
+        let removed = APIv2SectionOverride(id: "o-gone", sectionId: "gone", position: nil, hidden: false, removed: true)
+
+        let overrides = ProfileHomeLayout.overrides(
+            rows: [row("a", hidden: true), row("b"), row("custom-1", custom: true)],
+            baseline: [row("a"), row("b"), row("custom-1", custom: true)],
+            saved: [renamed, built, removed],
+            newID: ids()
+        )
+
+        XCTAssertEqual(overrides, [
+            APIv2SectionOverride(id: "o-a", sectionId: "a", position: nil, hidden: true, title: "Mine"),
+            built,
+            removed,
+        ])
+    }
+
+    func testHidingARowAfterAReorderKeepsSavingTheOrder() {
+        let overrides = ProfileHomeLayout.overrides(
+            rows: [row("b"), row("a"), row("c", hidden: true)],
+            baseline: [row("b"), row("a"), row("c")],
+            saved: [
+                APIv2SectionOverride(id: "o-b", sectionId: "b", position: 0, hidden: false),
+                APIv2SectionOverride(id: "o-a", sectionId: "a", position: 1, hidden: false),
+            ],
+            newID: ids()
+        )
+
+        XCTAssertEqual(overrides, [
+            APIv2SectionOverride(id: "o-b", sectionId: "b", position: 0, hidden: false),
+            APIv2SectionOverride(id: "o-a", sectionId: "a", position: 1, hidden: false),
+            APIv2SectionOverride(id: "new-1", sectionId: "c", position: 2, hidden: true),
         ])
     }
 

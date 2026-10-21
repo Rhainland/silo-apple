@@ -8,16 +8,24 @@ import Foundation
 enum ProfileHomeLayout {
     /// The override set to save after the profile reordered or showed/hid
     /// rows. `rows` is the full settings list in its new display order with
-    /// each row's new `hidden` flag; `saved` is what the profile saved
-    /// before.
+    /// each row's new `hidden` flag; `baseline` is the list as last read or
+    /// saved; `saved` is what the profile saved before.
+    ///
+    /// Positions are written only once the profile orders the page: when
+    /// `rows` changes the order of `baseline`, or an admin row's saved
+    /// override already pins a position. Until then the page keeps following
+    /// the admin's order (the server uses a saved position whenever one is
+    /// present), so a show/hide stores only visibility, and an admin row
+    /// without a saved override gets one only when it is hidden. This matches
+    /// the web editor's `buildSectionOverrides`.
     ///
     /// The save replaces the profile's whole override set, so this keeps
     /// everything else it saved: a row's saved override is copied unchanged
-    /// except for its position and visibility, an admin row without one gets
-    /// a new override that stores only those two, and saved overrides for
-    /// rows not in the list (removed rows, for one) are kept as they are.
+    /// except for its position and visibility, and saved overrides for rows
+    /// not in the list (removed rows, for one) are kept as they are.
     static func overrides(
         rows: [APIv2ProfileSectionSetting],
+        baseline: [APIv2ProfileSectionSetting],
         saved: [APIv2SectionOverride],
         newID: () -> String = { UUID().uuidString.lowercased() }
     ) -> [APIv2SectionOverride] {
@@ -28,6 +36,9 @@ enum ProfileHomeLayout {
             savedIndex[matchKey(override)] = index
         }
 
+        let ordered = sharedOrder(rows, baseline) != sharedOrder(baseline, rows)
+            || saved.contains { !$0.sectionId.isEmpty && $0.position != nil }
+
         var used = Set<Int>()
         var result: [APIv2SectionOverride] = []
         for (position, row) in rows.enumerated() {
@@ -35,23 +46,30 @@ enum ProfileHomeLayout {
             guard let index = savedIndex[key] else {
                 // A profile-built row exists only through its saved override;
                 // without one there is nothing to rebuild it from.
-                guard !row.isCustom else { continue }
-                result.append(APIv2SectionOverride(id: newID(), sectionId: row.id, position: position, hidden: row.hidden))
+                guard !row.isCustom, ordered || row.hidden else { continue }
+                result.append(APIv2SectionOverride(id: newID(), sectionId: row.id,
+                                                   position: ordered ? position : nil, hidden: row.hidden))
                 continue
             }
             used.insert(index)
             var override = saved[index]
             if override.id.isEmpty { override.id = newID() }
-            override.position = position
+            if ordered { override.position = position }
             override.hidden = row.hidden
             result.append(override)
         }
 
-        let superseded = Set(savedIndex.values)
-        for (index, override) in saved.enumerated() where !used.contains(index) && superseded.contains(index) {
+        let latestPerKey = Set(savedIndex.values)
+        for (index, override) in saved.enumerated() where !used.contains(index) && latestPerKey.contains(index) {
             result.append(override)
         }
         return result
+    }
+
+    /// The ids of `a` in order, keeping only the ids `b` also has.
+    private static func sharedOrder(_ a: [APIv2ProfileSectionSetting], _ b: [APIv2ProfileSectionSetting]) -> [String] {
+        let ids = Set(b.map(\.id))
+        return a.map(\.id).filter { ids.contains($0) }
     }
 
     private static func matchKey(_ override: APIv2SectionOverride) -> String {

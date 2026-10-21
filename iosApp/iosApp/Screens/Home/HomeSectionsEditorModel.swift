@@ -30,17 +30,24 @@ final class HomeSectionsEditorModel {
     /// The rows the server last confirmed; a refused save returns here.
     @ObservationIgnored private var confirmedRows: [APIv2ProfileSectionSetting] = []
     @ObservationIgnored private var saveChain: Task<Void, Never>?
+    /// Counts edits, so a load can tell whether one happened while it read.
+    @ObservationIgnored private var editGeneration = 0
 
     init(api: SiloAPI = .shared, newID: @escaping () -> String = { UUID().uuidString.lowercased() }) {
         self.api = api
         self.newID = newID
     }
 
+    /// Reads the layout once every queued save has landed. An edit made
+    /// while the read is in flight wins: the read is dropped, because it may
+    /// predate that edit's save, and the edit's own save carries on.
     func load() async {
         await saveChain?.value
+        let generation = editGeneration
         if rows.isEmpty { phase = .loading }
         do {
             let layout = try await api.profileHomeLayout()
+            guard generation == editGeneration else { return }
             auth = layout.auth
             saved = layout.saved
             rows = layout.rows
@@ -48,7 +55,7 @@ final class HomeSectionsEditorModel {
             saveError = nil
             phase = .loaded
         } catch {
-            guard !(error is CancellationError), !Task.isCancelled else { return }
+            guard !(error is CancellationError), !Task.isCancelled, generation == editGeneration else { return }
             let message = ErrorState(error).message
             if rows.isEmpty {
                 phase = .failed(message)
@@ -96,10 +103,14 @@ final class HomeSectionsEditorModel {
         guard phase == .loaded, next != rows else { return Task {} }
         rows = next
         saveError = nil
+        editGeneration += 1
         let previous = saveChain
-        let task = Task { [weak self] in
+        // The task holds the model until its save is sent, so closing the
+        // editor while an earlier save is in flight does not drop this edit.
+        // The chain ends with the last queued save.
+        let task = Task {
             await previous?.value
-            await self?.saveCurrentRows()
+            await self.saveCurrentRows()
         }
         saveChain = task
         return task
@@ -110,7 +121,7 @@ final class HomeSectionsEditorModel {
     private func saveCurrentRows() async {
         guard let auth, rows != confirmedRows else { return }
         let sent = rows
-        let overrides = ProfileHomeLayout.overrides(rows: sent, saved: saved, newID: newID)
+        let overrides = ProfileHomeLayout.overrides(rows: sent, baseline: confirmedRows, saved: saved, newID: newID)
         isSaving = true
         defer { isSaving = false }
         do {
