@@ -97,13 +97,20 @@ struct CompanionPairingCardModifier: ViewModifier {
             .overlay {
                 if let offer = active {
                     let tv = offer.tv
+                    let key = CompanionPairingDismissal.key(id: tv.id, sid: tv.sid)
                     CompanionPairingCard(tv: tv, server: offer.server, onDismiss: {
                         // Every exit dismisses for the TV's current setup
                         // session (`sid`): predictable, and retry lives inside
                         // the card. A new session on the TV re-offers the card.
-                        dismissed.insert(CompanionPairingDismissal.key(id: tv.id, sid: tv.sid))
+                        dismissed.insert(key)
                         active = nil
                     }, offerWithdrawn: offerWithdrawn)
+                    // One card per offer. Closing a card re-latches the next
+                    // offer in the same update, so without a new identity the
+                    // next TV inherited the closed card's state: slid away
+                    // (`appeared` false) with its full-screen backdrop still
+                    // taking every tap.
+                    .id(key)
                 }
             }
     }
