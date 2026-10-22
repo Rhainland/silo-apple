@@ -1,11 +1,13 @@
 import Foundation
 import Observation
+import SwiftUI
 
 /// Drives the Home Sections editors (iOS/macOS Settings → Interface, tvOS
 /// Settings → General). It edits the acting profile's layout on the server,
 /// so the order and visibility follow the profile to every device, and to
 /// the admin's view of that profile. Each change saves at once; saves run one
-/// after another, and a refused save puts the last saved layout back.
+/// after another, and a refused save puts the last saved layout back
+/// unless a later change is queued to carry it.
 @Observable
 @MainActor
 final class HomeSectionsEditorModel {
@@ -27,7 +29,8 @@ final class HomeSectionsEditorModel {
     @ObservationIgnored private let newID: () -> String
     @ObservationIgnored private var auth: CapturedOrdinaryRequestAuth?
     @ObservationIgnored private var saved: [APIv2SectionOverride] = []
-    /// The rows the server last confirmed; a refused save returns here.
+    /// The rows the server last confirmed; a refused save returns here
+    /// when no later change is queued.
     @ObservationIgnored private var confirmedRows: [APIv2ProfileSectionSetting] = []
     @ObservationIgnored private var saveChain: Task<Void, Never>?
     /// Counts edits, so a load can tell whether one happened while it read.
@@ -121,10 +124,12 @@ final class HomeSectionsEditorModel {
     }
 
     /// Sends the rows as they are now. A change made while this is in flight
-    /// queues its own save, which sends the newer rows.
+    /// queues its own save, which sends the newer rows, so a refused save
+    /// leaves those rows on screen for that save to carry.
     private func saveCurrentRows() async {
         guard let auth, rows != confirmedRows else { return }
         let sent = rows
+        let sentGeneration = editGeneration
         let overrides = ProfileHomeLayout.overrides(rows: sent, baseline: confirmedRows, saved: saved, newID: newID)
         isSaving = true
         defer { isSaving = false }
@@ -132,9 +137,12 @@ final class HomeSectionsEditorModel {
             try await api.saveProfileHomeLayout(overrides, auth: auth)
             saved = overrides
             confirmedRows = sent
+            saveError = nil
             Self.refreshHome()
         } catch {
-            rows = confirmedRows
+            if editGeneration == sentGeneration {
+                rows = confirmedRows
+            }
             saveError = "Couldn’t save the Home layout. \(ErrorState(error).message)"
         }
     }

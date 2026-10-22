@@ -4,7 +4,8 @@ import XCTest
 
 /// The Home Sections editor saves the profile's layout on the server: a
 /// reorder or show/hide sends the whole override set and refreshes Home, and
-/// a refused save puts the last saved layout back on screen.
+/// a refused save puts the last saved layout back on screen unless a later
+/// change is queued to carry it.
 @MainActor
 final class HomeSectionsEditorModelTests: XCTestCase {
     private var stub = APIv2TestStub()
@@ -91,6 +92,29 @@ final class HomeSectionsEditorModelTests: XCTestCase {
         XCTAssertEqual(editor.rows.map(\.id), ["a", "b", "c"])
         XCTAssertEqual(editor.rows.map(\.hidden), [false, false, true])
         XCTAssertNotNil(editor.saveError)
+    }
+
+    func testAnEditQueuedBehindARefusedSaveStillSavesAndKeepsBothChanges() async throws {
+        let editor = try await model()
+        serveLayout()
+        await editor.load()
+
+        stub.sequence([.json(422, #"{"type":"https://siloserver.org/docs/api/v2/problems/validation_failed","title":"Validation failed","status":422,"detail":"Bad set."}"#), .json(204, "")])
+        stub.hold(path: "/api/v2/profile/sections")
+        let first = editor.move(id: "a", by: 1)
+        await stub.waitUntilHeld()
+        let second = editor.setHidden(true, id: "b")
+        stub.release()
+        await first.value
+        await second.value
+
+        XCTAssertEqual(stub.requests.filter { $0.method == "PUT" }.count, 2, "the queued edit must still save")
+        XCTAssertEqual(editor.rows.map(\.id), ["b", "a", "c"])
+        XCTAssertEqual(editor.rows.map(\.hidden), [true, false, true])
+        XCTAssertNil(editor.saveError, "the later save stored the refused change too")
+        let overrides = try savedOverrides()
+        XCTAssertEqual(overrides.map { $0["section_id"] as? String }, ["b", "a", "c"])
+        XCTAssertEqual(overrides.map { $0["hidden"] as? Bool }, [true, false, true])
     }
 
     func testAnEditQueuedBehindASaveStillSavesAfterTheEditorCloses() async throws {
