@@ -14,9 +14,8 @@ protocol ThemeAudioOutput: AnyObject {
     var onProgress: (() -> Void)? { get set }
     func play()
     func pause()
-    /// Stops for good and releases the item and its URL. Releases the audio
-    /// session too unless another player is taking it over.
-    func tearDown(releasesAudioSession: Bool)
+    /// Stops for good and releases the item and its URL.
+    func tearDown()
 }
 
 /// Plays a detail page's local theme music, following the web player
@@ -33,14 +32,14 @@ final class ThemeMusicController {
     typealias Fade = @MainActor (ThemeAudioOutput, Float, @escaping @MainActor () -> Void) -> Void
 
     enum StopMode {
-        /// Fade out, then release the audio session.
+        /// Fade out.
         case fade
-        /// Stop at once and release the audio session, with no player taking
-        /// over: the profile changed, or a hidden page has nothing playing yet.
-        /// A theme still fading out finishes its fade.
+        /// Stop at once with no player taking over: the profile changed, or a
+        /// hidden page has nothing playing yet. A theme still fading out
+        /// finishes its fade.
         case silence
-        /// Stop at once and leave the audio session to the player that is
-        /// starting, silencing any theme still fading out as well.
+        /// Stop at once for a player that is starting, silencing any theme
+        /// still fading out as well.
         case handOff
     }
 
@@ -118,20 +117,20 @@ final class ThemeMusicController {
         owner = ""
         theme = ""
         if mode == .handOff {
-            retiring.values.forEach { $0.tearDown(releasesAudioSession: false) }
+            retiring.values.forEach { $0.tearDown() }
             retiring = [:]
         }
         guard let output else { return }
         self.output = nil
         detach(output)
         if mode != .fade || !output.isPlaying {
-            output.tearDown(releasesAudioSession: mode != .handOff)
+            output.tearDown()
         } else {
             let key = ObjectIdentifier(output)
             retiring[key] = output
             fade(output, 0) { [weak self] in
                 guard let self, self.retiring.removeValue(forKey: key) != nil else { return }
-                output.tearDown(releasesAudioSession: true)
+                output.tearDown()
             }
         }
     }
@@ -158,8 +157,7 @@ final class ThemeMusicController {
     }
 
     private func attach(_ granted: ThemeMusicGrant, generation: Int) {
-        // The new output plays at once; keep the session it is about to use.
-        clearOutput(releasingSession: false)
+        clearOutput()
         let output = makeOutput(granted)
         self.output = output
         converted = granted.isConverted
@@ -186,13 +184,13 @@ final class ThemeMusicController {
                 self.startLoad()
                 return
             }
-            // Nothing replays it: let the audio session go.
+            // Nothing replays it: let the player go.
             self.finished = true
-            self.clearOutput(releasingSession: true)
+            self.clearOutput()
         }
         output.onFailed = { [weak self] in
             guard let self, generation == self.generation else { return }
-            self.clearOutput(releasingSession: true)
+            self.clearOutput()
             if !self.suspended && self.spendRetry() { self.startLoad() }
         }
         resume(output)
@@ -216,11 +214,11 @@ final class ThemeMusicController {
         output.onProgress = nil
     }
 
-    private func clearOutput(releasingSession: Bool) {
+    private func clearOutput() {
         guard let output else { return }
         self.output = nil
         detach(output)
-        output.tearDown(releasesAudioSession: releasingSession)
+        output.tearDown()
     }
 }
 

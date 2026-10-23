@@ -11,13 +11,13 @@ final class ThemeMusicCenterTests: XCTestCase {
         var isLooping = false
         var isPlaying = false
         var isTornDown = false
-        var releasedSession: Bool?
+        var tearDowns = 0
         var onEnded: (() -> Void)?
         var onFailed: (() -> Void)?
         var onProgress: (() -> Void)?
         func play() { isPlaying = true }
         func pause() { isPlaying = false }
-        func tearDown(releasesAudioSession: Bool) { isPlaying = false; isTornDown = true; releasedSession = releasesAudioSession }
+        func tearDown() { isPlaying = false; isTornDown = true; tearDowns += 1 }
     }
 
     private var grants: [String] = []
@@ -109,7 +109,6 @@ final class ThemeMusicCenterTests: XCTestCase {
         center.leave(id: "page-1")
 
         XCTAssertEqual(outputs.first?.isTornDown, true)
-        XCTAssertEqual(outputs.first?.releasedSession, true, "nothing else needs the session")
     }
 
     func testAnOlderPageLeavingAfterTheNextOneOpenedKeepsTheNewTheme() async {
@@ -136,7 +135,6 @@ final class ThemeMusicCenterTests: XCTestCase {
 
         XCTAssertEqual(outputs.first?.isTornDown, true)
         XCTAssertEqual(outputs.first?.volume, ThemeMusicController.themeVolume, "torn down without a fade under the player")
-        XCTAssertEqual(outputs.first?.releasedSession, false, "the player starting takes over the audio session")
     }
 
     func testAHiddenOrLoadingPageSuspendsAndResumesInPlace() async {
@@ -202,5 +200,22 @@ final class ThemeMusicCenterTests: XCTestCase {
         heldSeasonLookup?.resume()
         await center.waitUntilSettled()
         XCTAssertEqual(grants.last, "season:alpha-2#11")
+    }
+
+    func testAnotherPagesThemePausesWhileTheNewPagesSeasonResolves() async {
+        seasonThemes["season:beta-1"] = themes("season:beta-1", "21")
+        heldSeason = "season:beta-1"
+        let center = makeCenter()
+        center.show(page(themes("movie:a")), id: "page-a")
+        await center.waitUntilSettled()
+
+        center.show(page(themes("series:beta"), season: "season:beta-1"), id: "page-b")
+        while heldSeasonLookup == nil { await Task.yield() }
+
+        XCTAssertEqual(outputs.first?.isPlaying, false, "title A's theme does not play over title B")
+
+        heldSeasonLookup?.resume()
+        await center.waitUntilSettled()
+        XCTAssertEqual(grants.last, "season:beta-1#21")
     }
 }

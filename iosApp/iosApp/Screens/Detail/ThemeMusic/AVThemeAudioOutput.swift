@@ -15,9 +15,12 @@ import UniformTypeIdentifiers
 /// once, when an engine is created, and a long-lived audiobook engine would
 /// later play under any category changed here; on tvOS an extra activation can
 /// also latch the HDMI route. So the player only declines to start over another
-/// app's audio, holds a claim while it plays so a video or audiobook teardown
-/// does not release the session under it, and releases the session itself only
-/// when theme music ends with nothing taking over and no other claim holds audio.
+/// app's audio, which leaves it nothing to hand back, and takes no part in
+/// releasing the session: it never deactivates it (that could land while a
+/// video is starting) and holds no ownership claim (that would keep a video or
+/// audiobook teardown from releasing it, with nothing left to release it
+/// later). If such a teardown ends the session under a playing theme, the
+/// optional theme simply stops.
 @MainActor
 final class AVThemeAudioOutput: ThemeAudioOutput {
     /// A converted theme larger than this is not a theme; give up on it.
@@ -43,9 +46,6 @@ final class AVThemeAudioOutput: ThemeAudioOutput {
     /// Kept alive for the item: the asset holds its delegate weakly.
     private var memoryLoader: ThemeMemoryLoader?
     private var isTornDown = false
-    #if os(iOS) || os(tvOS)
-    private var claim: AetherAudioSessionOwnership.Claim?
-    #endif
 
     init(grant: ThemeMusicGrant) {
         player.volume = 0
@@ -83,9 +83,6 @@ final class AVThemeAudioOutput: ThemeAudioOutput {
         #if os(iOS) || os(tvOS)
         // Another app's music, a call or Siri: a page's theme is not worth interrupting it.
         guard !AVAudioSession.sharedInstance().secondaryAudioShouldBeSilencedHint else { return }
-        if claim == nil {
-            claim = AetherAudioSessionOwnership.Claim(isHoldingAudio: { [weak self] in self?.isPlaying ?? false })
-        }
         #endif
         isPlaying = true
         // Before a converted theme has arrived this only records the intent;
@@ -98,7 +95,7 @@ final class AVThemeAudioOutput: ThemeAudioOutput {
         player.pause()
     }
 
-    func tearDown(releasesAudioSession: Bool) {
+    func tearDown() {
         isTornDown = true
         isPlaying = false
         download?.cancel()
@@ -112,17 +109,6 @@ final class AVThemeAudioOutput: ThemeAudioOutput {
         onEnded = nil
         onFailed = nil
         onProgress = nil
-        #if os(iOS) || os(tvOS)
-        if let claim {
-            self.claim = nil
-            if releasesAudioSession, AetherAudioSessionOwnership.canReleaseSharedSession(excluding: claim) {
-                // An XPC round trip; keep it off the main thread like Aether does.
-                Task.detached(priority: .utility) {
-                    try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
-                }
-            }
-        }
-        #endif
     }
 
     private func attach(_ item: AVPlayerItem) {

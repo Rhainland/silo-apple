@@ -14,7 +14,7 @@ final class ThemeMusicControllerTests: XCTestCase {
         var isPlaying = false
         var playCount = 0
         var isTornDown = false
-        var releasedSession: Bool?
+        var tearDowns = 0
         var onEnded: (() -> Void)?
         var onFailed: (() -> Void)?
         var onProgress: (() -> Void)?
@@ -22,7 +22,7 @@ final class ThemeMusicControllerTests: XCTestCase {
         init(url: URL) { self.url = url }
         func play() { isPlaying = true; playCount += 1 }
         func pause() { isPlaying = false }
-        func tearDown(releasesAudioSession: Bool) { isPlaying = false; isTornDown = true; releasedSession = releasesAudioSession }
+        func tearDown() { isPlaying = false; isTornDown = true; tearDowns += 1 }
     }
 
     private struct Request: Equatable {
@@ -211,7 +211,6 @@ final class ThemeMusicControllerTests: XCTestCase {
         XCTAssertEqual(outputs.count, 2)
         XCTAssertNotEqual(outputs[0].url, outputs[1].url)
         XCTAssertTrue(outputs[0].isTornDown)
-        XCTAssertEqual(outputs[0].releasedSession, false, "the replay keeps the session it is about to use")
         XCTAssertTrue(outputs[1].isPlaying)
     }
 
@@ -308,12 +307,11 @@ final class ThemeMusicControllerTests: XCTestCase {
         music.stop(.handOff)
 
         XCTAssertTrue(outputs[0].isTornDown)
-        XCTAssertEqual(outputs[0].releasedSession, false)
         heldFadeCompletions.forEach { $0() }
-        XCTAssertEqual(outputs[0].releasedSession, false, "the finished fade does not release it again")
+        XCTAssertEqual(outputs[0].tearDowns, 1, "the finished fade does not tear it down again")
     }
 
-    func testAThemeThatEndedWithoutLoopingReleasesTheSessionAndStaysFinished() async {
+    func testAThemeThatEndedWithoutLoopingIsLetGoAndStaysFinished() async {
         let music = makeController()
         music.select(set(), loop: false)
         await music.waitUntilSettled()
@@ -321,8 +319,7 @@ final class ThemeMusicControllerTests: XCTestCase {
 
         outputs[0].onEnded?()
 
-        XCTAssertTrue(outputs[0].isTornDown)
-        XCTAssertEqual(outputs[0].releasedSession, true)
+        XCTAssertTrue(outputs[0].isTornDown, "the finished player is let go")
 
         // The page staying open, or coming back from the background, does not replay it.
         music.select(set(), loop: false)
@@ -332,9 +329,9 @@ final class ThemeMusicControllerTests: XCTestCase {
         XCTAssertEqual(requests.count, 1)
     }
 
-    func testAThemeFadingOutStillReleasesTheSessionWhenNoPlayerTakesOver() async {
+    func testAThemeFadingOutFinishesItsFadeWhenNoPlayerTakesOver() async {
         // Leaving A, then opening B while A fades: B resolving is no player
-        // starting, so A must finish its fade and give the session back.
+        // starting, so A fades out fully instead of being cut off.
         let music = makeController()
         music.select(set("movie:a"), loop: false)
         await music.waitUntilSettled()
@@ -347,6 +344,6 @@ final class ThemeMusicControllerTests: XCTestCase {
         XCTAssertFalse(outputs[0].isTornDown)
 
         heldFadeCompletions.forEach { $0() }
-        XCTAssertEqual(outputs[0].releasedSession, true)
+        XCTAssertEqual(outputs[0].tearDowns, 1)
     }
 }

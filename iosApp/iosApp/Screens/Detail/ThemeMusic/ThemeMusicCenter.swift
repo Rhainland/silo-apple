@@ -48,6 +48,8 @@ final class ThemeMusicCenter {
 
     private var activePageID: String?
     private var page: ThemeMusicPage?
+    /// The page whose theme the controller was last asked to play.
+    private var playingPageID: String?
     private var loadedIdentity: String?
     private var capabilityAnswer: (available: Bool, at: Date)?
     private var capabilityTask: Task<Void, Never>?
@@ -89,6 +91,7 @@ final class ThemeMusicCenter {
         forgetIdentity()
         loadedIdentity = nil
         activePageID = nil
+        playingPageID = nil
         page = nil
     }
 
@@ -129,9 +132,14 @@ final class ThemeMusicCenter {
             controller.suspend()
             return
         }
-        // While a newly selected season's own set is looked up, whatever
-        // plays keeps playing: most seasons inherit the series' set.
-        guard let themes = resolvedThemes(for: page) else { return }
+        guard let themes = resolvedThemes(for: page) else {
+            // While a newly selected season's own set is looked up, this
+            // page's theme keeps playing (most seasons inherit the series'
+            // set); another page's theme does not.
+            if playingPageID != activePageID { controller.suspend() }
+            return
+        }
+        playingPageID = activePageID
         controller.select(themes, loop: page.loop)
     }
 
