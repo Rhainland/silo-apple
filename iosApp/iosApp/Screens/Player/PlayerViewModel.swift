@@ -4299,8 +4299,7 @@ class PlayerViewModel {
                 deinterlaceMode: deinterlaceMode,
                 deinterlaceFieldRate: deinterlaceFieldRate,
                 dolbyVisionHandling: dolbyVisionHandling,
-                resumeSourcePosition: resumeSourcePosition,
-                showsHLSSubtitleRendition: settings.subtitleSyncMs == 0
+                resumeSourcePosition: resumeSourcePosition
             )
         } else if streamRequest.url.isFileURL {
             let audioStreamIndex: Int32?
@@ -9549,10 +9548,7 @@ class PlayerViewModel {
     private func registerProtocolV3SubtitleWithAetherIfNeeded(_ track: PlayerTrack) {
         if let plan = activePreparedProtocolV3?.plan,
            registerProtocolV3EmbeddedSubtitleIfAvailable(track, plan: plan) { return }
-        // The transcode's own master carries this row; its sidecar would be
-        // a whole-file extract.
-        guard aetherPlaybackController.activeSpec?.hlsSubtitleRenditionAppTrackID != track.trackId,
-              !aetherPlaybackController.containsSubtitle(appTrackID: track.trackId),
+        guard !aetherPlaybackController.containsSubtitle(appTrackID: track.trackId),
               let url = protocolV3InventorySidecarURL(for: track) else {
             return
         }
@@ -9615,12 +9611,6 @@ class PlayerViewModel {
               let plan = activePreparedProtocolV3?.plan else { return false }
         let trackID = selection.appTrackID(in: plan)
         if case .track = selection, trackID == nil {
-            localProtocolV3SubtitleSelection = nil
-            return false
-        }
-        // The new plan carries this pick as its HLS subtitle rendition, so the
-        // plan's own selection path applies it once AVPlayer lists it.
-        if let trackID, trackID == aetherPlaybackController.activeSpec?.hlsSubtitleRenditionAppTrackID {
             localProtocolV3SubtitleSelection = nil
             return false
         }
