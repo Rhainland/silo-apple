@@ -2772,7 +2772,9 @@ final class DownloadManager {
             file.legacyRowsPending = nil
         }
         persist()
-        for id in revokedRecordIds {
+        // Every revoked id, not only those that still had a record: a pass
+        // interrupted after persisting the removal left its folder behind.
+        for id in revokedIds {
             removeDownloadDirectory(recordId: id)
         }
         // Also sends the DELETEs still pending from an earlier pass.
