@@ -85,7 +85,7 @@ final class ThemeMusicCenter {
 
     /// Sign-out or an identity reset: stop and forget the identity's answers.
     func reset() {
-        controller.stop(immediately: true)
+        controller.stop(.silence)
         forgetIdentity()
         loadedIdentity = nil
         activePageID = nil
@@ -108,7 +108,7 @@ final class ThemeMusicCenter {
     private func apply() {
         let current = identity()
         if current != loadedIdentity {
-            controller.stop(immediately: true)
+            controller.stop(.silence)
             forgetIdentity()
             loadedIdentity = current
         }
@@ -117,7 +117,7 @@ final class ThemeMusicCenter {
             return
         }
         guard !page.isOtherMediaActive else {
-            controller.stop(immediately: true)
+            controller.stop(.handOff)
             return
         }
         guard let available = capabilityAvailable() else { return }
@@ -143,7 +143,8 @@ final class ThemeMusicCenter {
             let asked = loadedIdentity
             capabilityTask = Task { [weak self, capability] in
                 let available = (try? await capability()) ?? false
-                guard let self, self.loadedIdentity == asked else { return }
+                // A reset cancels this lookup; a newer one may already be asking.
+                guard let self, !Task.isCancelled, self.loadedIdentity == asked else { return }
                 self.capabilityAnswer = (available, Date())
                 self.capabilityTask = nil
                 self.apply()
@@ -161,7 +162,7 @@ final class ThemeMusicCenter {
             let asked = loadedIdentity
             seasonTasks[season] = Task { [weak self, seasonThemes] in
                 let resolved = try? await seasonThemes(season)
-                guard let self, self.loadedIdentity == asked else { return }
+                guard let self, !Task.isCancelled, self.loadedIdentity == asked else { return }
                 self.seasonSets[season] = .some(resolved)
                 self.seasonTasks[season] = nil
                 self.apply()

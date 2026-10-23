@@ -32,6 +32,18 @@ final class ThemeMusicController {
     /// Ramps `output` to a volume, then calls the completion.
     typealias Fade = @MainActor (ThemeAudioOutput, Float, @escaping @MainActor () -> Void) -> Void
 
+    enum StopMode {
+        /// Fade out, then release the audio session.
+        case fade
+        /// Stop at once and release the audio session, with no player taking
+        /// over: the profile changed, or a hidden page has nothing playing yet.
+        /// A theme still fading out finishes its fade.
+        case silence
+        /// Stop at once and leave the audio session to the player that is
+        /// starting, silencing any theme still fading out as well.
+        case handOff
+    }
+
     /// Background level under the page, as on the web.
     static let themeVolume: Float = 0.35
 
@@ -50,6 +62,11 @@ final class ThemeMusicController {
     private var played = false
     private var retry = 0
     private var suspended = false
+    /// The theme played to its end and nothing replays it; the page keeps it
+    /// selected so staying open or returning does not start it again.
+    private var finished = false
+    /// Stopped outputs still fading out, so an immediate stop can silence them.
+    private var retiring: [ObjectIdentifier: ThemeAudioOutput] = [:]
 
     init(grant: @escaping Grant, makeOutput: @escaping MakeOutput, fade: @escaping Fade = { ThemeVolumeRamp.fade($0, to: $1, done: $2) }) {
         self.grant = grant
@@ -68,7 +85,7 @@ final class ThemeMusicController {
         if owner == selection.ownerId && theme == song.id {
             if suspended {
                 suspended = false
-                if let output { resume(output) } else { startLoad() }
+                if let output { resume(output) } else if !finished { startLoad() }
             }
             return
         }
@@ -83,7 +100,7 @@ final class ThemeMusicController {
     func suspend() {
         suspended = true
         guard let output else {
-            stop(immediately: true)
+            if !finished { stop(.silence) }
             return
         }
         fade(output, 0) { [weak self, weak output] in
@@ -92,22 +109,30 @@ final class ThemeMusicController {
         }
     }
 
-    /// Ends the theme, fading out unless `immediately` (another player is
-    /// taking the audio).
-    func stop(immediately: Bool = false) {
+    /// Ends the theme.
+    func stop(_ mode: StopMode = .fade) {
         suspended = false
+        finished = false
         generation += 1
         load?.cancel()
         owner = ""
         theme = ""
+        if mode == .handOff {
+            retiring.values.forEach { $0.tearDown(releasesAudioSession: false) }
+            retiring = [:]
+        }
         guard let output else { return }
         self.output = nil
         detach(output)
-        // An immediate stop means other media is starting and takes the session.
-        if immediately || !output.isPlaying {
-            output.tearDown(releasesAudioSession: !immediately)
+        if mode != .fade || !output.isPlaying {
+            output.tearDown(releasesAudioSession: mode != .handOff)
         } else {
-            fade(output, 0) { output.tearDown(releasesAudioSession: true) }
+            let key = ObjectIdentifier(output)
+            retiring[key] = output
+            fade(output, 0) { [weak self] in
+                guard let self, self.retiring.removeValue(forKey: key) != nil else { return }
+                output.tearDown(releasesAudioSession: true)
+            }
         }
     }
 
@@ -139,6 +164,7 @@ final class ThemeMusicController {
         self.output = output
         converted = granted.isConverted
         played = false
+        finished = false
         output.volume = 0
         output.isLooping = loop && !converted
         output.onProgress = { [weak self, weak output] in
@@ -155,8 +181,14 @@ final class ThemeMusicController {
             // expired, so a loop replays it with a fresh grant. One that ended
             // without playing spends the same single retry as a failure, so a
             // conversion that fails cleanly cannot replay forever.
-            guard let self, generation == self.generation, self.converted, self.loop, !self.suspended else { return }
-            if self.played || self.spendRetry() { self.startLoad() }
+            guard let self, generation == self.generation else { return }
+            if self.converted && self.loop && !self.suspended && (self.played || self.spendRetry()) {
+                self.startLoad()
+                return
+            }
+            // Nothing replays it: let the audio session go.
+            self.finished = true
+            self.clearOutput(releasingSession: true)
         }
         output.onFailed = { [weak self] in
             guard let self, generation == self.generation else { return }
