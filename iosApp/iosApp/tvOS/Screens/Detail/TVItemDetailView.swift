@@ -85,6 +85,15 @@ struct TVItemDetailView: View {
         .siloNavigationTitleDisplayMode(.inline)
         .siloNavigationBarBackgroundHidden()
         .descriptionTranslation(viewModel)
+        .themeMusic(
+            viewModel.detail?.themes,
+            seasonContentId: viewModel.detail?.type == "series" ? viewModel.selectedSeason?.contentId : nil,
+            // A series page waits for its seasons, so a season that owns a
+            // theme never opens on a burst of the series' one.
+            isLoading: viewModel.detail == nil
+                || (viewModel.detail?.type == "series" && viewModel.seasons.isEmpty
+                    && viewModel.isLoadingSeriesHierarchy)
+        )
         .personalStateNoticeAlert($viewModel.personalStateNotice)
         .onAppear {
             isPageVisible = true
@@ -1073,7 +1082,8 @@ struct TVItemDetailView: View {
             // would disappear the moment enrichment succeeds.
             videos: item.videos,
             extras: item.extras,
-            machineTranslatedFields: item.machineTranslatedFields
+            machineTranslatedFields: item.machineTranslatedFields,
+            themes: item.themes
         )
     }
 }
