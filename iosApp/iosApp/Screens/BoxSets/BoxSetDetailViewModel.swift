@@ -20,7 +20,9 @@ final class BoxSetDetailViewModel {
     }
 
     /// Reads the box set. A reload over a shown box set (after playback, or
-    /// back from one of its movies) keeps it on screen if the read fails.
+    /// back from one of its movies) keeps it on screen if the read fails,
+    /// unless the server answers 404: box sets were turned off or too few of
+    /// its movies are visible, so the page shows why instead of a stale Play.
     func load() async {
         generation += 1
         let myGeneration = generation
@@ -31,7 +33,11 @@ final class BoxSetDetailViewModel {
             error = nil
         } catch {
             guard myGeneration == generation, !Task.isCancelled else { return }
-            if detail == nil { self.error = Self.errorState(error) }
+            let state = Self.errorState(error)
+            if detail == nil || state.isNotFound {
+                detail = nil
+                self.error = state
+            }
         }
     }
 
