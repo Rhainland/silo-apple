@@ -127,6 +127,31 @@ final class BoxSetTests: XCTestCase {
         XCTAssertNil(model.detail)
     }
 
+    /// Back from a movie or the player, the page reloads. A box set the
+    /// server no longer serves leaves the page; a dropped connection does not.
+    func testReloadDropsABoxSetTheServerNoLongerServes() async throws {
+        let api = try await api()
+        let path = "/api/v2/catalog/box-sets/1241"
+        let shown = String(harryPotter.dropLast()) + #","items":[\#(movie("hp1", "Philosopher's Stone", year: 2001, played: false))]}"#
+        stub.sequence(path: path, [
+            .json(200, shown),
+            .failure(URLError(.networkConnectionLost)),
+            .json(404, notFound),
+        ])
+        let model = BoxSetDetailViewModel(id: "1241", libraryId: 1, api: api)
+        await model.load()
+        XCTAssertNotNil(model.detail)
+
+        await model.load()
+        XCTAssertNotNil(model.detail, "a dropped connection keeps the box set on screen")
+        XCTAssertNil(model.error)
+
+        await model.load()
+        XCTAssertNil(model.detail, "no Play for a box set the server stopped serving")
+        let error = try XCTUnwrap(model.error)
+        XCTAssertTrue(error.isNotFound)
+    }
+
     func testYearsAndFilmCountReadNaturally() {
         func set(_ first: Int?, _ last: Int?, count: Int = 1) -> CatalogBoxSet {
             CatalogBoxSet(id: "1", libraryId: "1", title: "T", movieCount: count, playedCount: 0,
