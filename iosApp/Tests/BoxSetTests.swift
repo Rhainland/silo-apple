@@ -167,9 +167,13 @@ final class BoxSetTests: XCTestCase {
 
     // MARK: Search
 
-    private func searchModel(_ api: SiloAPI, boxSetsEnabled: Bool) -> SearchViewModel {
+    /// A Search screen model on a server that does or does not advertise
+    /// `box_sets`. No library list is cached: the capability alone decides.
+    private func searchModel(_ api: SiloAPI, serverHasBoxSets: Bool) -> SearchViewModel {
+        let flag = serverHasBoxSets ? #","box_sets":true"# : ""
+        stub.reply(path: "/api/v2/catalog/search/capabilities", 200,
+                   #"{"revision":"r","state":"available","allowed":true\#(flag)}"#)
         let model = SearchViewModel(api: api, includesBoxSets: true)
-        model.boxSetsEnabled = boxSetsEnabled
         model.query = "potter"
         return model
     }
@@ -188,7 +192,7 @@ final class BoxSetTests: XCTestCase {
         let api = try await api()
         stub.reply(path: Self.boxSetSearchPath, 200, #"{"items":[\#(harryPotter)]}"#)
         stub.reply(path: Self.catalogPath, 200, #"{"items":[\#(movie("hp1", "Philosopher's Stone", year: 2001, played: false))],"page":{"has_more":false},"total":1,"total_exact":true}"#)
-        let model = searchModel(api, boxSetsEnabled: true)
+        let model = searchModel(api, serverHasBoxSets: true)
 
         await model.performSearch()
         await waitForBoxSets(model)
@@ -199,75 +203,16 @@ final class BoxSetTests: XCTestCase {
         XCTAssertEqual(model.contentState, .results)
     }
 
-    func testSearchWithoutBoxSetLibrariesNeverAsks() async throws {
+    func testServerWithoutBoxSetsNeverAsks() async throws {
         let api = try await api()
         stub.reply(path: Self.catalogPath, 200, #"{"items":[],"page":{"has_more":false},"total":0,"total_exact":true}"#)
-        let model = searchModel(api, boxSetsEnabled: false)
+        let model = searchModel(api, serverHasBoxSets: false)
 
         await model.performSearch()
         await waitForBoxSets(model)
 
         XCTAssertEqual(boxSetSearches, [])
         XCTAssertEqual(model.contentState, .noResults)
-    }
-
-    func testLibrariesArrivingAfterASearchAddTheirBoxSets() async throws {
-        let api = try await api()
-        stub.reply(path: Self.boxSetSearchPath, 200, #"{"items":[\#(harryPotter)]}"#)
-        stub.reply(path: Self.catalogPath, 200, #"{"items":[\#(movie("hp1", "Philosopher's Stone", year: 2001, played: false))],"page":{"has_more":false},"total":1,"total_exact":true}"#)
-        let model = searchModel(api, boxSetsEnabled: false)
-        await model.performSearch()
-
-        model.boxSetsEnabled = true
-        await waitForBoxSets(model)
-
-        XCTAssertEqual(boxSetSearches, ["potter"])
-        XCTAssertEqual(model.boxSets.map(\.id), ["1241"])
-        XCTAssertEqual(model.results.map(\.contentId), ["hp1"])
-    }
-
-    func testLibrariesArrivingWhileTitlesLoadAddTheirBoxSets() async throws {
-        let api = try await api()
-        stub.reply(path: Self.boxSetSearchPath, 200, #"{"items":[\#(harryPotter)]}"#)
-        stub.reply(path: Self.catalogPath, 200, #"{"items":[\#(movie("hp1", "Philosopher's Stone", year: 2001, played: false))],"page":{"has_more":false},"total":1,"total_exact":true}"#)
-        stub.hold(path: Self.catalogPath)
-        let model = searchModel(api, boxSetsEnabled: false)
-        let search = Task { await model.performSearch() }
-        await stub.waitUntilHeld()
-        XCTAssertTrue(model.isSearching)
-        XCTAssertFalse(model.hasSearched, "the first search is still waiting for its titles")
-
-        model.boxSetsEnabled = true
-        stub.release()
-        await search.value
-        await waitForBoxSets(model)
-
-        XCTAssertEqual(boxSetSearches, ["potter"])
-        XCTAssertEqual(model.boxSets.map(\.id), ["1241"])
-        XCTAssertEqual(model.results.map(\.contentId), ["hp1"])
-    }
-
-    func testLibrariesArrivingBeforeTheSearchDecidesAskOnce() async throws {
-        let api = try await api()
-        let capabilitiesPath = "/api/v2/catalog/search/capabilities"
-        stub.reply(path: capabilitiesPath, 200, #"{"revision":"r","state":"available","allowed":true,"people_media_scope":true,"video_with_episodes_scope":true}"#)
-        stub.reply(path: Self.boxSetSearchPath, 200, #"{"items":[\#(harryPotter)]}"#)
-        stub.reply(path: Self.catalogPath, 200, #"{"items":[],"page":{"has_more":false},"total":0,"total_exact":true}"#)
-        stub.hold(path: capabilitiesPath)
-        let model = SearchViewModel(api: api, includesEpisodes: true, includesBoxSets: true)
-        model.audiobooksEnabled = false
-        model.query = "potter"
-        let search = Task { await model.performSearch() }
-        await stub.waitUntilHeld()
-
-        // The search reads the flag itself once its scope is known.
-        model.boxSetsEnabled = true
-        stub.release()
-        await search.value
-        await waitForBoxSets(model)
-
-        XCTAssertEqual(boxSetSearches, ["potter"], "one lookup, not one from the flag and one from the search")
-        XCTAssertEqual(model.boxSets.map(\.id), ["1241"])
     }
 
     func testNewQueryReplacesBoxSetsWhenItsLookupAnswers() async throws {
@@ -277,7 +222,7 @@ final class BoxSetTests: XCTestCase {
             .json(200, #"{"items":[]}"#),
         ])
         stub.reply(path: Self.catalogPath, 200, #"{"items":[],"page":{"has_more":false},"total":0,"total_exact":true}"#)
-        let model = searchModel(api, boxSetsEnabled: true)
+        let model = searchModel(api, serverHasBoxSets: true)
         await model.performSearch()
         await waitForBoxSets(model)
         XCTAssertEqual(model.boxSets.map(\.id), ["1241"])
@@ -302,7 +247,7 @@ final class BoxSetTests: XCTestCase {
     func testSeriesSearchLeavesBoxSetsOut() async throws {
         let api = try await api()
         stub.reply(path: Self.catalogPath, 200, #"{"items":[],"page":{"has_more":false},"total":0,"total_exact":true}"#)
-        let model = searchModel(api, boxSetsEnabled: true)
+        let model = searchModel(api, serverHasBoxSets: true)
         model.selectedMediaType = .series
 
         await model.performSearch()
@@ -316,7 +261,7 @@ final class BoxSetTests: XCTestCase {
         let api = try await api()
         stub.reply(path: Self.boxSetSearchPath, 404, notFound)
         stub.reply(path: Self.catalogPath, 200, #"{"items":[\#(movie("hp1", "Philosopher's Stone", year: 2001, played: false))],"page":{"has_more":false},"total":1,"total_exact":true}"#)
-        let model = searchModel(api, boxSetsEnabled: true)
+        let model = searchModel(api, serverHasBoxSets: true)
 
         await model.performSearch()
         await waitForBoxSets(model)
