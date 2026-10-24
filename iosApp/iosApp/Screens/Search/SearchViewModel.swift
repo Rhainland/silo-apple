@@ -64,24 +64,10 @@ class SearchViewModel {
     var isSearchingPeople = false
     /// Box sets matching the query, best match first, shown ahead of the
     /// titles. Replaced with each new search. Always empty unless
-    /// `includesBoxSets` and `boxSetsEnabled`.
+    /// `includesBoxSets` and the server advertises `box_sets`.
     var boxSets: [CatalogBoxSet] = []
     /// True while a new search's box set lookup is still running.
     var isSearchingBoxSets = false
-    /// Whether any library the profile sees groups box sets
-    /// (`Library.browsesBoxSets`). Servers without box sets never report one,
-    /// so they get no box set lookup at all. A change looks again for the
-    /// current search once it has decided on box sets, even while its titles
-    /// are still loading, so libraries that arrive after that still add
-    /// theirs. Before that point the search itself reads the new value.
-    var boxSetsEnabled = false {
-        didSet {
-            guard boxSetsEnabled != oldValue,
-                  let boxSetQuery,
-                  boxSetQuery.generation == generation else { return }
-            startBoxSetSearch(for: boxSetQuery.text, generation: generation)
-        }
-    }
 
     /// Whether audiobooks participate in this search session. Drives both the
     /// offered filters (`availableMediaTypes`) and what `.all` means. On tvOS
@@ -118,9 +104,6 @@ class SearchViewModel {
     private var searchTask: Task<Void, Never>?
     private var peopleTask: Task<Void, Never>?
     private var boxSetTask: Task<Void, Never>?
-    /// The query and search generation the box set lookup last ran or was
-    /// skipped for, so a change to `boxSetsEnabled` can redo it.
-    private var boxSetQuery: (text: String, generation: Int)?
     private let api: SiloAPI
     /// Only the Search screen shows people; pickers that reuse this model
     /// never ask for them.
@@ -321,14 +304,14 @@ class SearchViewModel {
 
     /// Box sets are movies, so only All and Movies look for them.
     private var searchesBoxSets: Bool {
-        includesBoxSets && boxSetsEnabled && (selectedMediaType == .all || selectedMediaType == .movie)
+        includesBoxSets && (selectedMediaType == .all || selectedMediaType == .movie)
     }
 
-    /// Loads box sets for a new search on their own task, like people. A
-    /// failed read shows none rather than failing the titles around it.
+    /// Loads box sets for a new search on their own task, like people, when
+    /// the server advertises `box_sets`. A failed read shows none rather than
+    /// failing the titles around it.
     private func startBoxSetSearch(for query: String, generation searchGeneration: Int) {
         boxSetTask?.cancel()
-        boxSetQuery = (query, searchGeneration)
         guard searchesBoxSets else {
             boxSets = []
             isSearchingBoxSets = false
@@ -338,7 +321,9 @@ class SearchViewModel {
         boxSetTask = Task {
             let found: [CatalogBoxSet]
             do {
-                found = try await api.searchBoxSets(query: query, limit: boxSetLimit)
+                found = try await loadSearchFeatures().boxSets
+                    ? api.searchBoxSets(query: query, limit: boxSetLimit)
+                    : []
             } catch {
                 if !Task.isCancelled {
                     Self.logger.error("box set search failed: \(error.localizedDescription, privacy: .public)")
@@ -354,7 +339,6 @@ class SearchViewModel {
     private func cancelBoxSetSearch() {
         boxSetTask?.cancel()
         boxSetTask = nil
-        boxSetQuery = nil
         boxSets = []
         isSearchingBoxSets = false
     }

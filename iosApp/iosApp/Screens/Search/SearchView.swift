@@ -98,10 +98,6 @@ struct SearchView: View {
         .onAppear {
             navPrefs.refresh()
             refreshAudiobookAvailability()
-            refreshBoxSetAvailability()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .userLibrariesDidRefresh)) { _ in
-            refreshBoxSetAvailability()
         }
         .onChange(of: navPrefs.showAudiobooks) {
             refreshAudiobookAvailability(applySearch: true)
@@ -138,13 +134,6 @@ struct SearchView: View {
         viewModel.audiobooksEnabled = audiobooksAvailable
         guard applySearch, previous != viewModel.audiobooksEnabled else { return }
         Task { await viewModel.applyMediaType() }
-    }
-
-    /// Box sets are searched only when a library the profile sees groups
-    /// them; a server without box sets never reports one.
-    private func refreshBoxSetAvailability() {
-        let cached: LibrariesResponse? = ResponseCache.shared.get(CacheKey.userLibraries)
-        viewModel.boxSetsEnabled = cached?.libraries.contains(where: \.browsesBoxSets) ?? false
     }
 
     #if os(iOS)
