@@ -4744,15 +4744,19 @@ class PlayerViewModel {
         applySettingsToPlayer()
     }
 
-    var currentUserVolume: Float {
-        userMuted ? 0 : userVolume
-    }
-
     func applyUserVolume(_ volume: Float) {
         userVolume = min(max(volume, 0), 1)
         if userVolume > 0 { userMuted = false }
         aetherPlaybackController.setMuted(userMuted)
         aetherPlaybackController.setVolume(userVolume)
+    }
+
+    /// The local volume swipe moves the device volume, so a remote mute or
+    /// zero-volume command would leave it silent at any level. Undo those
+    /// before the swipe; a nonzero remote level stays.
+    func unmutePlayerGainForLocalVolume() {
+        guard userMuted || userVolume == 0 else { return }
+        applyUserVolume(userVolume == 0 ? 1 : userVolume)
     }
 
     func applyUserMuted(_ muted: Bool) {

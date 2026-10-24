@@ -11,7 +11,7 @@ import SwiftUI
 /// - double tap center     → play/pause
 /// - touch & hold          → 2× playback while held (chip at top center)
 /// - drag on left edge     → screen brightness (vertical gauge)
-/// - drag on right edge    → player volume (vertical gauge)
+/// - drag on right edge    → device volume (vertical gauge)
 /// - pinch                 → cycle video gravity (fit / fill / stretch)
 ///
 /// Center drags never dismiss playback. Exit is an explicit close-button
@@ -45,6 +45,10 @@ struct MobilePlayerGestureLayer: View {
     @State private var visibleGauge: EdgeAdjustment?
     @State private var gaugeFraction: Double = 0
     @State private var gaugeHideTask: Task<Void, Never>?
+    /// Gauge level bucket for the in-flight drag; nil between drags. Each
+    /// change ticks a haptic, so the finger feels the level move.
+    @State private var gaugeHapticStep: Int?
+    @State private var systemVolume = PlayerSystemVolume()
 
     /// Video-gravity mode announced after a pinch; shown briefly as a toast.
     @State private var gravityToast: VideoGravity?
@@ -53,35 +57,63 @@ struct MobilePlayerGestureLayer: View {
     /// past fit or stretch shows the toast without a haptic.
     @State private var gravityChangeCount = 0
 
-    /// Width of the brightness/volume strips along each screen edge.
+    /// Width of the brightness/volume strips along each screen edge, past
+    /// that side's safe-area inset. In landscape the inset covers the
+    /// Dynamic Island, which would otherwise eat into the strip.
     private static let edgeZoneWidth: CGFloat = 88
     /// Track height of the brightness/volume gauge.
     private static let gaugeHeight: CGFloat = 130
+    /// Gauge center's distance past its edge zone, so the thumb dragging
+    /// along the edge doesn't cover it.
+    private static let gaugeZoneOffset: CGFloat = 44
+    /// Drag travel for a full 0–100% swing.
+    private static let gaugeFullSwing: CGFloat = 160
+    /// Haptic ticks across a full gauge swing; matches the 16 hardware
+    /// volume-button steps.
+    private static let gaugeHapticSteps = 16
 
     /// Fraction of the width on each side that double-taps treat as a skip
     /// zone; the middle band toggles play/pause instead.
     private static let skipZoneFraction: CGFloat = 0.35
 
     var body: some View {
-        GeometryReader { proxy in
-            let size = proxy.size
+        // A reader that ignores the safe area reports zero insets, so the
+        // outer reader, which respects it, supplies them to the full-screen
+        // inner one.
+        GeometryReader { safeArea in
+            let insets = safeArea.safeAreaInsets
+            GeometryReader { proxy in
+                let size = proxy.size
+                let leadingZone = insets.leading + Self.edgeZoneWidth
+                let trailingZone = insets.trailing + Self.edgeZoneWidth
 
-            ZStack {
-                Color.clear
-                    .contentShape(Rectangle())
-                    .gesture(doubleTapGesture(in: size).exclusively(before: singleTapGesture))
-                    .onLongPressGesture(minimumDuration: 0.5, maximumDistance: 24) {
-                        viewModel.beginHoldFastForward()
-                    } onPressingChanged: { pressing in
-                        if !pressing {
-                            viewModel.endHoldFastForward()
+                ZStack {
+                    // Must stay in the window for writes to move the device
+                    // volume; its presence also hides the system volume HUD,
+                    // which the edge gauge replaces.
+                    PlayerSystemVolumeHost(volume: systemVolume)
+                        .frame(width: 1, height: 1)
+                        .opacity(0.0001)
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .gesture(doubleTapGesture(in: size).exclusively(before: singleTapGesture))
+                        .onLongPressGesture(minimumDuration: 0.5, maximumDistance: 24) {
+                            viewModel.beginHoldFastForward()
+                        } onPressingChanged: { pressing in
+                            if !pressing {
+                                viewModel.endHoldFastForward()
+                            }
                         }
-                    }
-                    .simultaneousGesture(edgeAdjustmentDrag(in: size))
-                    .simultaneousGesture(videoGravityPinchGesture)
+                        .simultaneousGesture(edgeAdjustmentDrag(in: size, leadingZone: leadingZone, trailingZone: trailingZone))
+                        .simultaneousGesture(videoGravityPinchGesture)
 
-                feedbackOverlays(in: size)
+                    feedbackOverlays(in: size, leadingZone: leadingZone, trailingZone: trailingZone)
+                }
             }
+            .ignoresSafeArea()
         }
         // These gestures have no button under the finger, so a light haptic
         // confirms each one landed.
@@ -92,14 +124,34 @@ struct MobilePlayerGestureLayer: View {
             holding
         }
         .sensoryFeedback(.impact(weight: .light), trigger: gravityChangeCount)
+        // A tick per gauge step, and a firmer one at empty or full.
+        .sensoryFeedback(trigger: gaugeHapticStep) { old, new in
+            guard let old, let new, old != new else { return nil }
+            return new == 0 || new == Self.gaugeHapticSteps + 1
+                ? .impact(weight: .medium)
+                : .selection
+        }
         // The controls scrim should swallow touches while the overlay is up,
         // but SwiftUI tap recognizers on an occluded sibling can still track
         // touches — rapid presses on the overlay's skip buttons registered
         // here as a double-tap skip. Drop out of hit testing entirely while
         // the overlay owns the screen.
         .allowsHitTesting(!viewModel.showControls)
-        .ignoresSafeArea()
+        .onAppear {
+            systemVolume.onExternalChange = { level in
+                // The drag's own writes echo back here late; the drag
+                // already drives the gauge.
+                guard activeAdjustment != .volume else { return }
+                showGauge(.volume, fraction: Double(level))
+                scheduleGaugeHide()
+            }
+            systemVolume.startObserving()
+        }
         .onDisappear {
+            systemVolume.stopObserving()
+            // The callback captures this view, whose state holds
+            // `systemVolume`; clearing it breaks that cycle.
+            systemVolume.onExternalChange = nil
             // The layer can be torn out mid-gesture (loading state flips,
             // player transitions) without a final onPressingChanged(false).
             viewModel.endHoldFastForward()
@@ -143,17 +195,17 @@ struct MobilePlayerGestureLayer: View {
         }
     }
 
-    private func edgeAdjustmentDrag(in size: CGSize) -> some Gesture {
+    private func edgeAdjustmentDrag(in size: CGSize, leadingZone: CGFloat, trailingZone: CGFloat) -> some Gesture {
         DragGesture(minimumDistance: 14)
             .onChanged { value in
                 if dragBaseline == nil {
                     let startX = value.startLocation.x
-                    if startX < Self.edgeZoneWidth {
+                    if startX < leadingZone {
                         activeAdjustment = .brightness
                         dragBaseline = PlayerScreenBrightness.shared.currentLevel()
-                    } else if startX > size.width - Self.edgeZoneWidth {
+                    } else if startX > size.width - trailingZone {
                         activeAdjustment = .volume
-                        dragBaseline = Double(viewModel.currentUserVolume)
+                        dragBaseline = Double(systemVolume.currentLevel)
                     } else {
                         activeAdjustment = nil
                         dragBaseline = 0
@@ -161,17 +213,18 @@ struct MobilePlayerGestureLayer: View {
                 }
                 guard let adjustment = activeAdjustment, let baseline = dragBaseline else { return }
 
-                // Full swing over ~260pt of travel; up increases.
-                let fraction = min(max(baseline - Double(value.translation.height) / 260, 0), 1)
-                gaugeFraction = fraction
-                visibleGauge = adjustment
-                gaugeHideTask?.cancel()
+                // Up increases.
+                let fraction = min(max(baseline - Double(value.translation.height / Self.gaugeFullSwing), 0), 1)
                 switch adjustment {
                 case .brightness:
                     PlayerScreenBrightness.shared.apply(fraction)
                 case .volume:
-                    viewModel.applyUserVolume(Float(fraction))
+                    // No feedback for a level the route won't take.
+                    guard systemVolume.apply(Float(fraction)) else { return }
+                    viewModel.unmutePlayerGainForLocalVolume()
                 }
+                showGauge(adjustment, fraction: fraction)
+                gaugeHapticStep = Self.gaugeHapticStep(for: fraction)
             }
             .onEnded { _ in
                 if activeAdjustment != nil {
@@ -179,7 +232,16 @@ struct MobilePlayerGestureLayer: View {
                 }
                 activeAdjustment = nil
                 dragBaseline = nil
+                gaugeHapticStep = nil
             }
+    }
+
+    /// 0 only at exactly empty and `gaugeHapticSteps + 1` only at exactly
+    /// full, so the firmer edge haptic fires when the level hits a rail.
+    private static func gaugeHapticStep(for fraction: Double) -> Int {
+        if fraction <= 0 { return 0 }
+        if fraction >= 1 { return gaugeHapticSteps + 1 }
+        return 1 + min(Int(fraction * Double(gaugeHapticSteps)), gaugeHapticSteps - 1)
     }
 
     private var videoGravityPinchGesture: some Gesture {
@@ -239,6 +301,14 @@ struct MobilePlayerGestureLayer: View {
         }
     }
 
+    private func showGauge(_ adjustment: EdgeAdjustment, fraction: Double) {
+        gaugeFraction = fraction
+        if visibleGauge != adjustment {
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) { visibleGauge = adjustment }
+        }
+        gaugeHideTask?.cancel()
+    }
+
     private func scheduleGaugeHide() {
         gaugeHideTask?.cancel()
         gaugeHideTask = Task {
@@ -249,7 +319,7 @@ struct MobilePlayerGestureLayer: View {
     }
 
     @ViewBuilder
-    private func feedbackOverlays(in size: CGSize) -> some View {
+    private func feedbackOverlays(in size: CGSize, leadingZone: CGFloat, trailingZone: CGFloat) -> some View {
         if let flash = skipFlash {
             skipFlashView(flash)
                 .position(
@@ -278,10 +348,12 @@ struct MobilePlayerGestureLayer: View {
         if let gauge = visibleGauge {
             edgeGauge(for: gauge)
                 .position(
-                    x: gauge == .brightness ? 36 : size.width - 36,
+                    x: gauge == .brightness
+                        ? leadingZone + Self.gaugeZoneOffset
+                        : size.width - trailingZone - Self.gaugeZoneOffset,
                     y: size.height / 2
                 )
-                .transition(.opacity)
+                .transition(.scale(scale: 0.8).combined(with: .opacity))
                 .allowsHitTesting(false)
         }
     }
@@ -336,25 +408,50 @@ struct MobilePlayerGestureLayer: View {
     }
 
     private func edgeGauge(for adjustment: EdgeAdjustment) -> some View {
-        VStack(spacing: 8) {
+        let isDragging = activeAdjustment == adjustment
+        // Stretch a little past the rail being pushed against, toward the
+        // drag, like the system sliders do.
+        let atRail = isDragging && (gaugeFraction <= 0 || gaugeFraction >= 1)
+        return VStack(spacing: 10) {
             ZStack(alignment: .bottom) {
                 Capsule()
                     .fill(Color.white.opacity(0.25))
                 Capsule()
                     .fill(Color.white)
-                    .frame(height: max(Self.gaugeHeight * gaugeFraction, 6))
+                    .frame(height: max(Self.gaugeHeight * gaugeFraction, 8))
             }
-            .frame(width: 6, height: Self.gaugeHeight)
+            .frame(width: isDragging ? 10 : 8, height: Self.gaugeHeight)
+            .animation(.spring(response: 0.22, dampingFraction: 0.85), value: gaugeFraction)
 
-            Image(systemName: adjustment == .brightness
-                ? "sun.max.fill"
-                : (gaugeFraction <= 0.01 ? "speaker.slash.fill" : "speaker.wave.2.fill"))
-                .font(.system(size: 13, weight: .semibold))
+            gaugeIcon(for: adjustment)
+                .font(.system(size: 15, weight: .semibold))
                 .foregroundStyle(.white)
+                .frame(width: 22, height: 18)
+                .contentTransition(.symbolEffect(.replace))
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 14)
         .siloPlayerGlass(in: Capsule())
+        .scaleEffect(
+            x: atRail ? 0.96 : 1,
+            y: atRail ? 1.06 : 1,
+            anchor: gaugeFraction <= 0 ? .top : .bottom
+        )
+        .animation(.spring(response: 0.3, dampingFraction: 0.55), value: atRail)
+        .animation(.spring(response: 0.25, dampingFraction: 0.8), value: isDragging)
+    }
+
+    private func gaugeIcon(for adjustment: EdgeAdjustment) -> Image {
+        switch adjustment {
+        case .brightness:
+            return Image(systemName: gaugeFraction < 0.5 ? "sun.min.fill" : "sun.max.fill")
+        case .volume:
+            if gaugeFraction <= 0.01 {
+                return Image(systemName: "speaker.slash.fill")
+            }
+            // The waves fill in with the level.
+            return Image(systemName: "speaker.wave.3.fill", variableValue: gaugeFraction)
+        }
     }
 }
 #endif
