@@ -66,6 +66,7 @@
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_silopair._tcp</string>
+		<string>_silopair-roku._tcp</string>
 		<string>_silocast._tcp</string>
 		<string>_silocast-roku._tcp</string>
 		<string>_silo._tcp</string>
