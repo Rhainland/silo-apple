@@ -28,6 +28,9 @@ struct TVSkylineSectionFeed: View {
     let onTopMenuFocusRequest: (() -> Void)?
     /// Open a content item (detail).
     let onItemTap: (_ destinationContentId: String, _ item: SectionItem) -> Void
+    /// Opens a row's full page from its trailing Explore all card. Home and
+    /// library feeds supply it; feeds of rows without a page leave it nil.
+    var onExploreAll: ((ResolvedSection) -> Void)? = nil
     /// Optional Home-only action. Library feeds leave this nil.
     var onRemoveFromContinueWatching: ((SectionItem) -> Void)? = nil
     /// Optional Home-only watched-state mutation. Library feeds leave this nil.
@@ -59,6 +62,7 @@ struct TVSkylineSectionFeed: View {
         isTopMenuFocused: Bool = false,
         onTopMenuFocusRequest: (() -> Void)?,
         onItemTap: @escaping (String, SectionItem) -> Void,
+        onExploreAll: ((ResolvedSection) -> Void)? = nil,
         onRemoveFromContinueWatching: ((SectionItem) -> Void)? = nil,
         onSetWatched: ((SectionItem, Bool) async -> Bool)? = nil
     ) {
@@ -69,6 +73,7 @@ struct TVSkylineSectionFeed: View {
         self.isTopMenuFocused = isTopMenuFocused
         self.onTopMenuFocusRequest = onTopMenuFocusRequest
         self.onItemTap = onItemTap
+        self.onExploreAll = onExploreAll
         self.onRemoveFromContinueWatching = onRemoveFromContinueWatching
         self.onSetWatched = onSetWatched
         _marqueeModel = State(initialValue: TVFocusMarqueeModel(libraryId: libraryId))
@@ -188,6 +193,7 @@ struct TVSkylineSectionFeed: View {
         SectionRow(
             section: section,
             onItemTap: onItemTap,
+            onExploreAll: onExploreAll.map { open in { open(section) } },
             onRemoveFromContinueWatching: onRemoveFromContinueWatching,
             onSetWatched: onSetWatched,
             // Cold entry: let the engine's *initial* focus resolution land on
@@ -213,6 +219,8 @@ struct TVSkylineSectionFeed: View {
                 focusRestorationOwnerSectionId = section.id
                 previewFocusedItem(item, in: section)
             },
+            // The marquee keeps the last card it previewed.
+            onExploreAllFocus: { focusRestorationOwnerSectionId = section.id },
             cardWidth: SiloTheme.Skyline.densePosterCardWidth,
             cardVerticalPadding: SiloTheme.Skyline.rowBandCardVerticalPadding,
             focusRestorationOwner: Binding(

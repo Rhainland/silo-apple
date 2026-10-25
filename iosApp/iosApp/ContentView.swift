@@ -638,14 +638,15 @@ struct ContentView: View {
         async let requests: Void = RequestsFeatureStore.shared.refresh()
         async let shuffle: Void = ShuffleFeatureStore.shared.refresh()
         async let subtitles: Void = SubtitleProvidersStore.shared.refresh()
+        async let sectionItemLimit: Void = SectionItemLimitSupport.shared.refresh()
         async let profile: Void = CurrentProfileStore.shared.refresh()
         async let customization: Void = uiCustomization.refresh()
         async let seek: Void = SeekIntervalPreferences.shared.refresh()
         async let titleArt: Void = TitleArtPreferences.shared.refresh()
         async let spoilers: Void = EpisodeSpoilerPreferences.shared.refresh()
         async let themeMusic: Void = ThemeMusicPreferences.shared.refresh()
-        _ = await (overlay, ai, imageSize, requests, shuffle, subtitles, profile, customization, seek, titleArt, spoilers,
-                   themeMusic)
+        _ = await (overlay, ai, imageSize, requests, shuffle, subtitles, sectionItemLimit, profile, customization, seek,
+                   titleArt, spoilers, themeMusic)
     }
 
     @MainActor
@@ -3301,6 +3302,8 @@ struct MainTabView: View {
             ItemDetailView(contentId: contentId, libraryId: libraryId, resumeContext: context)
         case .personDetail(let personId):
             PersonDetailView(personId: personId)
+        case .sectionCatalog(let target):
+            SectionCatalogView(target: target)
         case .player(let contentId, let startFromBeginning, let resumePosition, let prefersLastUsedVersion, let libraryId):
             #if os(macOS)
             PlayerView(

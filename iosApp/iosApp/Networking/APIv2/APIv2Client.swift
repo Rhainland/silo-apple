@@ -727,7 +727,10 @@ struct APIv2Client: Sendable {
         guard raw.statusCode == 204 else { throw APIv2Error.httpStatus(raw.statusCode) }
     }
 
-    func librarySections(id: Int, artwork: [String: String], auth: CapturedOrdinaryRequestAuth) async throws -> APIv2LibrarySectionsRead {
+    /// `itemLimit` cuts every row to that many cards; send it only to a
+    /// server that advertises it (see ``SectionItemLimitSupport``).
+    func librarySections(id: Int, artwork: [String: String], itemLimit: Int? = nil,
+                         auth: CapturedOrdinaryRequestAuth) async throws -> APIv2LibrarySectionsRead {
         try await gate()
         guard id > 0, let profile = auth.profileId, !profile.isEmpty,
               await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
@@ -737,7 +740,8 @@ struct APIv2Client: Sendable {
         let identity = Self.requestIdentity(auth, profile: profile)
         let raw = try await tokenStore.withOwnerFence(auth) {
             try await mapErrors {
-                try await http.requestData(method: "GET", path: "/api/v2/library/\(id)/sections", query: artwork,
+                try await http.requestData(method: "GET", path: "/api/v2/library/\(id)/sections",
+                    query: Self.sectionsQuery(artwork: artwork, itemLimit: itemLimit),
                     requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
             }
         }
@@ -746,7 +750,9 @@ struct APIv2Client: Sendable {
         return APIv2LibrarySectionsRead(libraryId: id, auth: auth, response: try Self.decodeSections(raw))
     }
 
-    func homeSections(artwork: [String: String], auth: CapturedOrdinaryRequestAuth) async throws -> APIv2HomeSectionsRead {
+    /// `itemLimit` as in ``librarySections(id:artwork:itemLimit:auth:)``.
+    func homeSections(artwork: [String: String], itemLimit: Int? = nil,
+                      auth: CapturedOrdinaryRequestAuth) async throws -> APIv2HomeSectionsRead {
         try await gate()
         guard let profile = auth.profileId, !profile.isEmpty,
               await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
@@ -756,13 +762,36 @@ struct APIv2Client: Sendable {
         let identity = Self.requestIdentity(auth, profile: profile)
         let raw = try await tokenStore.withOwnerFence(auth) {
             try await mapErrors {
-                try await http.requestData(method: "GET", path: "/api/v2/home/sections", query: artwork,
+                try await http.requestData(method: "GET", path: "/api/v2/home/sections",
+                    query: Self.sectionsQuery(artwork: artwork, itemLimit: itemLimit),
                     requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
             }
         }
         try Task.checkCancellation()
         guard raw.statusCode == 200 else { throw APIv2Error.httpStatus(raw.statusCode) }
         return APIv2HomeSectionsRead(auth: auth, response: try Self.decodeSections(raw))
+    }
+
+    private static func sectionsQuery(artwork: [String: String], itemLimit: Int?) -> [String: String] {
+        var query = artwork
+        if let itemLimit { query["item_limit"] = String(itemLimit) }
+        return query
+    }
+
+    /// `GET /api/v2/home/capabilities`.
+    func homeCapabilities(auth: CapturedOrdinaryRequestAuth) async throws -> APIv2HomeCapabilities {
+        try await gate()
+        guard let profile = auth.profileId, !profile.isEmpty else { throw HTTPError.requestIdentityChanged }
+        let identity = Self.requestIdentity(auth, profile: profile)
+        let raw = try await tokenStore.withOwnerFence(auth) {
+            try await mapErrors {
+                try await http.requestData(method: "GET", path: "/api/v2/home/capabilities",
+                    requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
+            }
+        }
+        try Task.checkCancellation()
+        guard raw.statusCode == 200 else { throw APIv2Error.httpStatus(raw.statusCode) }
+        return try HTTPClient.makeJSONDecoder().decode(APIv2HomeCapabilities.self, from: raw.data)
     }
 
     /// A sections document whose ids are unique and non-empty.

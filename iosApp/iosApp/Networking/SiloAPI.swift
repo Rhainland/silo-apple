@@ -22,18 +22,22 @@ actor SiloAPI {
     /// Test seam for artwork sizing; production reads
     /// `ImageSizeCapability.shared`, which itself probes through `SiloAPI.shared`.
     private let imageSizeCapability: ImageSizeCapability?
+    /// Test seam for row sizes; production reads `SectionItemLimitSupport.shared`.
+    private let sectionItemLimitSupport: SectionItemLimitSupport?
 
     init(
         http: HTTPClient = .shared,
         tokenStore: TokenStore = .shared,
         ownerRecheckBarrier: (@Sendable () async -> Void)? = nil,
-        imageSizeCapability: ImageSizeCapability? = nil
+        imageSizeCapability: ImageSizeCapability? = nil,
+        sectionItemLimitSupport: SectionItemLimitSupport? = nil
     ) {
         self.http = http
         self.tokenStore = tokenStore
         self.apiV2Client = APIv2Client(http: http, tokenStore: tokenStore)
         self.ownerRecheckBarrier = ownerRecheckBarrier
         self.imageSizeCapability = imageSizeCapability
+        self.sectionItemLimitSupport = sectionItemLimitSupport
     }
 
     // MARK: - Session state accessors
@@ -96,7 +100,11 @@ actor SiloAPI {
     /// fetched for so a caller can refuse to apply it after a switch.
     func homeSections() async throws -> APIv2HomeSectionsRead {
         let auth = try await detailReadAuth()
-        return try await apiV2Client.homeSections(artwork: await artworkQuery(.home), auth: auth)
+        let artwork = await artworkQuery(.home)
+        let read = try await withSectionItemLimit(auth) { itemLimit in
+            try await apiV2Client.homeSections(artwork: artwork, itemLimit: itemLimit, auth: auth)
+        }
+        return APIv2HomeSectionsRead(auth: read.auth, response: SectionRowLimit.capped(read.response))
     }
 
     /// True while `auth` still names the active server, account and profile.
@@ -127,9 +135,47 @@ actor SiloAPI {
     /// to cache or show it after a switch.
     func librarySections(libraryId: Int) async throws -> APIv2LibrarySectionsRead {
         let auth = try await detailReadAuth()
-        return try await apiV2Client.librarySections(
-            id: libraryId, artwork: await artworkQuery(.shelves), auth: auth
+        let artwork = await artworkQuery(.shelves)
+        let read = try await withSectionItemLimit(auth) { itemLimit in
+            try await apiV2Client.librarySections(id: libraryId, artwork: artwork, itemLimit: itemLimit, auth: auth)
+        }
+        return APIv2LibrarySectionsRead(
+            libraryId: read.libraryId, auth: read.auth, response: SectionRowLimit.capped(read.response)
         )
+    }
+
+    /// Runs a section read with the `item_limit` the server accepts. A server
+    /// that refuses the parameter is remembered as not offering it and read
+    /// again without it.
+    private func withSectionItemLimit<Read>(
+        _ auth: CapturedOrdinaryRequestAuth,
+        _ read: (Int?) async throws -> Read
+    ) async throws -> Read {
+        let support = sectionItemLimitSupport ?? .shared
+        let serverID = auth.account.serverId
+        guard let itemLimit = support.itemLimit(serverID: serverID) else { return try await read(nil) }
+        do {
+            return try await read(itemLimit)
+        } catch where SectionRowLimit.isUnsupportedItemLimit(error) {
+            support.record(nil, serverID: serverID)
+            return try await read(nil)
+        }
+    }
+
+    /// The server's `section_item_limit_max`, nil when it offers none. A
+    /// server without the Home capabilities read offers none.
+    func homeSectionItemLimitMax() async throws -> (serverID: String, max: Int?) {
+        let auth = try await detailReadAuth()
+        do {
+            let capabilities = try await apiV2Client.homeCapabilities(auth: auth)
+            return (auth.account.serverId, capabilities.sectionItemLimitMax)
+        } catch let error as APIv2Error {
+            switch error {
+            case .serverUpdateRequired, .httpStatus(404): return (auth.account.serverId, nil)
+            case .problem(let problem) where problem.status == 404: return (auth.account.serverId, nil)
+            default: throw error
+            }
+        }
     }
 
     /// Cards the recommendation engine considers similar to `contentId`,

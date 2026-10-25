@@ -535,6 +535,11 @@ struct LibraryRecommendedView: View {
                                     libraryId: libraryId
                                 )
                             )
+                        },
+                        onExploreAll: {
+                            router.navigate(to: .sectionCatalog(SectionCatalogTarget(
+                                section, scope: .library(libraryId), mediaScope: mediaScope
+                            )))
                         }
                     )
                 }

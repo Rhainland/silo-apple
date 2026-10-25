@@ -523,6 +523,7 @@ final class ServerRegistry {
             // degrades to disabled on any failure.
             Task { await RequestsFeatureStore.shared.refresh() }
             Task { await ShuffleFeatureStore.shared.refresh() }
+            Task { await SectionItemLimitSupport.shared.refresh() }
             Task { await CurrentProfileStore.shared.refresh() }
             // Same shape: without a re-probe the destination server's
             // image-size support would stay unknown, and TV requests would

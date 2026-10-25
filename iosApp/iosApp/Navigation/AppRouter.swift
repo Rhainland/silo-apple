@@ -1211,6 +1211,8 @@ private extension Route {
             return "itemDetail"
         case .personDetail:
             return "personDetail"
+        case .sectionCatalog:
+            return "sectionCatalog"
         case .player:
             return "player"
         case .playerWithFile:

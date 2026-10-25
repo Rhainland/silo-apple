@@ -671,24 +671,44 @@ struct HomeStillCard: View {
 struct HomeSectionHeader: View {
     let title: String
     var icon: String? = nil
+    /// Makes the title a link with a chevron, as on web.
+    var action: (() -> Void)? = nil
 
     var body: some View {
         HStack(spacing: 7) {
-            if let icon {
-                Image(systemName: icon)
-                    .font(.footnote.weight(.semibold))
-                    .foregroundStyle(Color.siloOnSurface.opacity(0.85))
+            if let action {
+                Button(action: action) {
+                    HStack(spacing: 7) {
+                        label
+                        Image(systemName: "chevron.right")
+                            .font(.footnote.weight(.semibold))
+                            .foregroundStyle(Color.siloOnSurface.opacity(0.5))
+                    }
+                }
+                .buttonStyle(.plain)
+                .accessibilityHint(SectionExploreAllCard.label)
+            } else {
+                label
             }
-
-            Text(title)
-                .font(.siloHeadline)
-                .tracking(-0.3)
-                .foregroundStyle(Color.siloOnSurface)
-                .lineLimit(1)
 
             Spacer(minLength: 8)
         }
         .padding(.horizontal, HomeFeedMetrics.gutter)
+    }
+
+    @ViewBuilder
+    private var label: some View {
+        if let icon {
+            Image(systemName: icon)
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(Color.siloOnSurface.opacity(0.85))
+        }
+
+        Text(title)
+            .font(.siloHeadline)
+            .tracking(-0.3)
+            .foregroundStyle(Color.siloOnSurface)
+            .lineLimit(1)
     }
 }
 
