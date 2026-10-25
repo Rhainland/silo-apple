@@ -4920,7 +4920,10 @@ class PlayerViewModel {
                   let url = URL(string: candidate) else {
                 return
             }
-            self?.nowPlaying.setArtworkURL(url)
+            guard let self, !self.isDisposed,
+                  self.lastLoadRequest?.contentId == contentId,
+                  self.currentWatchDetail?.contentId == contentId else { return }
+            self.nowPlaying.setArtworkURL(url)
         }
     }
 
@@ -5685,6 +5688,10 @@ class PlayerViewModel {
             }
 
             await pendingNaturalEndProgressTask?.value
+            guard !Task.isCancelled,
+                  !self.isDisposed,
+                  currentFreshLoadGeneration == self.freshLoadGeneration,
+                  currentStreamLoadGeneration == self.streamLoadGeneration else { return }
             if let snapshotPosition, snapshotPosition.isFinite, snapshotPosition >= 0 {
                 if shouldFinalizeCurrentSession {
                     await self.sessionBridge.stopSession(position: snapshotPosition, isPaused: true)
@@ -6564,7 +6571,8 @@ class PlayerViewModel {
         resumePositionOverride: Double? = nil,
         prefersLastUsedVersion: Bool = false,
         offlineDownloadId: String? = nil,
-        shuffle: APIv2Shuffle? = nil
+        shuffle: APIv2Shuffle? = nil,
+        finalizeCurrentSession: Bool = false
     ) {
         guard !isWatchPartyPlayback else { return }
         if let shuffle {
@@ -6592,7 +6600,8 @@ class PlayerViewModel {
         request.startsAtFirstPart = shuffleState != nil
         beginFreshLoad(
             request: request,
-            progressPosition: currentTime,
+            progressPosition: finalizeCurrentSession ? completionProgressPositionForCurrentItem() : currentTime,
+            finalizeCurrentSession: finalizeCurrentSession,
             resumePositionOverride: resumePositionOverride,
             viewerQualityChange: switchesVersion
         )
@@ -10193,6 +10202,30 @@ private enum SiloControlPlayerError: LocalizedError {
 }
 
 extension PlayerViewModel {
+    /// A new phone selection replaces the content, keeping the player and
+    /// its temporary profile alive. This uses the same session transition as
+    /// Next Up rather than dismissing and presenting another player view.
+    @MainActor
+    func replaceSiloControlPlayback(_ request: SiloControlPlaybackRequest) {
+        guard !isDisposed, !isWatchPartyPlayback else { return }
+        leaveShuffle()
+        title = ""
+        metadata = .empty
+        artworkPosterURLHint = nil
+        artworkBackdropURLHint = nil
+        nowPlaying.setArtworkURL(nil)
+        loadAndPlay(
+            contentId: request.contentId,
+            preferredFileId: request.fileId,
+            pinsVersion: request.pinsVersion == true,
+            preferredAudioTrackIndex: request.audioTrackIndex,
+            preferredSubtitleTrackIndex: request.subtitleTrackIndex,
+            startFromBeginning: request.startFromBeginning,
+            resumePositionOverride: request.resumePosition,
+            finalizeCurrentSession: true
+        )
+    }
+
     @MainActor
     func applySiloControlCommand(_ command: SiloControlCommand) throws {
         if isWatchPartyPlayback {
@@ -10293,6 +10326,10 @@ extension PlayerViewModel {
     @MainActor
     func makeSiloControlPlaybackState(contentId: String?) -> SiloControlPlaybackState {
         let liveContentId = lastLoadRequest?.contentId ?? contentId
+        // Keep the outgoing timeline internally for its final progress save,
+        // but don't publish it under a selection that hasn't been prepared.
+        let hasPreparedContent = lastLoadRequest == nil
+            || currentWatchDetail?.contentId == liveContentId
         let titleText = metadata.primaryTitle.isEmpty ? title : metadata.primaryTitle
         let subtitleText = [metadata.seriesTitle, metadata.episodeTag]
             .compactMap { value -> String? in
@@ -10303,14 +10340,14 @@ extension PlayerViewModel {
 
         return SiloControlPlaybackState(
             contentId: liveContentId,
-            sessionId: activePlaybackSessionId,
+            sessionId: hasPreparedContent ? activePlaybackSessionId : nil,
             title: titleText.isEmpty ? "Loading" : titleText,
             subtitle: subtitleText.isEmpty ? nil : subtitleText,
-            isPlaying: isPlaying,
+            isPlaying: hasPreparedContent && isPlaying,
             isLoading: isLoading,
-            isBuffering: isBuffering,
-            currentTime: currentTime,
-            duration: duration,
+            isBuffering: hasPreparedContent && isBuffering,
+            currentTime: hasPreparedContent ? currentTime : 0,
+            duration: hasPreparedContent ? duration : 0,
             audioTracks: makeSiloControlTracks(audioTracks),
             subtitleTracks: makeSiloControlTracks(subtitleTracks),
             selectedAudioTrackId: selectedAudioId,
