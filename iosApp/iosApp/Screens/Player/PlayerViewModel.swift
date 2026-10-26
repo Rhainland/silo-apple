@@ -390,6 +390,20 @@ class PlayerViewModel {
     var title: String = ""
     var isLoading = true
     var isBuffering = false
+    /// Whether the current item has shown a frame. Only a load of another
+    /// item clears it; a retry, reconnect, session renewal, version switch,
+    /// seek reload or replan of the same item keeps it, so those stalls keep
+    /// the controls.
+    private(set) var hasStartedPlayback = false
+    /// Loading before the current item's first frame: the player shows only
+    /// the spinner and a way out. Loading after it is a stall, which keeps
+    /// the controls.
+    var isStartingPlayback: Bool { isLoading && !hasStartedPlayback }
+    /// Loading, a stall or a reconnect, with no error on screen: what the
+    /// loading spinner shows.
+    var isWaitingToPlay: Bool {
+        (isLoading || isBuffering || isReconnecting) && error == nil
+    }
     /// The engine phase last reported for the active load. Kept so a source
     /// stall can be re-judged as the playhead moves or stops.
     @ObservationIgnored
@@ -1410,6 +1424,17 @@ class PlayerViewModel {
     /// it stood then: Play or Pause may have changed it during the load, and
     /// tearing the load down clears it from the controller.
     private var abandonedLoadPlayIntent: Bool?
+    /// Play or Pause pressed while a fresh load prepares, before it hands the
+    /// engine a transport: the replacement starts that way. The controls stay
+    /// up through a same-item reload, and the stopped outgoing transport
+    /// would drop the press.
+    private var freshLoadPlayIntent: Bool?
+    /// A seek made while a same-item fresh load prepares, before it hands
+    /// the engine a transport: the replacement seeks there once it is
+    /// committed, instead of the outgoing transport that is about to go. A
+    /// room seek is replayed as one, so it moves this transport rather than
+    /// asking the room again. A later seek that reaches a transport drops it.
+    private var freshLoadHeldSeek: (target: Double, roomCommand: Bool)?
     private static let nextUpCountdownDefaultSeconds = 10
     private static let nextUpHUDCountdownThresholdSeconds: Double = 100
     private static let nearEndPlaybackErrorThresholdSeconds: Double = 8
@@ -2155,8 +2180,15 @@ class PlayerViewModel {
             "[CMP-SUB] file loaded engine=AetherEngine route=\(self.activeRouteLabel, privacy: .public) pendingExternal=\(self.pendingExternalSubtitles.count, privacy: .public) tracks=\(self.subtitleTracks.count, privacy: .public)"
         )
         loadPendingExternalSubtitles()
-        hideControlsTask?.cancel()
-        showControls = false
+        if hasStartedPlayback {
+            // A replan's first frame leaves the controls as the viewer has
+            // them, with a fresh auto-hide if they show.
+            if showControls { scheduleHideControls() }
+        } else {
+            hideControlsTask?.cancel()
+            showControls = false
+            hasStartedPlayback = true
+        }
         nowPlaying.update(
             title: title,
             duration: duration,
@@ -5237,7 +5269,9 @@ class PlayerViewModel {
     private func handleNowPlayingPlay() {
         guard !isReconnecting else { return }
         if watchPartyAdapter?.request(.play) == true { return }
-        aetherPlaybackController.play()
+        if !holdPlayIntentForFreshLoad(true) {
+            aetherPlaybackController.play()
+        }
         #if os(tvOS)
         scheduleHideControls()
         #endif
@@ -5245,7 +5279,9 @@ class PlayerViewModel {
 
     private func handleNowPlayingPause() {
         if watchPartyAdapter?.request(.pause) == true { return }
-        aetherPlaybackController.pause()
+        if !holdPlayIntentForFreshLoad(false) {
+            aetherPlaybackController.pause()
+        }
         #if os(tvOS)
         scheduleHideControls()
         #endif
@@ -5288,7 +5324,7 @@ class PlayerViewModel {
         // The HUD belongs to the outgoing item. Replans deliberately bypass
         // this reset so the HUD survives them; a replacement load must close
         // it, both because its content is stale and because the tvOS controls
-        // host stays mounted through `isLoading` whenever this flag is up.
+        // host stays mounted through a starting load whenever this flag is up.
         isHUDPresented = false
         showNextUpScreen = isNextUpTransitioning
         if !isNextUpTransitioning {
@@ -5572,6 +5608,8 @@ class PlayerViewModel {
         PosterImageCache.trimDecodedMemory()
         #endif
         isNextUpTransitioning = origin == .autoplay && showNextUpScreen
+        freshLoadPlayIntent = nil
+        freshLoadHeldSeek = nil
         recordCurrentPlaybackMutation()
         let pendingNaturalEndProgressTask = naturalEndProgressTask
         naturalEndProgressTask = nil
@@ -5596,6 +5634,7 @@ class PlayerViewModel {
             resetBufferingQuality()
             autoSkippedRecapKeys = []
             viewingHasPlayed = false
+            hasStartedPlayback = false
             reconnectLoadRequest = nil
             // Other content starts with a full reconnect budget.
             cancelReconnect()
@@ -5894,10 +5933,12 @@ class PlayerViewModel {
                     prepared: prepared,
                     streamRequest: streamRequest,
                     expectedStreamLoadGeneration: currentStreamLoadGeneration,
-                    shouldPlayWhenReady: !self.isWatchPartyPlayback && (reconnectResume ?? true)
+                    shouldPlayWhenReady: !self.isWatchPartyPlayback
+                        && (self.freshLoadPlayIntent ?? reconnectResume ?? true)
                 )
                 // Seeks made while the reconnect's start was out, or while
-                // this transport loaded, are applied once it is committed.
+                // this load prepared or loaded, are applied once it is
+                // committed.
                 let reconnectSeekTarget = self.reconnectCycle.finishHandoff()
                 if prepared.protocolV3 != nil {
                     guard await self.sessionBridge.commitPendingProtocolV3Transition(prepared) else {
@@ -5923,6 +5964,14 @@ class PlayerViewModel {
                 if let seekTarget = reconnectSeekTarget {
                     try self.requireCurrentStreamLoad(currentStreamLoadGeneration)
                     self.commitSeek(to: seekTarget, source: "reconnectSeek")
+                } else if let heldSeek = self.freshLoadHeldSeek {
+                    // Read only now: a seek during the commit above reached
+                    // the replacement and dropped it.
+                    self.freshLoadHeldSeek = nil
+                    try self.requireCurrentStreamLoad(currentStreamLoadGeneration)
+                    self.commitSeek(
+                        to: heldSeek.target, source: "freshLoadHeldSeek", roomCommand: heldSeek.roomCommand
+                    )
                 }
             } catch is CancellationError {
                 // Tear the abandoned Aether load down before retiring its
@@ -6637,6 +6686,10 @@ class PlayerViewModel {
         // Nothing can play until the reconnect hands over a new transport.
         guard !isReconnecting else { return }
         if watchPartyAdapter?.request(isPlaying ? .pause : .play) == true { return }
+        if holdPlayIntentForFreshLoad(!isPlaying) {
+            scheduleHideControls()
+            return
+        }
         // `isPlaying` is driven by the backend's `onPauseChange` callback;
         // let that be the single writer so the UI can't drift out of sync
         // with the actual pipeline state on error paths.
@@ -6658,13 +6711,25 @@ class PlayerViewModel {
             pinControlsVisible()
             return
         }
-        guard !isLoading, !hasReachedEndOfFile else { return }
-        if isPlaying {
+        guard !isStartingPlayback, !hasReachedEndOfFile else { return }
+        if isPlaying, !holdPlayIntentForFreshLoad(false) {
             aetherPlaybackController.pause()
         }
         pinControlsVisible()
     }
     #endif
+
+    /// While a fresh load prepares and no transport is listening yet, keeps
+    /// a Play or Pause (on-screen, timeline Select and its exit, Now Playing,
+    /// SiloControl) for the replacement, and shows it, since no engine event
+    /// will. False once the load has handed the engine a transport,
+    /// which then takes the command itself.
+    private func holdPlayIntentForFreshLoad(_ play: Bool) -> Bool {
+        guard freshLoadTask != nil, activeAetherLoadEpoch == nil else { return false }
+        freshLoadPlayIntent = play
+        isPlaying = play
+        return true
+    }
 
     func switchQuality(_ qualityId: String) {
         // One switch at a time, from any surface or SiloRemote: a second
@@ -7162,6 +7227,20 @@ class PlayerViewModel {
             scrubPreviewProvider.endInteraction()
             return false
         }
+        if hasStartedPlayback && freshLoadTask != nil && activeAetherLoadEpoch == nil {
+            // A same-item reload is replacing the outgoing transport; the
+            // replacement seeks here once it is committed. Another item's
+            // load is not this item's timeline, so it keeps no seek.
+            freshLoadHeldSeek = (clampedTarget, roomCommand)
+            currentTime = clampedTarget
+            scrubPreviewTime = clampedTarget
+            isScrubbing = false
+            scrubPreviewProvider.endInteraction()
+            return false
+        }
+        // This seek reaches a transport, which a held one must not undo once
+        // the load that kept it returns.
+        freshLoadHeldSeek = nil
         let requiresReplan: Bool = {
             guard let timeline = aetherPlaybackController.activeSpec?.timeline else { return true }
             if case .replan = timeline.seekDisposition(forSourceTime: clampedTarget) {
@@ -11035,10 +11114,10 @@ extension PlayerViewModel {
     }
 
     /// The iPhone and iPad controls, and the sheets they present, are on
-    /// screen: not while a load, Next Up or an error replaces them. A sheet
-    /// that went away with them covers nothing.
+    /// screen: not while a starting load, Next Up or an error replaces them.
+    /// A sheet that went away with them covers nothing.
     private var playerControlsAreMounted: Bool {
-        !isLoading && !showNextUpScreen && error == nil
+        !isStartingPlayback && !showNextUpScreen && error == nil
     }
 
     /// The sheet over the iPhone and iPad player opened or closed.
