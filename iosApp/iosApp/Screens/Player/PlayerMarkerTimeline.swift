@@ -9,7 +9,7 @@ import Foundation
 /// the first occurrence of each kind.
 struct PlayerMarkerTimeline: Equatable, Sendable {
     enum Kind: String, CaseIterable, Sendable {
-        case intro, credits, recap, preview
+        case intro, credits, recap
     }
 
     struct Occurrence: Equatable, Sendable {
@@ -27,8 +27,7 @@ struct PlayerMarkerTimeline: Equatable, Sendable {
         markerSegments: [PlaybackMarkerSegment]?,
         intro: TimeRange? = nil,
         credits: TimeRange? = nil,
-        recap: TimeRange? = nil,
-        preview: TimeRange? = nil
+        recap: TimeRange? = nil
     ) {
         let candidates: [Occurrence]
         if let markerSegments {
@@ -37,7 +36,7 @@ struct PlayerMarkerTimeline: Equatable, Sendable {
                 return Occurrence(kind: kind, range: TimeRange(start: segment.startSeconds, end: segment.endSeconds))
             }
         } else {
-            candidates = [(Kind.intro, intro), (.credits, credits), (.recap, recap), (.preview, preview)]
+            candidates = [(Kind.intro, intro), (.credits, credits), (.recap, recap)]
                 .compactMap { kind, range in range.map { Occurrence(kind: kind, range: $0) } }
         }
         self.init(occurrences: candidates)
@@ -79,6 +78,13 @@ struct PlayerMarkerTimeline: Equatable, Sendable {
         guard time.isFinite else { return ranges.first }
         let played = ranges.filter { $0.start <= time }.max { $0.end < $1.end }
         return played ?? ranges.first
+    }
+
+    /// Whether `time` is in the last credits occurrence, the one a skip to
+    /// the end of the file covers. True when the file has no credits.
+    func isInFinalCredits(at time: Double) -> Bool {
+        guard let finalCredits = ranges(.credits).last else { return true }
+        return time >= finalCredits.start
     }
 
     /// A `markers_updated` event's view of the file. Its `marker_segments`

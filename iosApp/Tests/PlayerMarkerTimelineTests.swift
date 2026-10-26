@@ -76,6 +76,21 @@ final class PlayerMarkerTimelineTests: XCTestCase {
         XCTAssertEqual(timeline.currentOccurrence(.credits, at: 0), TimeRange(start: 1_500, end: 1_600))
     }
 
+    /// After Skip Credits runs to the end, the item counts as finished only
+    /// while the playhead stays in the final credits, not the scene before.
+    func testFinalCreditsExcludeTheSceneBetweenOccurrences() {
+        let timeline = PlayerMarkerTimeline(markerSegments: [
+            segment("credits", 2_975.5, 3_167.4),
+            segment("credits", 3_189, 3_300),
+        ])
+        XCTAssertFalse(timeline.isInFinalCredits(at: 3_000))
+        XCTAssertFalse(timeline.isInFinalCredits(at: 3_175))
+        XCTAssertTrue(timeline.isInFinalCredits(at: 3_189))
+        XCTAssertTrue(timeline.isInFinalCredits(at: 3_300))
+        // Without credits markers there is nothing to leave.
+        XCTAssertTrue(PlayerMarkerTimeline.empty.isInFinalCredits(at: 10))
+    }
+
     private func segment(_ kind: String, _ start: Double, _ end: Double) -> PlaybackMarkerSegment {
         PlaybackMarkerSegment(kind: kind, startSeconds: start, endSeconds: end)
     }

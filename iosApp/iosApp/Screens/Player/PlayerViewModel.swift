@@ -31,7 +31,7 @@ enum CreditsAutoSkipPolicy {
         time: Double,
         range: TimeRange?,
         markerKey: String?,
-        lastSkippedKey: String?
+        skippedKeys: Set<String>
     ) -> Double? {
         guard enabled,
               playbackEligible,
@@ -42,7 +42,7 @@ enum CreditsAutoSkipPolicy {
               range.start >= 0,
               range.end > range.start,
               let markerKey,
-              markerKey != lastSkippedKey,
+              !skippedKeys.contains(markerKey),
               time >= range.start,
               time < range.end else {
             return nil
@@ -55,9 +55,9 @@ enum CreditsAutoSkipPolicy {
 /// Party never skips a recap on its own, because the seek would move every
 /// member; they keep the Skip Recap button. Nothing skips before the load's
 /// first frame: a recap often starts at 0:00, and seeking that early can
-/// prevent the startup milestone, as with intros. And every recap already
-/// skipped stays skipped, not only the last one, so a replan to another file
-/// and back does not skip the first file's recap again.
+/// prevent the startup milestone, as with intros. Recap keys outlive the
+/// session, so a replan to another file and back does not skip the first
+/// file's recap again.
 enum RecapAutoSkipPolicy {
     static func target(
         enabled: Bool,
@@ -70,14 +70,13 @@ enum RecapAutoSkipPolicy {
         skippedKeys: Set<String>
     ) -> Double? {
         guard !isWatchParty, playbackStarted else { return nil }
-        if let markerKey, skippedKeys.contains(markerKey) { return nil }
         return CreditsAutoSkipPolicy.target(
             enabled: enabled,
             playbackEligible: playbackEligible,
             time: time,
             range: range,
             markerKey: markerKey,
-            lastSkippedKey: nil
+            skippedKeys: skippedKeys
         )
     }
 }
@@ -1235,7 +1234,8 @@ class PlayerViewModel {
     var canRequestPlayPause: Bool { !isWatchPartyPlayback || watchPartyAdapter?.canPlayPause == true }
     var canRequestSeek: Bool { !isWatchPartyPlayback || watchPartyAdapter?.canSeek == true }
     var effectivePlaybackSpeed: Double { isWatchPartyPlayback ? watchPartyCorrectionRate : settings.playbackSpeed }
-    private var autoSkippedCreditsKey: String?
+    /// Credits occurrences already skipped in this session, by marker key.
+    private var autoSkippedCreditsKeys: Set<String> = []
     /// Recaps already skipped for the current content, by marker key.
     private var autoSkippedRecapKeys: Set<String> = []
     /// Skip Credits reached the end of the file while playback continued.
@@ -1244,8 +1244,7 @@ class PlayerViewModel {
     private var didSkipCreditsToEnd = false
     private var skippedCreditsToEnd: Bool {
         guard didSkipCreditsToEnd else { return false }
-        guard let creditsRange else { return true }
-        return currentTime >= creditsRange.start
+        return markerTimeline.isInFinalCredits(at: currentTime)
     }
     private var staleSessionRecoverySessionId: String?
     struct LoadRequest {
@@ -5341,7 +5340,7 @@ class PlayerViewModel {
         currentWatchDetail = nil
         currentSelectedVersion = nil
         activePreparedProtocolV3 = nil
-        autoSkippedCreditsKey = nil
+        autoSkippedCreditsKeys = []
         didSkipCreditsToEnd = false
         selectedAudioId = nil
         selectedSubtitleId = nil
@@ -5828,7 +5827,7 @@ class PlayerViewModel {
 
                 let session = prepared.session
                 self.activePlaybackSessionId = session.sessionId
-                self.autoSkippedCreditsKey = nil
+                self.autoSkippedCreditsKeys = []
                 self.staleSessionRecoverySessionId = nil
                 // Snapshot the preferred language for track-list ordering
                 // unconditionally (even with an explicit choice) so the
@@ -6971,7 +6970,7 @@ class PlayerViewModel {
     func skipCredits() {
         guard let creditsRange else { return }
         if let key = currentCreditsSkipKey(for: creditsRange) {
-            autoSkippedCreditsKey = key
+            autoSkippedCreditsKeys.insert(key)
         }
         performCreditsSkip(to: creditsRange.end)
     }
@@ -7430,14 +7429,14 @@ class PlayerViewModel {
             time: time,
             range: creditsRange,
             markerKey: key,
-            lastSkippedKey: autoSkippedCreditsKey
+            skippedKeys: autoSkippedCreditsKeys
         ), let key else {
             return
         }
 
         // Set the latch before seeking: a synchronous backend time callback
         // caused by the seek must see this marker as already handled.
-        autoSkippedCreditsKey = key
+        autoSkippedCreditsKeys.insert(key)
         Self.logger.info(
             "[CMP-MARKERS] auto-skip credits target=\(target, privacy: .public) current=\(time, privacy: .public)"
         )
@@ -8664,7 +8663,7 @@ class PlayerViewModel {
         markerReconcileTask = nil
         markerReconcileRequestId = nil
         introSkipPrompt.reset()
-        autoSkippedCreditsKey = nil
+        autoSkippedCreditsKeys = []
         autoSkippedRecapKeys = []
         knownExternalSubtitles = []
         locallyRegisteredSidecarSubtitleTracks = []
