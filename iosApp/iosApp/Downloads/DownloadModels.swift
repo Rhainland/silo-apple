@@ -286,6 +286,9 @@ struct OfflineManifest: Codable, Hashable, Sendable {
     let credits: TimeRange?
     let recap: TimeRange?
     let preview: TimeRange?
+    /// Every marker occurrence; absent from manifests saved before the
+    /// server sent it, which then fall back to the singular fields.
+    let markerSegments: [PlaybackMarkerSegment]?
 
     let subtitles: [OfflineSubtitle]?
     let stableIdentity: StableIdentity?
@@ -343,6 +346,7 @@ struct OfflineManifest: Codable, Hashable, Sendable {
         case credits
         case recap
         case preview
+        case markerSegments
         case subtitles
         case stableIdentity
         case integrity
@@ -392,6 +396,7 @@ struct OfflineManifest: Codable, Hashable, Sendable {
         credits = try keyed.decodeIfPresent(TimeRange.self, forKey: .credits)
         recap = try keyed.decodeIfPresent(TimeRange.self, forKey: .recap)
         preview = try keyed.decodeIfPresent(TimeRange.self, forKey: .preview)
+        markerSegments = try keyed.decodeIfPresent([PlaybackMarkerSegment].self, forKey: .markerSegments)
         subtitles = try keyed.decodeIfPresent([OfflineSubtitle].self, forKey: .subtitles)
         stableIdentity = try keyed.decodeIfPresent(StableIdentity.self, forKey: .stableIdentity)
         integrity = try keyed.decodeIfPresent(OfflineIntegrity.self, forKey: .integrity)
@@ -439,6 +444,7 @@ struct OfflineManifest: Codable, Hashable, Sendable {
         try keyed.encodeIfPresent(credits, forKey: .credits)
         try keyed.encodeIfPresent(recap, forKey: .recap)
         try keyed.encodeIfPresent(preview, forKey: .preview)
+        try keyed.encodeIfPresent(markerSegments, forKey: .markerSegments)
         try keyed.encodeIfPresent(subtitles, forKey: .subtitles)
         try keyed.encodeIfPresent(stableIdentity, forKey: .stableIdentity)
         try keyed.encodeIfPresent(integrity, forKey: .integrity)

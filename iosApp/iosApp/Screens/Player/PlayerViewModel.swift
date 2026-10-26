@@ -384,7 +384,10 @@ class PlayerViewModel {
 
     var isPlaying = false
     var currentTime: Double = 0 {
-        didSet { updateCreditsWindow() }
+        didSet {
+            resolveMarkerOccurrences()
+            updateCreditsWindow()
+        }
     }
     var duration: Double = 0
     var title: String = ""
@@ -473,11 +476,16 @@ class PlayerViewModel {
     /// language group to the top of the displayed track lists.
     private var subtitleOrderingLanguage: String?
     var chapters: [PlayerChapterInfo] = []
-    var introRange: TimeRange?
-    var recapRange: TimeRange? {
+    /// Every marker occurrence of the playing file. The three ranges below
+    /// follow the playhead through it; see ``resolveMarkerOccurrences()``.
+    private var markerTimeline: PlayerMarkerTimeline = .empty {
+        didSet { resolveMarkerOccurrences() }
+    }
+    private(set) var introRange: TimeRange?
+    private(set) var recapRange: TimeRange? {
         didSet { updateCreditsWindow() }
     }
-    var creditsRange: TimeRange? {
+    private(set) var creditsRange: TimeRange? {
         didSet { updateCreditsWindow() }
     }
     /// Whether the playhead is inside `creditsRange`. Stored so readers of
@@ -722,6 +730,19 @@ class PlayerViewModel {
         } else if showCreditsSkip {
             skipCredits()
         }
+    }
+
+    /// Points each marker range at its occurrence for the playhead: the one
+    /// playing, else the last one played, else the next one. A skip then
+    /// covers only that occurrence, never the content after it, and the
+    /// latches keyed on a range treat each occurrence as its own.
+    private func resolveMarkerOccurrences() {
+        let intro = markerTimeline.currentOccurrence(.intro, at: currentTime)
+        if introRange != intro { introRange = intro }
+        let recap = markerTimeline.currentOccurrence(.recap, at: currentTime)
+        if recapRange != recap { recapRange = recap }
+        let credits = markerTimeline.currentOccurrence(.credits, at: currentTime)
+        if creditsRange != credits { creditsRange = credits }
     }
 
     private func updateCreditsWindow() {
@@ -2769,7 +2790,7 @@ class PlayerViewModel {
             let priorDeferredAutoSubtitlePick = self.deferredAutoSubtitlePick
             // Captured when the replan replaces them, not here: a
             // markers_updated event can land while the replan is in flight.
-            var replacedMarkers: ReplacedMarkerRanges?
+            var replacedMarkers: PlayerMarkerTimeline?
             /// Puts back the state this replan overwrote when it fails or is
             /// abandoned before committing.
             @MainActor func restorePriorReplanState() {
@@ -2777,9 +2798,7 @@ class PlayerViewModel {
                 self.currentWatchDetail = priorWatchDetail
                 self.currentSelectedVersion = priorSelectedVersion
                 if let replacedMarkers {
-                    self.introRange = replacedMarkers.intro
-                    self.creditsRange = replacedMarkers.credits
-                    self.recapRange = replacedMarkers.recap
+                    self.restoreReplacedMarkers(replacedMarkers)
                 }
                 self.activePreparedProtocolV3 = priorPreparedProtocolV3
                 self.localProtocolV3SubtitleSelection = priorLocalSubtitleSelection
@@ -5310,9 +5329,7 @@ class PlayerViewModel {
         livePrimarySubtitleCues = []
         liveSecondarySubtitleCues = []
         chapters = []
-        introRange = nil
-        creditsRange = nil
-        recapRange = nil
+        markerTimeline = .empty
         markerReconcileTask?.cancel()
         markerReconcileTask = nil
         markerReconcileRequestId = nil
@@ -5862,11 +5879,7 @@ class PlayerViewModel {
                 self.serverProvidedChapters = self.chapterInfoList(from: prepared.selectedVersion)
                 self.duration = session.durationSeconds ?? prepared.selectedVersion.duration ?? 0
                 self.currentTime = self.movieTime(for: session)
-                self.applyMarkerRanges(
-                    intro: prepared.selectedVersion.intro,
-                    credits: prepared.selectedVersion.credits,
-                    recap: prepared.selectedVersion.recap
-                )
+                self.applyMarkerTimeline(PlayerMarkerTimeline(version: prepared.selectedVersion))
 
                 guard let streamRequest = await self.makeStreamRequest(
                     session: session,
@@ -7280,30 +7293,16 @@ class PlayerViewModel {
         scheduleHideControls()
     }
 
-    private func applyMarkerRanges(intro: TimeRange?, credits: TimeRange?, recap: TimeRange?) {
-        introRange = validTimeRange(intro)
-        creditsRange = validTimeRange(credits)
-        recapRange = validTimeRange(recap)
-        if let introRange {
+    private func applyMarkerTimeline(_ timeline: PlayerMarkerTimeline) {
+        markerTimeline = timeline
+        for occurrence in timeline.occurrences {
             Self.logger.info(
-                "[CMP-MARKERS] intro range active start=\(introRange.start, privacy: .public) end=\(introRange.end, privacy: .public)"
-            )
-        }
-        if let creditsRange {
-            Self.logger.info(
-                "[CMP-MARKERS] credits range active start=\(creditsRange.start, privacy: .public) end=\(creditsRange.end, privacy: .public)"
+                "[CMP-MARKERS] \(occurrence.kind.rawValue, privacy: .public) range active start=\(occurrence.range.start, privacy: .public) end=\(occurrence.range.end, privacy: .public)"
             )
         }
         syncIntroSkipPrompt()
         autoSkipRecapIfNeeded(at: currentTime)
         autoSkipCreditsIfNeeded(at: currentTime)
-    }
-
-    /// The marker ranges a replan replaced when it switched files.
-    struct ReplacedMarkerRanges: Equatable {
-        let intro: TimeRange?
-        let credits: TimeRange?
-        let recap: TimeRange?
     }
 
     /// Adopts the file version a replan selected. A replan can switch to
@@ -7312,13 +7311,18 @@ class PlayerViewModel {
     /// may be newer than the replan's snapshot. Returns the ranges it
     /// replaced, for a rollback to put back, or nil when it kept them.
     @discardableResult
-    func adoptReplannedVersion(_ version: FileVersion) -> ReplacedMarkerRanges? {
+    func adoptReplannedVersion(_ version: FileVersion) -> PlayerMarkerTimeline? {
         let fileChanged = version.fileId != currentSelectedVersion?.fileId
         currentSelectedVersion = version
         guard fileChanged else { return nil }
-        let replaced = ReplacedMarkerRanges(intro: introRange, credits: creditsRange, recap: recapRange)
-        applyMarkerRanges(intro: version.intro, credits: version.credits, recap: version.recap)
+        let replaced = markerTimeline
+        applyMarkerTimeline(PlayerMarkerTimeline(version: version))
         return replaced
+    }
+
+    /// Puts back the markers ``adoptReplannedVersion(_:)`` replaced.
+    func restoreReplacedMarkers(_ timeline: PlayerMarkerTimeline) {
+        markerTimeline = timeline
     }
 
     /// Test seam: the playback identity a marker reconcile is fenced on.
@@ -7359,13 +7363,7 @@ class PlayerViewModel {
                       let version = detail.versions.first(where: { $0.fileId == fileId }) else {
                     return
                 }
-                let refreshedIntro = version.intro
-                let refreshedCredits = version.credits
-                self.applyMarkerRanges(
-                    intro: refreshedIntro,
-                    credits: refreshedCredits,
-                    recap: version.recap
-                )
+                self.applyMarkerTimeline(PlayerMarkerTimeline(version: version))
             } catch {
                 guard !Task.isCancelled, self.markerReconcileRequestId == requestId else { return }
                 Self.logger.warning(
@@ -7373,17 +7371,6 @@ class PlayerViewModel {
                 )
             }
         }
-    }
-
-    private func validTimeRange(_ range: TimeRange?) -> TimeRange? {
-        guard let range,
-              range.start.isFinite,
-              range.end.isFinite,
-              range.start >= 0,
-              range.end > range.start else {
-            return nil
-        }
-        return range
     }
 
     /// Feeds the intro pill the latest playback state.
@@ -8672,9 +8659,7 @@ class PlayerViewModel {
         currentWatchDetail = nil
         currentSelectedVersion = nil
         clearPlaybackStats()
-        introRange = nil
-        creditsRange = nil
-        recapRange = nil
+        markerTimeline = .empty
         markerReconcileTask?.cancel()
         markerReconcileTask = nil
         markerReconcileRequestId = nil
@@ -8881,11 +8866,7 @@ class PlayerViewModel {
             guard payload.fileId == currentSelectedVersion?.fileId else {
                 return
             }
-            applyMarkerRanges(
-                intro: payload.introUpdate.resolving(current: introRange),
-                credits: payload.creditsUpdate.resolving(current: creditsRange),
-                recap: payload.recapUpdate.resolving(current: recapRange)
-            )
+            applyMarkerTimeline(markerTimeline.applying(payload))
             // An in-flight reconcile snapshot may predate this event. Replace
             // it rather than drop it: the event can omit a kind whose update
             // was missed while the socket was down.

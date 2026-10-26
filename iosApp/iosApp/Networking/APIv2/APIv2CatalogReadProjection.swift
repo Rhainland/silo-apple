@@ -224,6 +224,7 @@ extension FileVersion {
         self.intro = value.intro.map { TimeRange(catalog: $0) }
         self.credits = value.credits.map { TimeRange(catalog: $0) }
         self.recap = value.recap.map { TimeRange(catalog: $0) }
+        self.markerSegments = nil
         self.presentationKind = value.presentationKind
         self.presentationGroupKey = value.presentationGroupKey
         self.presentationPartIndex = try value.presentationPartIndex.map { try catalogLegacyInt($0) }
@@ -255,6 +256,7 @@ extension FileVersion {
         self.intro = value.intro.map { TimeRange(watch: $0) }
         self.credits = value.credits.map { TimeRange(watch: $0) }
         self.recap = value.recap.map { TimeRange(watch: $0) }
+        self.markerSegments = value.markerSegments
         self.presentationKind = value.presentationKind
         self.presentationGroupKey = value.presentationGroupKey
         self.presentationPartIndex = try value.presentationPartIndex.map { try catalogLegacyInt($0) }
