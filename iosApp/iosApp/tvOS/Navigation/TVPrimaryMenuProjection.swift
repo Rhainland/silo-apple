@@ -29,6 +29,25 @@ enum TVPrimaryMenuProjection {
         }
     }
 
+    /// Whether the bar shows an audiobook destination: the Audiobooks tab or a
+    /// pinned audiobook library. Search uses it so audiobooks are searchable
+    /// exactly when they are reachable from the menu.
+    static func includesAudiobooks(
+        in items: [PrimaryMenuItem],
+        libraries: [Library]
+    ) -> Bool {
+        roots(for: items, libraries: libraries).contains { root in
+            switch root {
+            case .libraryType(.audiobooks):
+                return true
+            case .libraryShortcut(let libraryId, _):
+                return libraries.contains { $0.id == libraryId && $0.isAudiobookLibrary }
+            default:
+                return false
+            }
+        }
+    }
+
     /// Bar roots in menu order, deduplicated, with Home forced first when absent.
     static func roots(
         for items: [PrimaryMenuItem],

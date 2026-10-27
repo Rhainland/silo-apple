@@ -5,6 +5,10 @@ struct SearchView: View {
     @State private var viewModel = SearchViewModel(includesPeople: true, includesEpisodes: true)
     @State private var requestsViewModel = RequestSearchSectionViewModel()
     @State private var navPrefs = AppNavPreferences.shared
+    #if os(tvOS)
+    /// The synced top menu decides whether audiobooks are searchable on tvOS.
+    @State private var uiCustomization = UICustomizationPreferences.shared
+    #endif
     @Environment(AppRouter.self) private var router
     #if os(iOS)
     @FocusState private var isSearchFieldFocused: Bool
@@ -99,23 +103,26 @@ struct SearchView: View {
             navPrefs.refresh()
             refreshAudiobookAvailability()
         }
-        .onChange(of: navPrefs.showAudiobooks) {
+        .onChange(of: audiobooksAvailable) {
             refreshAudiobookAvailability(applySearch: true)
         }
     }
 
-    /// Whether audiobooks take part in search. On tvOS this mirrors the
-    /// Audiobooks tab — an audiobook library exists and the user has opted to
-    /// show it — so a hidden audiobook library produces neither a filter chip
-    /// nor results under "All". iOS has the same user-facing setting, but
-    /// keeps the prior default of showing audiobooks.
+    /// Whether audiobooks take part in search. On tvOS this mirrors the top
+    /// bar — the Audiobooks tab or a pinned audiobook library, from the synced
+    /// menu or the legacy opt-in default — so a hidden audiobook library
+    /// produces neither a filter chip nor results under "All". iOS has the
+    /// same user-facing setting, but keeps the prior default of showing
+    /// audiobooks.
     private var audiobooksAvailable: Bool {
         #if os(tvOS)
-        guard navPrefs.showAudiobooks else { return false }
         guard let cached: LibrariesResponse = ResponseCache.shared.get(CacheKey.userLibraries) else {
             return false
         }
-        return cached.libraries.contains { $0.isAudiobookLibrary }
+        return TVPrimaryMenuProjection.includesAudiobooks(
+            in: uiCustomization.resolvedPrimaryMenuItems(),
+            libraries: cached.libraries
+        )
         #elseif os(iOS)
         return navPrefs.showAudiobooks
         #else
