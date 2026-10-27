@@ -27,6 +27,11 @@ struct SectionCatalogView: View {
                 ErrorView(state: error, onRetry: { Task { await load(reset: true) } })
             } else if viewModel.isLoading {
                 Color.clear
+                #if os(tvOS)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .tvPageFocusOwner(focusRequest: 1, isTopMenuFocused: false,
+                                      accessibilityLabel: "Loading \(target.title)", onMoveUp: nil)
+                #endif
             } else {
                 placeholder(
                     icon: "square.stack.3d.up.fill",
@@ -40,7 +45,8 @@ struct SectionCatalogView: View {
         .navigationTitle(target.title)
         .siloNavigationTitleDisplayMode(.large)
         .task(id: target) {
-            await load(reset: true)
+            // Coming back from a card's detail page keeps the pages read.
+            await viewModel.open(target)
         }
         .refreshable {
             await load(reset: true)

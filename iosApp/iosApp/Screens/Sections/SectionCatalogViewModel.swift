@@ -21,12 +21,16 @@ final class SectionCatalogViewModel {
     private var continuation: APIv2CatalogContinuation?
     private var generation = 0
 
-    /// Pages read for one load when a media scope filters out every card.
-    private static let maxFilteredPages = 4
-
     init(api: SiloAPI = .shared, tokens: TokenStore = .shared) {
         self.api = api
         self.tokens = tokens
+    }
+
+    /// Loads `requested` unless it is already shown, as when the page comes
+    /// back from a card's detail page.
+    func open(_ requested: SectionCatalogTarget) async {
+        if target == requested, !items.isEmpty || isUnavailable { return }
+        await load(requested, reset: true)
     }
 
     func load(_ requested: SectionCatalogTarget, reset: Bool) async {
@@ -61,14 +65,16 @@ final class SectionCatalogViewModel {
             var loaded: [BrowseItem] = []
             var startsOver = false
             var page: CatalogListPage
-            var pagesRead = 0
+            // A page the media scope empties shows nothing to scroll toward,
+            // so read on until a card matches or the row ends.
             repeat {
                 if let nextPage {
                     page = try await api.nextCatalogPage(nextPage)
                 } else {
                     page = try await api.catalogPage(.sectionItems(requested, limit: 60))
                 }
-                pagesRead += 1
+                guard requestGeneration == generation else { return }
+                try Task.checkCancellation()
                 if page.startsOver {
                     loaded = []
                     startsOver = true
@@ -77,7 +83,7 @@ final class SectionCatalogViewModel {
                 // view filters the row's cards here.
                 loaded += page.response.items.filter { requested.mediaScope?.contains($0.type) ?? true }
                 nextPage = page.continuation
-            } while loaded.isEmpty && nextPage != nil && pagesRead < Self.maxFilteredPages
+            } while loaded.isEmpty && nextPage != nil
             let stillOwnsRequest = await api.isCurrentOwner(requestOwner)
             guard requestGeneration == generation, !Task.isCancelled else { return }
             guard stillOwnsRequest else { throw HTTPError.requestIdentityChanged }
@@ -94,6 +100,13 @@ final class SectionCatalogViewModel {
             isUnavailable = false
         } catch {
             guard requestGeneration == generation, !Task.isCancelled else { return }
+            var error = error
+            // A failure read for a profile that is no longer active says
+            // nothing about this row for the current one.
+            if let owner, !(await api.isCurrentOwner(owner)) {
+                guard requestGeneration == generation, !Task.isCancelled else { return }
+                error = HTTPError.requestIdentityChanged
+            }
             if case HTTPError.requestIdentityChanged = error { clearPage() }
             if case HTTPError.authorityChanged = error { clearPage() }
             if Self.isNotFound(error) {
