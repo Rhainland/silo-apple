@@ -315,6 +315,8 @@ enum APIv2CatalogRead {
         let fileSize: Int64
         let hdr: Bool
         let intro: WatchMarker?
+        /// Absent from servers that predate marker collections.
+        let markerSegments: [PlaybackMarkerSegment]?
         let presentationGroupKey: String?
         let presentationKind: String?
         let presentationPartIndex: Int64?

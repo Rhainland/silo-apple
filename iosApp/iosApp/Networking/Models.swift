@@ -899,6 +899,10 @@ struct FileVersion: Codable, Identifiable, Hashable {
     let intro: TimeRange?
     let credits: TimeRange?
     let recap: TimeRange?
+    /// Every marker occurrence, in source-time order. When present it
+    /// replaces the singular fields above, which hold the first occurrence
+    /// of each kind for older clients.
+    let markerSegments: [PlaybackMarkerSegment]?
     let presentationKind: String?
     let presentationGroupKey: String?
     let presentationPartIndex: Int?
@@ -938,6 +942,7 @@ struct FileVersion: Codable, Identifiable, Hashable {
         intro: TimeRange? = nil,
         credits: TimeRange? = nil,
         recap: TimeRange? = nil,
+        markerSegments: [PlaybackMarkerSegment]? = nil,
         presentationKind: String? = nil,
         presentationGroupKey: String? = nil,
         presentationPartIndex: Int? = nil,
@@ -965,6 +970,7 @@ struct FileVersion: Codable, Identifiable, Hashable {
         self.intro = intro
         self.credits = credits
         self.recap = recap
+        self.markerSegments = markerSegments
         self.presentationKind = presentationKind
         self.presentationGroupKey = presentationGroupKey
         self.presentationPartIndex = presentationPartIndex
