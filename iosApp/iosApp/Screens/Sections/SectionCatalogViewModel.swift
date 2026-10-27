@@ -65,8 +65,9 @@ final class SectionCatalogViewModel {
             var loaded: [BrowseItem] = []
             var startsOver = false
             var page: CatalogListPage
-            // A page the media scope empties shows nothing to scroll toward,
-            // so read on until a card matches or the row ends.
+            // A media scope can thin a page to a few cards or none. Read on
+            // until the load has enough cards to move the grid's load-more
+            // trigger onto a new card, or the row ends.
             repeat {
                 if let nextPage {
                     page = try await api.nextCatalogPage(nextPage)
@@ -86,7 +87,7 @@ final class SectionCatalogViewModel {
                 // view filters the row's cards here.
                 loaded += page.response.items.filter { requested.mediaScope?.contains($0.type) ?? true }
                 nextPage = page.continuation
-            } while loaded.isEmpty && nextPage != nil
+            } while loaded.count < CatalogGrid.loadMoreLead && nextPage != nil
 
             if resetsPage || startsOver {
                 items = loaded

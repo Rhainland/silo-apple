@@ -13,6 +13,10 @@ struct CatalogGrid: View {
     var forcesThreeColumnsOnPhone = false
     let onItemTap: (BrowseItem) -> Void
     let onLoadMore: () -> Void
+    /// The grid asks for more when the card this far from the end appears,
+    /// so a load that adds fewer cards leaves the trigger on a card that is
+    /// already showing.
+    static let loadMoreLead = 6
     @Environment(\.browseLibraryId) private var browseLibraryId
     @Environment(AppRouter.self) private var router
     @State private var uiCustomization = UICustomizationPreferences.shared
@@ -94,7 +98,7 @@ struct CatalogGrid: View {
                 )
                 .frame(maxWidth: .infinity)
                 .onAppear {
-                    if item.id == items.suffix(6).first?.id, hasMore {
+                    if item.id == items.suffix(Self.loadMoreLead).first?.id, hasMore {
                         onLoadMore()
                     }
                 }
