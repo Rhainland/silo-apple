@@ -73,8 +73,11 @@ final class SectionCatalogViewModel {
                 } else {
                     page = try await api.catalogPage(.sectionItems(requested, limit: 60))
                 }
-                guard requestGeneration == generation else { return }
-                try Task.checkCancellation()
+                // Every page, so a profile switch stops the read before it
+                // follows the continuation.
+                let stillOwnsRequest = await api.isCurrentOwner(requestOwner)
+                guard requestGeneration == generation, !Task.isCancelled else { return }
+                guard stillOwnsRequest else { throw HTTPError.requestIdentityChanged }
                 if page.startsOver {
                     loaded = []
                     startsOver = true
@@ -84,9 +87,6 @@ final class SectionCatalogViewModel {
                 loaded += page.response.items.filter { requested.mediaScope?.contains($0.type) ?? true }
                 nextPage = page.continuation
             } while loaded.isEmpty && nextPage != nil
-            let stillOwnsRequest = await api.isCurrentOwner(requestOwner)
-            guard requestGeneration == generation, !Task.isCancelled else { return }
-            guard stillOwnsRequest else { throw HTTPError.requestIdentityChanged }
 
             if resetsPage || startsOver {
                 items = loaded
