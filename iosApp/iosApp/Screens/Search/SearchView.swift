@@ -108,20 +108,21 @@ struct SearchView: View {
         }
     }
 
-    /// Whether audiobooks take part in search. On tvOS this mirrors the top
-    /// bar — the Audiobooks tab or a pinned audiobook library, from the synced
-    /// menu or the legacy opt-in default — so a hidden audiobook library
-    /// produces neither a filter chip nor results under "All". iOS has the
-    /// same user-facing setting, but keeps the prior default of showing
-    /// audiobooks.
+    /// Whether audiobooks take part in search. On tvOS that is when the top
+    /// bar shows them (the Audiobooks tab or a pinned audiobook library) or
+    /// the legacy "Show Audiobooks" opt-in is on, and an audiobook library
+    /// exists; otherwise there is neither a filter chip nor results under
+    /// "All". iOS has the same user-facing setting, but keeps the prior
+    /// default of showing audiobooks.
     private var audiobooksAvailable: Bool {
         #if os(tvOS)
         guard let cached: LibrariesResponse = ResponseCache.shared.get(CacheKey.userLibraries) else {
             return false
         }
-        return TVPrimaryMenuProjection.includesAudiobooks(
-            in: uiCustomization.resolvedPrimaryMenuItems(),
-            libraries: cached.libraries
+        return TVPrimaryMenuProjection.searchIncludesAudiobooks(
+            menuItems: uiCustomization.resolvedPrimaryMenuItems(),
+            libraries: cached.libraries,
+            legacyOptIn: navPrefs.showAudiobooks
         )
         #elseif os(iOS)
         return navPrefs.showAudiobooks
