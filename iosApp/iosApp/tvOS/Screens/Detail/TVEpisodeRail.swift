@@ -97,6 +97,14 @@ struct TVEpisodeRail: View {
             self.maximumOffset = maximumOffset
             anchorOffset = anchorOffset.map { $0 + shift }
             motion?.rebase(by: shift)
+            if let anchorOffset, let current = motion {
+                // A page that lets a clamped move reach its card redirects
+                // the move instead of jumping to the card when it ends.
+                let target = SeriesSeasonScroll.clampedOffset(anchorOffset, maximumOffset: maximumOffset)
+                if abs(target - current.targetOffset) > 0.5 {
+                    motion?.retarget(to: target, at: CACurrentMediaTime())
+                }
+            }
             if motion == nil, let anchorOffset {
                 setOffset(anchorOffset)
             } else if let offset = intendedOffset ?? scrollView?.contentOffset.x {

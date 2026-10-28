@@ -946,12 +946,14 @@ struct TVItemDetailView: View {
         let selected = order[selectedIndex].seasonNumber
         var index = selectedIndex + direction
         // Short seasons need several pages before the rail has a full row.
+        // Count cards, not rows: the rail drops repeated episode ids.
+        var seen = Set((viewModel.episodesBySeason[selected] ?? []).map(\.contentId))
         var loadedCount = 0
         while order.indices.contains(index), loadedCount < SeriesEpisodeWindow.minimumEpisodesPerSide {
             guard !Task.isCancelled, viewModel.selectedSeason?.seasonNumber == selected else { return }
             let season = order[index]
             if let page = viewModel.episodesBySeason[season.seasonNumber] {
-                loadedCount += page.count
+                loadedCount += page.filter { seen.insert($0.contentId).inserted }.count
                 index += direction
                 continue
             }
@@ -989,7 +991,7 @@ struct TVItemDetailView: View {
                 PosterImageCache.prefetchArtworkData(edgeEpisodes.compactMap {
                     $0.stillUrl.flatMap(URL.init(string:))
                 })
-                loadedCount += sorted.count
+                loadedCount += sorted.filter { seen.insert($0.contentId).inserted }.count
                 index += direction
             } catch {
                 guard !Task.isCancelled else { return }

@@ -61,12 +61,14 @@ struct SeriesEpisodeWindow {
             }.prefix(5).map(\.element)
         var keep = Set(nearest)
         for direction in [-1, 1] {
+            // Count cards, not rows: the snapshot drops repeated episode ids.
+            var seen = Set((pages[selected] ?? []).map(\.contentId))
             var count = 0
             var neighbor = index + direction
             while count < minimumEpisodesPerSide, order.indices.contains(neighbor),
                   let page = pages[order[neighbor]] {
                 keep.insert(order[neighbor])
-                count += page.count
+                count += page.filter { seen.insert($0.contentId).inserted }.count
                 neighbor += direction
             }
         }
