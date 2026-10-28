@@ -199,6 +199,22 @@ extension APIv2CatalogQuery {
         return query
     }
 
+    /// The cards of one Home or library row, in the row's order.
+    static func sectionItems(_ target: SectionCatalogTarget, limit: Int) -> APIv2CatalogQuery {
+        var query = APIv2CatalogQuery()
+        query.source = "section"
+        query.sectionId = target.sectionId
+        switch target.scope {
+        case .home:
+            query.scope = "home"
+        case .library(let libraryId):
+            query.scope = "library"
+            query.libraryId = String(libraryId)
+        }
+        query.limit = limit
+        return query
+    }
+
     /// Free-text search across the catalog, optionally narrowed to one media type.
     static func search(_ text: String, type: String?, limit: Int) -> APIv2CatalogQuery {
         var query = APIv2CatalogQuery()

@@ -5,6 +5,8 @@ import SwiftUI
 /// layouts stay structural rather than incidental.
 struct HomeFeedRow: View {
     let section: ResolvedSection
+    /// Opens the row's full page from its title and a trailing Explore all card.
+    var onExploreAll: (() -> Void)? = nil
     /// Long-press actions, forwarded to every card in the row.
     var onRemoveFromContinueWatching: ((SectionItem) -> Void)? = nil
     var onSetWatched: ((SectionItem, Bool) async -> Bool)? = nil
@@ -57,7 +59,8 @@ struct HomeFeedRow: View {
         VStack(alignment: .leading, spacing: HomeFeedMetrics.headerGap) {
             HomeSectionHeader(
                 title: section.title,
-                icon: isResume ? "play.circle.fill" : nil
+                icon: isResume ? "play.circle.fill" : nil,
+                action: onExploreAll
             )
 
             rowScroller
@@ -111,6 +114,16 @@ struct HomeFeedRow: View {
                     }
                     .id(item.contentId)
                     .onAppear { warmCards(after: item) }
+                }
+                if let onExploreAll, !section.items.isEmpty {
+                    SectionExploreAllCard(
+                        size: usesStills
+                            ? HomeStillCard.artworkSize(width: Self.stillWidth)
+                            : HomePosterCard.artworkSize(width: Self.posterWidth, aspect: isAudiobookRow ? .square : .poster),
+                        cornerRadius: usesStills ? HomeFeedMetrics.stillRadius : HomeFeedMetrics.posterRadius,
+                        rowTitle: section.title,
+                        action: onExploreAll
+                    )
                 }
             }
             .scrollTargetLayout()

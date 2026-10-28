@@ -16,6 +16,8 @@ enum Route: Hashable {
         seriesContext: SeriesDetailContext? = nil
     )
     case personDetail(personId: String)
+    /// A Home or library row opened as a full page.
+    case sectionCatalog(SectionCatalogTarget)
     /// `prefersLastUsedVersion` is the Continue Watching resume intent: pick
     /// the server's last-used file before the profile-wide quality
     /// preference. Audio and subtitle memory ride on the server's
@@ -80,6 +82,27 @@ enum Route: Hashable {
 
     /// Every series this device auto-downloads, reached from the Downloads tab.
     case autoDownloads
+}
+
+/// The row behind a full section page, read from the catalog's `section`
+/// source on the page it belongs to.
+struct SectionCatalogTarget: Hashable {
+    enum Scope: Hashable {
+        case home
+        case library(Int)
+    }
+
+    let scope: Scope
+    let sectionId: String
+    let title: String
+    /// A mixed library's Movies or Series view keeps that type on the page.
+    var mediaScope: LibraryVideoScope? = nil
+}
+
+extension SectionCatalogTarget {
+    init(_ section: ResolvedSection, scope: Scope, mediaScope: LibraryVideoScope? = nil) {
+        self.init(scope: scope, sectionId: section.id, title: section.title, mediaScope: mediaScope)
+    }
 }
 
 /// Card metadata that lets tvOS paint a branded detail frame before the
