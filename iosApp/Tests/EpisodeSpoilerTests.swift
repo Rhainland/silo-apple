@@ -494,6 +494,9 @@ final class TopShelfSpoilerTests: XCTestCase {
         XCTAssertEqual(both.cardShowPosterUrl, "https://example.invalid/season.jpg")
         XCTAssertEqual(seriesOnly.cardShowPosterUrl, "https://example.invalid/series.jpg")
         XCTAssertNil(older.cardShowPosterUrl)
+        let alias = try item(#"{"content_id":"e4","type":" Episodes ","title":"Four"}"#)
+        XCTAssertTrue(alias.isEpisode)
+        XCTAssertFalse(try item(#"{"content_id":"m1","type":"movie","title":"Film"}"#).isEpisode)
     }
 
     func testFallbackKeepsWatchedEpisodesAndSeriesArtwork() throws {

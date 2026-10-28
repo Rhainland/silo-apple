@@ -46,10 +46,14 @@ struct TopShelfItem: Decodable {
     /// hides unwatched episode images, unless the server marks the poster as
     /// series or season artwork.
     func fallbackPosterUrl(hidingEpisodeStills: Bool) -> String? {
-        let isEpisode = ["episode", "episodes"].contains(type.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
         let isUntouched = userState?.played != true && (positionSeconds ?? 0) <= 0
         if hidingEpisodeStills, isEpisode, isUntouched, posterIsEpisodeStill != false { return nil }
         return posterUrl
+    }
+
+    /// Matches `SiloMediaType.isEpisode`, which the extension does not compile.
+    var isEpisode: Bool {
+        ["episode", "episodes"].contains(type.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
     }
 
     /// The season's poster, else the series', when the card carries them.

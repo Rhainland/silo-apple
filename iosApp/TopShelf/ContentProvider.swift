@@ -141,7 +141,7 @@ final class ContentProvider: TVTopShelfContentProvider {
     ) async -> EpisodePosters {
         // Cards that carry their season or series poster need no lookup.
         let seriesIds = Set(items.compactMap { item -> String? in
-            guard item.type == "episode", item.cardShowPosterUrl == nil else { return nil }
+            guard item.isEpisode, item.cardShowPosterUrl == nil else { return nil }
             return item.seriesId
         })
         guard !seriesIds.isEmpty else { return EpisodePosters() }
@@ -294,10 +294,10 @@ final class ContentProvider: TVTopShelfContentProvider {
         seriesPosters: EpisodePosters,
         hidesEpisodeStills: Bool
     ) -> String? {
-        if item.type == "episode", let poster = item.cardShowPosterUrl {
+        if item.isEpisode, let poster = item.cardShowPosterUrl {
             return poster
         }
-        if item.type == "episode",
+        if item.isEpisode,
            let poster = seriesPosters.lookup(
                seriesId: item.seriesId,
                seasonNumber: item.seasonNumber
@@ -310,7 +310,7 @@ final class ContentProvider: TVTopShelfContentProvider {
     /// Episodes benefit from a "Series Name · S1E3" label instead of
     /// just the episode title. Movies use the bare title.
     private func displayTitle(for item: TopShelfItem) -> String {
-        guard item.type == "episode",
+        guard item.isEpisode,
               let seriesTitle = item.seriesTitle,
               let season = item.seasonNumber,
               let episode = item.episodeNumber else {
