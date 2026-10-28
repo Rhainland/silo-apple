@@ -264,6 +264,13 @@ struct SubtitleAutoResolver {
     ) -> PlayerTrack? {
         var best: (PlayerTrack, Int)?
         for track in tracks {
+            // A track in another known language can't be the remembered one,
+            // whatever its title or flags share with it.
+            if let sigLang = sig.language, !sigLang.isEmpty,
+               let trackLang = track.lang, !trackLang.isEmpty,
+               !languagesMatch(trackLang, sigLang) {
+                continue
+            }
             var score = 0
             var strongSignal = false
             if let sigLang = sig.language, !sigLang.isEmpty,

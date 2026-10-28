@@ -316,6 +316,11 @@ enum DetailPlaybackFormatting {
         // Every row is a candidate, external ones included, exactly as the
         // player's `SubtitleAutoResolver.bestSignatureMatch` scores them.
         for track in tracks {
+            if let sigLang = sig.language, !sigLang.isEmpty,
+               let lang = track.language, !lang.isEmpty,
+               !SubtitleAutoResolver.languagesMatch(lang, sigLang) {
+                continue
+            }
             var score = 0
             var strongSignal = false
             if let sigLang = sig.language, !sigLang.isEmpty,
