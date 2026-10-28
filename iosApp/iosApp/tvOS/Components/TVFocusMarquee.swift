@@ -599,9 +599,15 @@ struct TVMarqueeEnrichment: Equatable {
     let backdropIsEpisodeStill: Bool?
 
     init(detail: ItemDetail) {
-        backdropUrl = detail.backdropUrl
-        backdropThumbhash = detail.backdropThumbhash
-        backdropIsEpisodeStill = detail.backdropIsEpisodeStill
+        if let seriesBackdrop = detail.episodeSeriesBackdrop {
+            backdropUrl = seriesBackdrop.url
+            backdropThumbhash = seriesBackdrop.thumbhash
+            backdropIsEpisodeStill = false
+        } else {
+            backdropUrl = detail.backdropUrl
+            backdropThumbhash = detail.backdropThumbhash
+            backdropIsEpisodeStill = detail.backdropIsEpisodeStill
+        }
         let trimmedRating = detail.contentRating?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         contentRatingBadge = trimmedRating?.isEmpty == false

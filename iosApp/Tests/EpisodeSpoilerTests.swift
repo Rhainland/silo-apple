@@ -609,6 +609,16 @@ final class EpisodeSpoilerMarqueeTests: XCTestCase {
         model.suspend()
     }
 
+    func testEnrichmentPrefersTheDetailsSeriesBackdrop() throws {
+        let detail = try JSONDecoder().decode(ItemDetail.self, from: Data("""
+            {"contentId":"e1","type":"episode","title":"Pilot","backdropUrl":"https://img.example/still.jpg","backdropIsEpisodeStill":true,"seriesBackdropUrl":"https://img.example/series-bg.jpg","seriesBackdropThumbhash":"BG"}
+            """.utf8))
+        let enrichment = TVMarqueeEnrichment(detail: detail)
+        XCTAssertEqual(enrichment.backdropUrl, "https://img.example/series-bg.jpg")
+        XCTAssertEqual(enrichment.backdropThumbhash, "BG")
+        XCTAssertEqual(enrichment.backdropIsEpisodeStill, false)
+    }
+
     @MainActor
     func testEnrichedBackdropUsesProvenanceAndCurrentSpoilerDecision() throws {
         for provenance: Bool? in [true, false, nil] {

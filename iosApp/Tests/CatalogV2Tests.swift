@@ -54,12 +54,17 @@ final class CatalogV2Tests: XCTestCase {
         var body = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(detailJSON.utf8)) as? [String: Any])
         body["type"] = "episode"
         body["series_poster_url"] = "https://img.example/series.jpg"
+        body["series_poster_thumbhash"] = "SP"
         body["series_backdrop_url"] = "https://img.example/series-bg.jpg"
+        body["season_poster_url"] = "https://img.example/season.jpg"
+        body["season_poster_thumbhash"] = "SN"
         let wire = try decoder.decode(APIv2CatalogRead.CatalogItemDetail.self, from: JSONSerialization.data(withJSONObject: body))
         let detail = try ItemDetail(catalog: wire)
         XCTAssertEqual(detail.seriesPosterUrl, "https://img.example/series.jpg")
         XCTAssertEqual(detail.episodeSeriesBackdrop?.url, "https://img.example/series-bg.jpg")
-        XCTAssertNil(detail.seasonPosterUrl)
+        XCTAssertEqual(detail.seasonPosterThumbhash, "SN")
+        XCTAssertEqual(detail.episodeShowPoster?.url, "https://img.example/season.jpg")
+        XCTAssertEqual(detail.episodeShowPoster?.thumbhash, "SN")
     }
 
     func testOlderServersAndOtherTypesHaveNoParentArtwork() throws {
