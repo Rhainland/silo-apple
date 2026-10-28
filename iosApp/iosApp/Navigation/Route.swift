@@ -137,9 +137,17 @@ struct TVItemDetailRouteSeed: Hashable {
         logoUrl = item.logoUrl
         posterUrl = item.posterUrl
         posterThumbhash = item.posterThumbhash
-        backdropUrl = item.backdropUrl
-        backdropThumbhash = item.backdropThumbhash
-        backdropIsEpisodeStill = item.backdropIsEpisodeStill
+        // An episode opens on its series page, so the frame shows the series
+        // backdrop when the card carries it rather than the episode still.
+        if let seriesBackdrop = item.episodeSeriesBackdrop {
+            backdropUrl = seriesBackdrop.url
+            backdropThumbhash = seriesBackdrop.thumbhash
+            backdropIsEpisodeStill = false
+        } else {
+            backdropUrl = item.backdropUrl
+            backdropThumbhash = item.backdropThumbhash
+            backdropIsEpisodeStill = item.backdropIsEpisodeStill
+        }
         episodeWatchState = item.isEpisodeItem ? EpisodeWatchState(sectionItem: item) : nil
     }
 
@@ -154,9 +162,17 @@ struct TVItemDetailRouteSeed: Hashable {
         logoUrl = nil
         posterUrl = item.posterUrl
         posterThumbhash = item.posterThumbhash
-        backdropUrl = item.backdropUrl
-        backdropThumbhash = item.backdropThumbhash
-        backdropIsEpisodeStill = item.backdropIsEpisodeStill
+        // An episode opens on its series page, so the frame shows the series
+        // backdrop when the card carries it rather than the episode still.
+        if let seriesBackdrop = item.episodeSeriesBackdrop {
+            backdropUrl = seriesBackdrop.url
+            backdropThumbhash = seriesBackdrop.thumbhash
+            backdropIsEpisodeStill = false
+        } else {
+            backdropUrl = item.backdropUrl
+            backdropThumbhash = item.backdropThumbhash
+            backdropIsEpisodeStill = item.backdropIsEpisodeStill
+        }
         episodeWatchState = item.isEpisodeItem ? EpisodeWatchState(browseItem: item) : nil
     }
 
@@ -173,11 +189,14 @@ struct TVItemDetailRouteSeed: Hashable {
         contentRating = nil
         genre = nil
         logoUrl = episode.logoUrl
-        posterUrl = episode.posterUrl
-        posterThumbhash = episode.posterThumbhash
-        backdropUrl = nil
-        backdropThumbhash = nil
-        backdropIsEpisodeStill = nil
+        // A server with `episode_parent_artwork` puts the series' own art on
+        // the episode card, so the frame can show it before detail loads.
+        let seriesPoster = episode.seriesPosterUrl.flatMap { $0.isEmpty ? nil : $0 }
+        posterUrl = seriesPoster ?? episode.posterUrl
+        posterThumbhash = seriesPoster != nil ? episode.seriesPosterThumbhash : episode.posterThumbhash
+        backdropUrl = episode.episodeSeriesBackdrop?.url
+        backdropThumbhash = episode.episodeSeriesBackdrop?.thumbhash
+        backdropIsEpisodeStill = episode.episodeSeriesBackdrop == nil ? nil : false
         episodeWatchState = nil
     }
 }

@@ -87,6 +87,12 @@ extension ItemDetail {
         self.posterUrl = value.posterUrl
         self.backdropUrl = value.backdropUrl
         self.logoUrl = value.logoUrl
+        self.seriesPosterUrl = value.seriesPosterUrl
+        self.seriesPosterThumbhash = value.seriesPosterThumbhash
+        self.seriesBackdropUrl = value.seriesBackdropUrl
+        self.seriesBackdropThumbhash = value.seriesBackdropThumbhash
+        self.seasonPosterUrl = value.seasonPosterUrl
+        self.seasonPosterThumbhash = value.seasonPosterThumbhash
     }
 }
 
