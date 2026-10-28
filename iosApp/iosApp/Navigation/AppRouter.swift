@@ -171,6 +171,9 @@ final class AppRouter {
         /// Set when the card opens on a request detail (a TMDB title) rather
         /// than a catalog item; `contentId` is then only a page identity.
         let request: RequestRoot?
+        /// Set when the card opens on a row's full page (Explore all) rather
+        /// than a catalog item; `contentId` is then only a page identity.
+        let section: SectionCatalogTarget?
         /// Presented as large as the window instead of as a page sheet: a
         /// window-sized sheet on iPad, a full-screen cover on iPhone, where
         /// iOS 27.1 caps sheets well short of the iPhone Duo's open display.
@@ -188,6 +191,7 @@ final class AppRouter {
             self.libraryId = libraryId
             self.resumeContext = resumeContext
             self.request = nil
+            self.section = nil
         }
 
         init(request: RequestRoot) {
@@ -195,6 +199,15 @@ final class AppRouter {
             self.libraryId = nil
             self.resumeContext = nil
             self.request = request
+            self.section = nil
+        }
+
+        init(section: SectionCatalogTarget) {
+            self.contentId = "section:\(section.scope):\(section.sectionId)"
+            self.libraryId = nil
+            self.resumeContext = nil
+            self.request = nil
+            self.section = section
         }
     }
 
@@ -220,6 +233,8 @@ final class AppRouter {
         guard let presentedItemDetail else { return [] }
         let root: Route = if let request = presentedItemDetail.request {
             .requestDetail(mediaType: request.mediaType, tmdbId: request.tmdbId)
+        } else if let section = presentedItemDetail.section {
+            .sectionCatalog(section)
         } else {
             .itemDetail(contentId: presentedItemDetail.contentId, libraryId: presentedItemDetail.libraryId)
         }
@@ -240,7 +255,8 @@ final class AppRouter {
     @ObservationIgnored private var itemDetailSeriesSelection: SeriesDetailContext?
 
     /// Opens or restores the detail card in the presentation the window calls
-    /// for now. Request details stay sheets: their page has no split layout.
+    /// for now. Request details and row pages stay sheets: their pages have
+    /// no split layout.
     private func openItemDetail(_ presentation: ItemDetailPresentation?) {
         if presentation?.id != presentedItemDetail?.id {
             itemDetailSeriesSelection = nil
@@ -253,7 +269,7 @@ final class AppRouter {
     }
 
     private func fillsWindow(_ presentation: ItemDetailPresentation) -> Bool {
-        presentsItemDetailFullWindow && presentation.request == nil
+        presentsItemDetailFullWindow && presentation.request == nil && presentation.section == nil
     }
 
     /// Moves an open detail to the presentation the window now calls for,
@@ -700,6 +716,18 @@ final class AppRouter {
                 openItemDetail(ItemDetailPresentation(
                     request: .init(mediaType: mediaType, tmdbId: tmdbId)
                 ))
+            } else {
+                appendToItemDetail(route)
+            }
+            return
+        }
+        // A row's full page opens in the same card, so titles opened from it
+        // push inside the card and pull-down returns to the row.
+        if case .sectionCatalog(let target) = route {
+            recordScreenBreadcrumb(target: route.diagnosticsTarget, action: "present")
+            if presentedItemDetail == nil {
+                itemDetailPath = NavigationPath()
+                openItemDetail(ItemDetailPresentation(section: target))
             } else {
                 appendToItemDetail(route)
             }

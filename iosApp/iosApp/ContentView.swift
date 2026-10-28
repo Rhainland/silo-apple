@@ -3473,6 +3473,8 @@ private struct ItemDetailSheet: View {
                 tmdbId: request.tmdbId,
                 onClose: router.dismissItemDetail
             )
+        } else if let section = presentation.section {
+            SectionCatalogView(target: section, onClose: router.dismissItemDetail)
         } else {
             ItemDetailView(
                 contentId: presentation.contentId,
@@ -3495,6 +3497,8 @@ private struct ItemDetailSheet: View {
             PersonDetailView(personId: personId)
         case .requestDetail(let mediaType, let tmdbId):
             RequestDetailView(mediaType: mediaType, tmdbId: tmdbId)
+        case .sectionCatalog(let target):
+            SectionCatalogView(target: target)
         default:
             EmptyView()
         }

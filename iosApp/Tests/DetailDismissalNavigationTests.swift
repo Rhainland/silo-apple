@@ -85,6 +85,26 @@ final class DetailDismissalNavigationTests: XCTestCase {
         XCTAssertNil(router.presentedItemDetail?.resumeContext)
     }
 
+    func testRowPageOpensInTheDetailCardAndTitlesPushInsideIt() throws {
+        let router = AppRouter()
+        let target = SectionCatalogTarget(scope: .library(4), sectionId: "recent", title: "Recently Added")
+        router.presentsItemDetailFullWindow = true
+        router.navigate(to: .sectionCatalog(target))
+
+        let card = try XCTUnwrap(router.presentedItemDetail)
+        XCTAssertEqual(card.section, target)
+        XCTAssertFalse(card.fillsWindow)
+        XCTAssertTrue(router.path.isEmpty)
+
+        router.presentItemDetail(contentId: "movie", libraryId: 4)
+        XCTAssertEqual(router.presentedItemDetail?.id, card.id)
+        XCTAssertEqual(router.visibleItemDetailRoutes, [
+            .sectionCatalog(target),
+            .itemDetail(contentId: "movie", libraryId: 4, seriesContext: nil),
+        ])
+        XCTAssertTrue(router.path.isEmpty)
+    }
+
     func testPartyWaitsForPickerDismissalAndCannotReopenAfterTermination() {
         let router = AppRouter()
         let context = WatchPartyPlaybackContext(roomId: "room", selectionRevision: 1,
