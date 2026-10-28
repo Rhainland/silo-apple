@@ -4,6 +4,8 @@ import SwiftUI
 /// trailing Explore all card. Rows show at most `SectionRowLimit.cards`.
 struct SectionCatalogView: View {
     let target: SectionCatalogTarget
+    /// Set when the page is the root of the iOS detail card.
+    var onClose: (() -> Void)? = nil
 
     @State private var viewModel = SectionCatalogViewModel()
     @Environment(AppRouter.self) private var router
@@ -44,6 +46,18 @@ struct SectionCatalogView: View {
         .environment(\.browseLibraryId, libraryId)
         .navigationTitle(target.title)
         .siloNavigationTitleDisplayMode(.large)
+        #if os(iOS)
+        .toolbar {
+            if let onClose {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(action: onClose) {
+                        Image(systemName: "xmark")
+                    }
+                    .accessibilityLabel("Close")
+                }
+            }
+        }
+        #endif
         .task(id: target) {
             // Coming back from a card's detail page keeps the pages read.
             await viewModel.open(target)
