@@ -143,7 +143,14 @@ struct TVTopMenuBar: View {
     let selectedRoot: TVRootDestination
     let currentProfile: UserProfile?
     @Binding var isMenuFocused: Bool
+    /// Content owns focus. The bar stays focusable so a native Up (a click or
+    /// a touch-surface swipe) can reach it; this only stops the bar from
+    /// claiming or re-pinning focus on its own.
     let isFocusSuppressed: Bool
+    /// True for the brief window while the shell hands focus down to content.
+    /// The bar is disabled then so the engine's repair from the resigning tab
+    /// cannot land back in the bar and cancel the hand-down.
+    var isLockedForContentHandoff: Bool = false
     let focusRequest: Int
     /// Bumped when the shell has determined the bar's `@FocusState` is stale —
     /// the engine dropped focus without the bar observing it, so no suppression
@@ -191,8 +198,7 @@ struct TVTopMenuBar: View {
     /// immediately; dwell only previews it.
     let onProfilePressed: () -> Void
     /// Focus left the bar through normal focus movement into page content.
-    /// The shell uses this to disable the bar again so later content-row
-    /// Up presses can't geometrically jump back to the menu.
+    /// The shell records that content owns focus again.
     let onContentFocusHandoff: () -> Void
     var onExit: (() -> Void)? = nil
 
@@ -244,8 +250,12 @@ struct TVTopMenuBar: View {
         // Reduce Motion snaps the bar dim/restore as focus enters/leaves
         // the content zone (§5.1; §4.2 acceptance: no drift animations).
         .animation(reduceMotion ? nil : .easeInOut(duration: SiloTheme.normalDuration), value: isMenuFocused)
+        // Up from the page enters the bar natively and lands on the selected
+        // tab, not on whichever tab sits above the focused card. The priority
+        // has to be `.userInitiated` for a directional move to honor it.
+        .defaultFocus($focusedItem, .root(selectedRoot), priority: .userInitiated)
         .focusSection()
-        .disabled(isFocusSuppressed || panelEntersFocus)
+        .disabled(isLockedForContentHandoff || panelEntersFocus)
         // Menu handling must not be conditionally wrapped around the focused
         // tab buttons. Toggling an `onExitCommand` ancestor when `openPanel`
         // changes invalidates tvOS focus and produces the preview-open flash.
