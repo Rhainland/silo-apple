@@ -3362,6 +3362,8 @@ struct MainTabView: View {
             RequestDetailView(mediaType: mediaType, tmdbId: tmdbId)
         case .myRequests:
             MyRequestsView()
+        case .requestDiscoverRow(let key, let title):
+            RequestDiscoverRowView(rowKey: key, title: title)
         case .search:
             #if os(iOS)
             SearchView(seededQuery: $siriSearchRequest)

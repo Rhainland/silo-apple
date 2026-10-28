@@ -1,19 +1,34 @@
 import Foundation
 
-/// One product carousel on the Requests hub, merged from the server's
-/// per-media-type discover sections.
+/// One carousel on the Requests hub: a row of the server's Discover layout,
+/// or, from an older server, one merged from its per-media-type sections.
 struct RequestCarousel: Identifiable, Equatable {
     let id: String
     let title: String
     let results: [RequestMediaResult]
+    /// A row of the server's layout with more pages: it has a See all page.
+    var seeAll: Bool = false
 }
 
 enum RequestCarouselMerge {
-    /// The server returns fixed per-type sections; the hub shows exactly two
-    /// product carousels. "Crowd favorites" is client copy for the popular
-    /// sections.
+    /// An older server returns fixed per-type sections; the hub merges them
+    /// into two product carousels. "Crowd favorites" is client copy for the
+    /// popular sections.
     static let trendingKeys: Set<String> = ["trending_movies", "trending_series"]
     static let popularKeys: Set<String> = ["popular_movies", "popular_series"]
+
+    /// A server with an admin-defined layout sends `rowOrder`: its rows show
+    /// as they are, in that order. Rows the apps do not draw (the studio,
+    /// network and genre carousels) and rows with no titles have no section
+    /// and are skipped. An older server gets the two merged carousels.
+    static func carousels(from layout: RequestDiscoverLayout) -> [RequestCarousel] {
+        guard !layout.rowOrder.isEmpty else { return carousels(from: layout.sections) }
+        let sections = Dictionary(layout.sections.map { ($0.key, $0) }, uniquingKeysWith: { first, _ in first })
+        return layout.rowOrder.compactMap { row in
+            guard let section = sections[row.key], !section.results.isEmpty else { return nil }
+            return RequestCarousel(id: section.key, title: section.title, results: section.results, seeAll: section.totalPages > 1)
+        }
+    }
 
     static func carousels(from sections: [RequestDiscoverySection]) -> [RequestCarousel] {
         [
@@ -49,5 +64,24 @@ enum RequestCarouselMerge {
             }
         }
         return merged
+    }
+}
+
+/// How a row's See all page moves from page to page.
+enum RequestDiscoverPaging {
+    /// TMDB's own ceiling on its paged feeds.
+    static let maxPage = 500
+
+    /// The page after `last`. When the server read several source pages to
+    /// fill one it answers with `nextPage`, since `page + 1` would repeat
+    /// titles; a `nextPage` past the last page means the end, and one that
+    /// does not move forward is taken as the end. A page without one read a
+    /// single source page, so `page + 1` follows, up to TMDB's cap.
+    static func nextPage(after last: RequestDiscoverySection, requested: Int) -> Int? {
+        let pageCount = min(max(last.totalPages, 0), maxPage)
+        if let cursor = last.nextPage {
+            return cursor > requested && cursor <= pageCount ? cursor : nil
+        }
+        return requested < pageCount ? requested + 1 : nil
     }
 }
