@@ -227,6 +227,28 @@ struct SubtitleAutoResolver {
         return inputs.disableWhenNoLanguageMatch ? .disable : .noChange
     }
 
+    /// Whether a subtitle the viewer picked for this title (the server's
+    /// `effective_subtitle_track_signature`, which only a saved pick sets)
+    /// can play on a file with `tracks`. A saved pick outranks the device's
+    /// caption policy, so with Use Device Settings on this decides which of
+    /// the two chooses the subtitle. A pick in a language the file doesn't
+    /// offer leaves the choice to the device: a title such as "SUBRIP" names
+    /// the codec, not the track, so it can't stand in for the language.
+    static func savedPickApplies(
+        _ signature: SubtitleTrackSignature?,
+        to tracks: [SubtitleTrack]
+    ) -> Bool {
+        guard let signature else { return false }
+        if let language = signature.language, !language.isEmpty {
+            return tracks.contains { track in
+                guard let trackLanguage = track.language, !trackLanguage.isEmpty else { return false }
+                return languagesMatch(trackLanguage, language)
+            }
+        }
+        guard let label = signature.label, !label.isEmpty else { return false }
+        return tracks.contains { $0.title?.localizedCaseInsensitiveContains(label) == true }
+    }
+
     // MARK: - Matching helpers
 
     /// Score-based signature match. Higher score = better. Returns the

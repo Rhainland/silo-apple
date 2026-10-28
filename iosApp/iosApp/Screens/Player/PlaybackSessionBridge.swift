@@ -866,25 +866,32 @@ actor PlaybackSessionBridge {
             version: selectedVersion,
             audioOrdinal: resolvedAudioTrackIndex
         )
+        // The device's caption policy (Use Device Settings) chooses only when
+        // the viewer hasn't picked a subtitle for this title that this file
+        // offers; a saved pick outranks it.
+        let devicePreferences = SubtitleAutoResolver.savedPickApplies(
+            watchDetail.effectiveSubtitleTrackSignature,
+            to: selectedVersion.subtitleTracks ?? []
+        ) ? nil : initialSubtitlePreferences
         let subtitleIntent = Self.initialProtocolV3SubtitleIntent(
             version: selectedVersion,
             explicitFFmpegIndex: preferredSubtitleTrackIndex,
             explicitCombinedIndex: preferredProtocolV3SubtitleIndex,
-            preferredLanguage: initialSubtitlePreferences == nil
+            preferredLanguage: devicePreferences == nil
                 ? watchDetail.effectiveSubtitleLanguage
-                : initialSubtitlePreferences?.preferredLanguage,
-            additionalPreferredLanguages: initialSubtitlePreferences?.additionalPreferredLanguages ?? [],
-            mode: initialSubtitlePreferences == nil
+                : devicePreferences?.preferredLanguage,
+            additionalPreferredLanguages: devicePreferences?.additionalPreferredLanguages ?? [],
+            mode: devicePreferences == nil
                 ? SubtitleMode(rawValue: watchDetail.effectiveSubtitleMode ?? "")
-                : initialSubtitlePreferences?.mode,
-            showForced: initialSubtitlePreferences?.showForced
+                : devicePreferences?.mode,
+            showForced: devicePreferences?.showForced
                 ?? watchDetail.showsForcedSubtitles,
-            forcedOnly: initialSubtitlePreferences?.forcedOnly ?? false,
-            preferAccessibilityTracks: initialSubtitlePreferences?.preferAccessibilityTracks ?? false,
-            disableWhenNoLanguageMatch: initialSubtitlePreferences?.disableWhenNoLanguageMatch ?? false,
-            trackSignature: initialSubtitlePreferences == nil
+            forcedOnly: devicePreferences?.forcedOnly ?? false,
+            preferAccessibilityTracks: devicePreferences?.preferAccessibilityTracks ?? false,
+            disableWhenNoLanguageMatch: devicePreferences?.disableWhenNoLanguageMatch ?? false,
+            trackSignature: devicePreferences == nil
                 ? watchDetail.effectiveSubtitleTrackSignature
-                : initialSubtitlePreferences?.trackSignature,
+                : devicePreferences?.trackSignature,
             currentAudioLanguage: selectedAudioLanguage
         )
         let effectiveStartPosition = allowAlternateVersions == false ? normalizedResumePosition : resolvedStartPosition(
