@@ -97,7 +97,15 @@ struct TVMainTabView: View {
     /// anchor, so focus returns to the dwelled tab/avatar (§7).
     @State private var panelReturnFocus: TVTopMenuPanel?
     @State private var isTopMenuFocused = false
+    /// Content owns focus. The bar stays focusable (see
+    /// `isBarLockedForContentHandoff`), so Up reaches it natively.
     @State private var isTopMenuFocusSuppressed = true
+    /// Disables the bar while focus is being handed down to content, so the
+    /// engine's repair from the resigning tab cannot land back in the bar.
+    /// Released after the content's bounded focus claim has had time to land.
+    /// Starts locked so launch focus goes to content.
+    @State private var isBarLockedForContentHandoff = true
+    @State private var barLockGeneration = 0
     /// True while a route pushed *from the bar* (search, profile/For You
     /// panel items) is on the stack. When the stack pops back to root,
     /// focus returns to the bar — the explicit "next owner" choice
@@ -126,6 +134,10 @@ struct TVMainTabView: View {
     /// of relying on NavigationStack's best-effort focus restoration.
     @State private var detailReturnFocusRequest = 0
     @Namespace private var tabContentNamespace
+    /// Root scope for the bar and the page. The page is its preferred
+    /// default, so focus repairs (a focused card removed by a refresh) go back
+    /// to the page instead of to the now-focusable bar.
+    @Namespace private var shellFocusNamespace
     @Environment(AudioPlaybackStore.self) private var audioStore
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -139,6 +151,7 @@ struct TVMainTabView: View {
         ZStack(alignment: .top) {
             NavigationStack(path: $router.path) {
                 rootContent
+                    .prefersDefaultFocus(router.path.isEmpty, in: shellFocusNamespace)
                     .navigationDestination(for: Route.self) { route in
                         routeContent(for: route)
                     }
@@ -151,6 +164,7 @@ struct TVMainTabView: View {
                     currentProfile: currentProfile,
                     isMenuFocused: $isTopMenuFocused,
                     isFocusSuppressed: isTopMenuFocusSuppressed,
+                    isLockedForContentHandoff: isBarLockedForContentHandoff,
                     focusRequest: topMenuFocusRequest,
                     focusResetRequest: topMenuFocusResetRequest,
                     focusRequestTarget: panelReturnFocus,
@@ -176,6 +190,7 @@ struct TVMainTabView: View {
                     .zIndex(20)
             }
         }
+        .focusScope(shellFocusNamespace)
         // The anchored cascade / profile panel renders here (not as a ZStack
         // sibling) so its `overlayPreferenceValue` can see the bar's
         // published anchors and position the panel under the right element.
@@ -280,7 +295,20 @@ struct TVMainTabView: View {
             }
         }
         .onChange(of: isStartupSplashVisible) { _, isVisible in
-            if !isVisible { contentFocusRequest += 1 }
+            guard !isVisible else { return }
+            lockBarForContentHandoff()
+            contentFocusRequest += 1
+        }
+        // The bar starts locked; this schedules the release for a launch that
+        // never runs another hand-off (e.g. entering from the profile picker).
+        .onAppear { lockBarForContentHandoff() }
+        // Up reaches the bar natively now, without `focusTopMenuIfVisible`.
+        // Record the ownership change so the menu state stays truthful: pages
+        // stop entry claims, and Menu/Back and dwell work from the bar.
+        .onChange(of: isTopMenuFocused) { _, isFocused in
+            guard isFocused, isTopMenuFocusSuppressed else { return }
+            unlockBar()
+            isTopMenuFocusSuppressed = false
         }
         .onChange(of: router.requestedTab) { _, requestedTab in
             guard let requestedTab else { return }
@@ -1230,6 +1258,7 @@ struct TVMainTabView: View {
         guard router.path.isEmpty else { return }
 
         panelReturnFocus = target
+        unlockBar()
         // Claim ownership before the bar's @FocusState lands so content
         // hand-down tokens cannot briefly re-focus rows during an Up return.
         isTopMenuFocused = true
@@ -1252,6 +1281,7 @@ struct TVMainTabView: View {
     private func returnToHomeInMenu() {
         selectedRoot = .home
         panelReturnFocus = nil
+        unlockBar()
         withAnimation(reduceMotion ? nil : SiloTheme.springAnimation) {
             // Un-suppress before requesting focus: requestMenuFocus drops the
             // request while the menu is suppressed, which could leave the
@@ -1270,6 +1300,27 @@ struct TVMainTabView: View {
     private func suppressTopMenuFocusForContentHandoff() {
         isTopMenuFocused = false
         isTopMenuFocusSuppressed = true
+        lockBarForContentHandoff()
+    }
+
+    /// How long the bar stays disabled after a hand-down. Covers a row's
+    /// bounded focus claim (8 retries, 80 ms apart) with some margin.
+    private static let contentHandoffLockNanoseconds: UInt64 = 800_000_000
+
+    private func lockBarForContentHandoff() {
+        barLockGeneration += 1
+        let generation = barLockGeneration
+        isBarLockedForContentHandoff = true
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: Self.contentHandoffLockNanoseconds)
+            guard generation == barLockGeneration else { return }
+            isBarLockedForContentHandoff = false
+        }
+    }
+
+    private func unlockBar() {
+        barLockGeneration += 1
+        isBarLockedForContentHandoff = false
     }
 
     /// Push a route on behalf of a bar element (search button, profile /
