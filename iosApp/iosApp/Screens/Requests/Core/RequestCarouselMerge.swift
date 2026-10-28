@@ -29,7 +29,9 @@ enum RequestCarouselMerge {
         return layout.rowOrder.compactMap { row in
             guard !brandRowTypes.contains(row.type),
                   let section = sections[row.key], !section.results.isEmpty else { return nil }
-            return RequestCarousel(id: section.key, title: section.title, results: section.results, seeAll: section.totalPages > 1)
+            // A row trimmed to its size has more titles even on a one-page source.
+            let more = section.totalPages > 1 || section.totalResults > section.results.count
+            return RequestCarousel(id: section.key, title: section.title, results: section.results, seeAll: more)
         }
     }
 

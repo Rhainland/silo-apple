@@ -105,6 +105,11 @@ final class RequestImageURLTests: XCTestCase {
         // The brand row has no section and the empty row has no titles: both skipped.
         XCTAssertEqual(carousels.map(\.id), ["r_anime", "trending_movies"])
         XCTAssertEqual(carousels.map(\.seeAll), [true, false])
+        // A one-page row trimmed to its size still has more to see.
+        var trimmed = section("r_list", [result(7)])
+        trimmed = RequestDiscoverySection(key: trimmed.key, title: "List", page: 1, totalPages: 1, totalResults: 12, results: trimmed.results, nextPage: nil)
+        let trimmedLayout = RequestDiscoverLayout(sections: [trimmed], rowOrder: [RequestDiscoverRowRef(key: "r_list", type: "mdblist", title: "List")])
+        XCTAssertEqual(RequestCarouselMerge.carousels(from: trimmedLayout).map(\.seeAll), [true])
         // Without a row order, the two merged carousels.
         XCTAssertEqual(RequestCarouselMerge.carousels(from: RequestDiscoverLayout(sections: layout.sections, rowOrder: [])).map(\.id), ["trending"])
     }
