@@ -59,6 +59,10 @@ struct TVEpisodeRail: View {
     private final class ScrollViewport: NSObject {
         weak var scrollView: UIScrollView?
         private var intendedOffset: CGFloat?
+        /// The anchored card's own position, before clamping. A card pinned
+        /// against a short window's end returns to the leading slot once more
+        /// pages load.
+        private var anchorOffset: CGFloat?
         private var maximumOffset: CGFloat = 0
         private var motion: SeriesSeasonScroll?
         private var displayLink: CADisplayLink?
@@ -69,8 +73,10 @@ struct TVEpisodeRail: View {
             if let intendedOffset { setOffset(intendedOffset) }
         }
 
-        func move(to offset: CGFloat, maximumOffset: CGFloat, timing: SeriesSeasonScroll.Timing?) {
+        func move(to anchor: CGFloat, maximumOffset: CGFloat, timing: SeriesSeasonScroll.Timing?) {
             self.maximumOffset = maximumOffset
+            anchorOffset = anchor
+            let offset = SeriesSeasonScroll.clampedOffset(anchor, maximumOffset: maximumOffset)
             stopScroll()
             guard let scrollView else { setOffset(offset); return }
             guard let timing else { setOffset(offset); return }
@@ -89,8 +95,11 @@ struct TVEpisodeRail: View {
         /// without starting another animation or changing its completion time.
         func rebase(by shift: CGFloat, maximumOffset: CGFloat) {
             self.maximumOffset = maximumOffset
+            anchorOffset = anchorOffset.map { $0 + shift }
             motion?.rebase(by: shift)
-            if let offset = intendedOffset ?? scrollView?.contentOffset.x {
+            if motion == nil, let anchorOffset {
+                setOffset(anchorOffset)
+            } else if let offset = intendedOffset ?? scrollView?.contentOffset.x {
                 setOffset(offset + shift)
             }
         }
@@ -121,13 +130,17 @@ struct TVEpisodeRail: View {
         func finishScroll() {
             guard let motion else { return }
             stopScroll()
-            setOffset(motion.targetOffset)
+            setOffset(anchorOffset ?? motion.targetOffset)
         }
 
         @objc private func advanceScroll(_ link: CADisplayLink) {
             guard let motion, scrollView != nil else { stopScroll(); return }
             setOffset(motion.offset(at: link.timestamp))
-            if motion.isComplete(at: link.timestamp) { stopScroll() }
+            if motion.isComplete(at: link.timestamp) {
+                stopScroll()
+                // Pages that loaded mid-move may have made room for the anchor.
+                if let anchorOffset { setOffset(anchorOffset) }
+            }
         }
 
         func stopScroll() {
@@ -441,8 +454,10 @@ struct TVEpisodeRail: View {
         viewportWidth: CGFloat,
         timing: SeriesSeasonScroll.Timing?
     ) {
+        // Pass the card's own position; the viewport clamps it to the row's
+        // current end and returns to it when more pages load.
         scrollViewport.move(
-            to: anchoredContentOffset(for: index, viewportWidth: viewportWidth),
+            to: CGFloat(index) * (anchoredCardWidth + cardSpacing),
             maximumOffset: anchoredContentOffset(for: episodes.count - 1, viewportWidth: viewportWidth),
             timing: reduceMotion ? nil : timing
         )
