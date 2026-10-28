@@ -17,15 +17,18 @@ enum RequestCarouselMerge {
     static let trendingKeys: Set<String> = ["trending_movies", "trending_series"]
     static let popularKeys: Set<String> = ["popular_movies", "popular_series"]
 
+    /// The studio, network and genre card rows, which the apps do not draw.
+    static let brandRowTypes: Set<String> = ["studios", "networks", "genres"]
+
     /// A server with an admin-defined layout sends `rowOrder`: its rows show
-    /// as they are, in that order. Rows the apps do not draw (the studio,
-    /// network and genre carousels) and rows with no titles have no section
-    /// and are skipped. An older server gets the two merged carousels.
+    /// as they are, in that order. Card rows and rows with no titles are
+    /// skipped. An older server gets the two merged carousels.
     static func carousels(from layout: RequestDiscoverLayout) -> [RequestCarousel] {
         guard !layout.rowOrder.isEmpty else { return carousels(from: layout.sections) }
         let sections = Dictionary(layout.sections.map { ($0.key, $0) }, uniquingKeysWith: { first, _ in first })
         return layout.rowOrder.compactMap { row in
-            guard let section = sections[row.key], !section.results.isEmpty else { return nil }
+            guard !brandRowTypes.contains(row.type),
+                  let section = sections[row.key], !section.results.isEmpty else { return nil }
             return RequestCarousel(id: section.key, title: section.title, results: section.results, seeAll: section.totalPages > 1)
         }
     }

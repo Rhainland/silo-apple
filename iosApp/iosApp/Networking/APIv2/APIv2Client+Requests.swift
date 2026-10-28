@@ -45,7 +45,7 @@ extension APIv2Client {
 
     /// One page of a row of the server's Discover layout, for its See all page.
     func requestDiscoverRow(key: String, page: Int) async throws -> RequestDiscoverySection {
-        let escaped = key.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? key
+        let escaped = try catalogPathSegment(key)
         return try await requestsCall("GET", path: "/api/v2/requests/discover/rows/\(escaped)",
             query: ["page": String(max(page, 1))], status: 200)
     }

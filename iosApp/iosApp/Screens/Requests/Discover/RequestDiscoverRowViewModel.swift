@@ -31,7 +31,7 @@ final class RequestDiscoverRowViewModel {
 
     func loadMore() async {
         guard let page = nextPage, !isLoading, !isLoadingMore, !notFound else { return }
-        if page == 1 { isLoading = true } else { isLoadingMore = true }
+        if results.isEmpty { isLoading = true } else { isLoadingMore = true }
         error = nil
         moreFailed = false
         defer {
@@ -53,11 +53,13 @@ final class RequestDiscoverRowViewModel {
                 requested = next
             }
         } catch {
+            // With nothing shown yet (a first page, or empty pages before it),
+            // a failure is the screen's; after that, the grid's.
             let state = ErrorState(error)
             if state.statusCode == 404 {
                 // A row removed mid-scroll ends where it is.
-                if requested == 1 { notFound = true } else { nextPage = nil }
-            } else if requested == 1 {
+                if results.isEmpty { notFound = true } else { nextPage = nil }
+            } else if results.isEmpty {
                 self.error = state
             } else {
                 moreFailed = true
