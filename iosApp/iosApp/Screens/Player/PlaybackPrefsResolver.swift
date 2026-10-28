@@ -246,7 +246,9 @@ struct SubtitleAutoResolver {
             }
         }
         guard let label = signature.label, !label.isEmpty else { return false }
-        return tracks.contains { $0.title?.localizedCaseInsensitiveContains(label) == true }
+        // The label was saved from `title ?? embeddedTitle`, and the player
+        // names catalog tracks the same way.
+        return tracks.contains { ($0.title ?? $0.embeddedTitle)?.localizedCaseInsensitiveContains(label) == true }
     }
 
     // MARK: - Matching helpers
