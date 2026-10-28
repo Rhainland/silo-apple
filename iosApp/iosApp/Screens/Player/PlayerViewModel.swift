@@ -1182,6 +1182,10 @@ class PlayerViewModel {
     /// subtitle index from the caller (route arg / detail screen). The
     /// auto-resolver yields to the user in that case.
     private var hasExplicitSubtitleChoice: Bool = false
+    /// True once the viewer picks a subtitle (or Off) during this playback,
+    /// here or from a remote. Unlike `hasExplicitSubtitleChoice`, a track
+    /// the detail page seeded automatically at launch doesn't count.
+    private var subtitlePickedDuringPlayback: Bool = false
     /// External subtitle picks don't have an FFmpeg stream index, so a
     /// reload/resume has to remember the synthesised sidecar `trackId`
     /// and re-apply it once `subtitle_urls` have been registered again.
@@ -1627,7 +1631,9 @@ class PlayerViewModel {
                 self.settings.refreshSubtitleSystemAppearance()
                 self.subtitleOrderingLanguage = self.settings
                     .subtitleSystemSelectionPreferences.preferredLanguages.first
-                guard !self.hasExplicitSubtitleChoice else { return }
+                // Appearance follows the device above; the choice of track
+                // only when no pick (this session's or the title's) outranks it.
+                guard !self.hasExplicitSubtitleChoice, self.subtitleSelectionFollowsSystem else { return }
                 self.prefsForCurrentItem = self.systemCaptionPrefsSnapshot()
                 self.prefsResolvedForCurrentItem = false
                 self.applyAutoSubtitlePreferencesIfNeeded(forceReevaluation: true)
@@ -2642,6 +2648,7 @@ class PlayerViewModel {
                 guard selectedSubtitleId != nil else { return }
                 pendingSubtitleFfIndex = nil
                 hasExplicitSubtitleChoice = true
+                subtitlePickedDuringPlayback = true
                 selectedSubtitleId = nil
                 return
             }
@@ -2652,6 +2659,7 @@ class PlayerViewModel {
             guard let resolved, selectedSubtitleId != resolved.trackId else { return }
             pendingSubtitleFfIndex = nil
             hasExplicitSubtitleChoice = true
+            subtitlePickedDuringPlayback = true
             selectedSubtitleId = resolved.trackId
         }
     }
@@ -4893,8 +4901,12 @@ class PlayerViewModel {
         subtitleOrderingLanguage = enabled
             ? settings.subtitleSystemSelectionPreferences.preferredLanguages.first
             : currentWatchDetail?.effectiveSubtitleLanguage
+        // A subtitle the viewer picked during this playback outranks either
+        // automatic policy, so switching the policy leaves it playing. A
+        // track seeded at launch is automatic and follows the new policy.
+        guard !subtitlePickedDuringPlayback else { return }
         hasExplicitSubtitleChoice = false
-        prefsForCurrentItem = enabled
+        prefsForCurrentItem = subtitleSelectionFollowsSystem
             ? systemCaptionPrefsSnapshot()
             : currentWatchDetail.map(serverSubtitlePrefsSnapshot)
         prefsResolvedForCurrentItem = false
@@ -5402,6 +5414,7 @@ class PlayerViewModel {
             preferredSubtitleTrackIndex != nil
             || preferredSidecarSubtitleTrackId != nil
             || preferredProtocolV3SubtitleIndex != nil
+        subtitlePickedDuringPlayback = false
         prefsForCurrentItem = nil
         prefsResolvedForCurrentItem = false
         deferredAutoSubtitlePick = nil
@@ -5887,7 +5900,11 @@ class PlayerViewModel {
                 // entirely if the caller already passed an explicit
                 // subtitle index — manual override always wins.
                 if !self.hasExplicitSubtitleChoice {
-                    self.prefsForCurrentItem = self.settings.subtitleMatchesSystemAppearance
+                    let followsSystem = self.subtitleSelectionFollowsSystem(
+                        prepared.watchDetail,
+                        prepared.selectedVersion
+                    )
+                    self.prefsForCurrentItem = followsSystem
                         ? self.systemCaptionPrefsSnapshot()
                         : self.serverSubtitlePrefsSnapshot(prepared.watchDetail)
                 }
@@ -7397,8 +7414,17 @@ class PlayerViewModel {
     @discardableResult
     func adoptReplannedVersion(_ version: FileVersion) -> PlayerMarkerTimeline? {
         let fileChanged = version.fileId != currentSelectedVersion?.fileId
+        let followedSystem = subtitleSelectionFollowsSystem
         currentSelectedVersion = version
         guard fileChanged else { return nil }
+        // Whether the saved pick or the device policy chooses depends on the
+        // file; a replan rollback restores the snapshot this replaces.
+        if !hasExplicitSubtitleChoice, subtitleSelectionFollowsSystem != followedSystem {
+            prefsForCurrentItem = subtitleSelectionFollowsSystem
+                ? systemCaptionPrefsSnapshot()
+                : currentWatchDetail.map(serverSubtitlePrefsSnapshot)
+            prefsResolvedForCurrentItem = false
+        }
         let replaced = markerTimeline
         applyMarkerTimeline(PlayerMarkerTimeline(version: version))
         return replaced
@@ -7781,7 +7807,7 @@ class PlayerViewModel {
     /// the pass sees the new plan. System-caption mode re-runs through
     /// `reapplySystemSubtitlePolicy` instead.
     private func reopenAutoSubtitlePolicyForAudioChange() {
-        guard !settings.subtitleMatchesSystemAppearance, !hasExplicitSubtitleChoice else { return }
+        guard !subtitleSelectionFollowsSystem, !hasExplicitSubtitleChoice else { return }
         prefsResolvedForCurrentItem = false
     }
 
@@ -7794,6 +7820,7 @@ class PlayerViewModel {
         let pendingSidecarSubtitleTrackId: Int64?
         let pendingServerRenderedSubtitleTrackId: Int64?
         let hasExplicitSubtitleChoice: Bool
+        let subtitlePickedDuringPlayback: Bool
     }
 
     private func captureSubtitleSelection() -> SubtitleSelectionRollback {
@@ -7803,7 +7830,8 @@ class PlayerViewModel {
             pendingSubtitleFfIndex: pendingSubtitleFfIndex,
             pendingSidecarSubtitleTrackId: pendingSidecarSubtitleTrackId,
             pendingServerRenderedSubtitleTrackId: pendingServerRenderedSubtitleTrackId,
-            hasExplicitSubtitleChoice: hasExplicitSubtitleChoice
+            hasExplicitSubtitleChoice: hasExplicitSubtitleChoice,
+            subtitlePickedDuringPlayback: subtitlePickedDuringPlayback
         )
     }
 
@@ -7813,6 +7841,7 @@ class PlayerViewModel {
         pendingSidecarSubtitleTrackId = prior.pendingSidecarSubtitleTrackId
         pendingServerRenderedSubtitleTrackId = prior.pendingServerRenderedSubtitleTrackId
         hasExplicitSubtitleChoice = prior.hasExplicitSubtitleChoice
+        subtitlePickedDuringPlayback = prior.subtitlePickedDuringPlayback
         if selectedSecondarySubtitleId != prior.selectedSecondarySubtitleId {
             selectedSecondarySubtitleId = prior.selectedSecondarySubtitleId
             applySecondarySubtitleTrackSelection(prior.selectedSecondarySubtitleId)
@@ -7825,6 +7854,7 @@ class PlayerViewModel {
     func selectSubtitle(_ track: PlayerTrack, savesPreference: Bool = true) {
         let prior = captureSubtitleSelection()
         hasExplicitSubtitleChoice = true
+        subtitlePickedDuringPlayback = true
         pendingSubtitleFfIndex = nil
         pendingSidecarSubtitleTrackId = nil
         pendingServerRenderedSubtitleTrackId = nil
@@ -7890,6 +7920,7 @@ class PlayerViewModel {
     func disableSubtitles(savesPreference: Bool = true) {
         let prior = captureSubtitleSelection()
         hasExplicitSubtitleChoice = true
+        subtitlePickedDuringPlayback = true
         pendingSubtitleFfIndex = -1
         pendingSidecarSubtitleTrackId = nil
         pendingServerRenderedSubtitleTrackId = nil
@@ -9941,6 +9972,13 @@ class PlayerViewModel {
         // Track lists and V3 plans are per-load; a request that crossed a
         // reload seam names a language against inventory that no longer exists.
         guard epoch == aetherPlaybackController.activeLoadEpoch else { return }
+        // The viewer's own pick, in this player or saved for the title,
+        // outranks the system's ask.
+        guard !hasExplicitSubtitleChoice,
+              !SubtitleAutoResolver.savedPickApplies(
+                  currentWatchDetail?.effectiveSubtitleTrackSignature,
+                  to: currentSelectedVersion?.subtitleTracks ?? []
+              ) else { return }
         guard let language = request.language, !language.isEmpty else { return }
         guard !subtitleTracks.isEmpty else { return }
 
@@ -9968,8 +10006,23 @@ class PlayerViewModel {
         applyAutoSubtitle(.select(track))
     }
 
+    /// Whether the device's caption policy chooses the subtitle for a load:
+    /// Use Device Settings is on and the viewer has no saved pick for the
+    /// title that `version` offers. A saved pick outranks the device policy;
+    /// caption appearance follows the setting alone.
+    private func subtitleSelectionFollowsSystem(_ watchDetail: WatchDetail?, _ version: FileVersion?) -> Bool {
+        settings.subtitleMatchesSystemAppearance && !SubtitleAutoResolver.savedPickApplies(
+            watchDetail?.effectiveSubtitleTrackSignature,
+            to: version?.subtitleTracks ?? []
+        )
+    }
+
+    private var subtitleSelectionFollowsSystem: Bool {
+        subtitleSelectionFollowsSystem(currentWatchDetail, currentSelectedVersion)
+    }
+
     private func reapplySystemSubtitlePolicy() {
-        guard settings.subtitleMatchesSystemAppearance, !hasExplicitSubtitleChoice else { return }
+        guard subtitleSelectionFollowsSystem, !hasExplicitSubtitleChoice else { return }
         subtitleOrderingLanguage = settings.subtitleSystemSelectionPreferences
             .preferredLanguages.first
         prefsForCurrentItem = systemCaptionPrefsSnapshot()

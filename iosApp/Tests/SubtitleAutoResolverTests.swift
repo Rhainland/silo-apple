@@ -405,6 +405,52 @@ final class SubtitleAutoResolverTests: XCTestCase {
         XCTAssertEqual(result, .select(external))
     }
 
+    /// A remembered track's language outranks its title, codec, and flags: a
+    /// Danish SDH pick titled like the codec doesn't land on an English SDH
+    /// track with the same title when a Danish track exists.
+    func testSignatureLanguageOutranksMatchingTitleAndFlags() {
+        let englishSDH = track(id: 1, lang: "en", hearingImpaired: true, title: "SUBRIP")
+        let danishForced = track(id: 2, lang: "da", forced: true, title: "Forced", codec: "ass")
+        let result = SubtitleAutoResolver.resolve(inputs(
+            preferredLanguage: "da",
+            mode: .always,
+            showForced: false,
+            tracks: [englishSDH, danishForced],
+            audioLanguage: "en",
+            signature: SubtitleTrackSignature(
+                source: "embedded",
+                language: "da",
+                codec: "subrip",
+                label: "SUBRIP",
+                forced: false,
+                hearingImpaired: true
+            )
+        ))
+        XCTAssertEqual(result, .select(danishForced))
+    }
+
+    /// A title shared by tracks in other languages (here the codec name)
+    /// can't stand in for the remembered language.
+    func testSignatureTitleDoesNotSelectATrackInAnotherLanguage() {
+        let english = track(id: 1, lang: "en", title: "SUBRIP")
+        let result = SubtitleAutoResolver.resolve(inputs(
+            preferredLanguage: "da",
+            mode: .always,
+            showForced: false,
+            tracks: [english],
+            audioLanguage: "ja",
+            signature: SubtitleTrackSignature(
+                source: "embedded",
+                language: "da",
+                codec: "subrip",
+                label: "SUBRIP",
+                forced: false,
+                hearingImpaired: false
+            )
+        ))
+        XCTAssertNotEqual(result, .select(english))
+    }
+
     // MARK: - Mode off with forced subtitles
 
     func testModeOffWithShowForcedSelectsTheForcedTrackInTheAudioLanguage() {

@@ -227,6 +227,30 @@ struct SubtitleAutoResolver {
         return inputs.disableWhenNoLanguageMatch ? .disable : .noChange
     }
 
+    /// Whether a subtitle the viewer picked for this title (the server's
+    /// `effective_subtitle_track_signature`, which only a saved pick sets)
+    /// can play on a file with `tracks`. A saved pick outranks the device's
+    /// caption policy, so with Use Device Settings on this decides which of
+    /// the two chooses the subtitle. A pick in a language the file doesn't
+    /// offer leaves the choice to the device: a title such as "SUBRIP" names
+    /// the codec, not the track, so it can't stand in for the language.
+    static func savedPickApplies(
+        _ signature: SubtitleTrackSignature?,
+        to tracks: [SubtitleTrack]
+    ) -> Bool {
+        guard let signature else { return false }
+        if let language = signature.language, !language.isEmpty {
+            return tracks.contains { track in
+                guard let trackLanguage = track.language, !trackLanguage.isEmpty else { return false }
+                return languagesMatch(trackLanguage, language)
+            }
+        }
+        guard let label = signature.label, !label.isEmpty else { return false }
+        // The label was saved from `title ?? embeddedTitle`, and the player
+        // names catalog tracks the same way.
+        return tracks.contains { ($0.title ?? $0.embeddedTitle)?.localizedCaseInsensitiveContains(label) == true }
+    }
+
     // MARK: - Matching helpers
 
     /// Score-based signature match. Higher score = better. Returns the
@@ -240,6 +264,13 @@ struct SubtitleAutoResolver {
     ) -> PlayerTrack? {
         var best: (PlayerTrack, Int)?
         for track in tracks {
+            // A track in another known language can't be the remembered one,
+            // whatever its title or flags share with it.
+            if let sigLang = sig.language, !sigLang.isEmpty,
+               let trackLang = track.lang, !trackLang.isEmpty,
+               !languagesMatch(trackLang, sigLang) {
+                continue
+            }
             var score = 0
             var strongSignal = false
             if let sigLang = sig.language, !sigLang.isEmpty,
