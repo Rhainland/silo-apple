@@ -139,8 +139,9 @@ final class ContentProvider: TVTopShelfContentProvider {
         using http: TopShelfHTTPClient,
         imageSizeQuery: [String: String]
     ) async -> EpisodePosters {
+        // Cards that carry their season or series poster need no lookup.
         let seriesIds = Set(items.compactMap { item -> String? in
-            guard item.type == "episode" else { return nil }
+            guard item.type == "episode", item.cardShowPosterUrl == nil else { return nil }
             return item.seriesId
         })
         guard !seriesIds.isEmpty else { return EpisodePosters() }
@@ -283,7 +284,8 @@ final class ContentProvider: TVTopShelfContentProvider {
     }
 
     /// For episodes, prefer the season poster; fall back to the series
-    /// poster; only use the item's own `posterUrl` as a last resort,
+    /// poster (from the card when the server sends them, else looked up);
+    /// only use the item's own `posterUrl` as a last resort,
     /// because for episodes the server emits a 16:9 still which looks
     /// bad in a 2:3 poster tile, and which the profile may hide. Movies
     /// use their own poster directly.
@@ -292,6 +294,9 @@ final class ContentProvider: TVTopShelfContentProvider {
         seriesPosters: EpisodePosters,
         hidesEpisodeStills: Bool
     ) -> String? {
+        if item.type == "episode", let poster = item.cardShowPosterUrl {
+            return poster
+        }
         if item.type == "episode",
            let poster = seriesPosters.lookup(
                seriesId: item.seriesId,

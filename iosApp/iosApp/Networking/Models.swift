@@ -42,6 +42,14 @@ struct BrowseItem: Codable, Identifiable, Hashable {
     let posterThumbhash: String?
     @ArtworkURL var backdropUrl: String? = nil
     let backdropThumbhash: String?
+    /// Episode cards from servers with `episode_parent_artwork`: the series'
+    /// and season's own art, never an episode still. Absent otherwise.
+    @ArtworkURL var seriesPosterUrl: String? = nil
+    var seriesPosterThumbhash: String? = nil
+    @ArtworkURL var seriesBackdropUrl: String? = nil
+    var seriesBackdropThumbhash: String? = nil
+    @ArtworkURL var seasonPosterUrl: String? = nil
+    var seasonPosterThumbhash: String? = nil
     let addedAt: String?
     let releaseDate: String?
     let lastAirDate: String?
@@ -144,6 +152,14 @@ struct SectionItem: Codable, Identifiable, Hashable {
     let posterThumbhash: String?
     @ArtworkURL var backdropUrl: String? = nil
     let backdropThumbhash: String?
+    /// Episode cards from servers with `episode_parent_artwork`: the series'
+    /// and season's own art, never an episode still. Absent otherwise.
+    @ArtworkURL var seriesPosterUrl: String? = nil
+    var seriesPosterThumbhash: String? = nil
+    @ArtworkURL var seriesBackdropUrl: String? = nil
+    var seriesBackdropThumbhash: String? = nil
+    @ArtworkURL var seasonPosterUrl: String? = nil
+    var seasonPosterThumbhash: String? = nil
     @ArtworkURL var logoUrl: String? = nil
     let userState: MediaItemUserState?
     let overlaySummary: OverlaySummary?
@@ -190,6 +206,12 @@ struct SectionItem: Codable, Identifiable, Hashable {
         posterThumbhash = item.posterThumbhash
         backdropUrl = item.backdropUrl
         backdropThumbhash = item.backdropThumbhash
+        seriesPosterUrl = item.seriesPosterUrl
+        seriesPosterThumbhash = item.seriesPosterThumbhash
+        seriesBackdropUrl = item.seriesBackdropUrl
+        seriesBackdropThumbhash = item.seriesBackdropThumbhash
+        seasonPosterUrl = item.seasonPosterUrl
+        seasonPosterThumbhash = item.seasonPosterThumbhash
         logoUrl = nil
         userState = item.userState
         overlaySummary = item.overlaySummary
@@ -334,6 +356,12 @@ extension BrowseItem {
             posterThumbhash: item.posterThumbhash,
             backdropUrl: item.backdropUrl,
             backdropThumbhash: item.backdropThumbhash,
+            seriesPosterUrl: item.seriesPosterUrl,
+            seriesPosterThumbhash: item.seriesPosterThumbhash,
+            seriesBackdropUrl: item.seriesBackdropUrl,
+            seriesBackdropThumbhash: item.seriesBackdropThumbhash,
+            seasonPosterUrl: item.seasonPosterUrl,
+            seasonPosterThumbhash: item.seasonPosterThumbhash,
             addedAt: nil,
             releaseDate: nil,
             lastAirDate: nil,
@@ -346,6 +374,43 @@ extension BrowseItem {
 extension SectionItem {
     var isAudiobook: Bool { SiloMediaType.isAudiobook(type) }
 }
+
+/// Series and season art an episode card carries next to its own, from servers
+/// that advertise `episode_parent_artwork`. None of it is an episode still, so
+/// spoiler protection never hides it.
+protocol EpisodeParentArtwork {
+    var type: String { get }
+    var seriesPosterUrl: String? { get }
+    var seriesPosterThumbhash: String? { get }
+    var seriesBackdropUrl: String? { get }
+    var seriesBackdropThumbhash: String? { get }
+    var seasonPosterUrl: String? { get }
+    var seasonPosterThumbhash: String? { get }
+}
+
+extension EpisodeParentArtwork {
+    /// The series backdrop a hero draws for an episode in place of the
+    /// episode's own `backdrop_url`, which is usually a small still. Nil for
+    /// other types and on older servers, which keep the existing behavior.
+    var episodeSeriesBackdrop: (url: String, thumbhash: String?)? {
+        guard SiloMediaType.isEpisode(type),
+              let url = seriesBackdropUrl, !url.isEmpty else { return nil }
+        return (url, seriesBackdropThumbhash)
+    }
+
+    /// Portrait art for an episode: its season's poster, else its series'.
+    var episodeShowPoster: (url: String, thumbhash: String?)? {
+        guard SiloMediaType.isEpisode(type) else { return nil }
+        if let url = seasonPosterUrl, !url.isEmpty { return (url, seasonPosterThumbhash) }
+        if let url = seriesPosterUrl, !url.isEmpty { return (url, seriesPosterThumbhash) }
+        return nil
+    }
+}
+
+extension SectionItem: EpisodeParentArtwork {}
+extension BrowseItem: EpisodeParentArtwork {}
+extension ItemDetail: EpisodeParentArtwork {}
+extension APIv2CatalogRead.CatalogItemDetail: EpisodeParentArtwork {}
 
 struct ResolvedSection: Codable, Identifiable {
     let id: String
@@ -481,6 +546,14 @@ struct ItemDetail: Codable {
     let posterThumbhash: String?
     @ArtworkURL var backdropUrl: String? = nil
     let backdropThumbhash: String?
+    /// Episode cards from servers with `episode_parent_artwork`: the series'
+    /// and season's own art, never an episode still. Absent otherwise.
+    @ArtworkURL var seriesPosterUrl: String? = nil
+    var seriesPosterThumbhash: String? = nil
+    @ArtworkURL var seriesBackdropUrl: String? = nil
+    var seriesBackdropThumbhash: String? = nil
+    @ArtworkURL var seasonPosterUrl: String? = nil
+    var seasonPosterThumbhash: String? = nil
     @ArtworkURL var logoUrl: String? = nil
     let seasonCount: Int?
     let seriesId: String?

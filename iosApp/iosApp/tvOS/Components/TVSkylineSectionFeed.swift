@@ -293,7 +293,8 @@ struct TVSkylineSectionFeed: View {
     }
 
     /// Section-level backdrops of the cards on either side of `item` in its
-    /// row. Only direct backdrops qualify: episodes and items without one
+    /// row: a card's own backdrop, or an episode's series backdrop when the
+    /// card carries one. Other episodes and items without a backdrop
     /// resolve their hero art from detail enrichment, which is a metadata
     /// request the marquee already rate-limits and must not be duplicated
     /// here for cards the user may never rest on.
@@ -307,6 +308,7 @@ struct TVSkylineSectionFeed: View {
         return window.compactMap { neighborIndex -> String? in
             guard neighborIndex != index else { return nil }
             let neighbor = section.items[neighborIndex]
+            if let seriesBackdrop = neighbor.episodeSeriesBackdrop { return seriesBackdrop.url }
             guard neighbor.type.lowercased() != "episode",
                   let url = neighbor.backdropUrl, !url.isEmpty else { return nil }
             return url

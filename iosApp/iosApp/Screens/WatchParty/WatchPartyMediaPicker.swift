@@ -106,13 +106,20 @@ private struct WatchPartyMediaChoice: Hashable {
         if let seriesId = item.seriesId, !seriesId.isEmpty {
             // The series page and its episodes reuse this artwork, so leave
             // out anything the server marks as this episode's still.
+            // The series' own art comes first when the card carries it.
             let posterIsStill = item.posterIsEpisodeStill == true
             let backdropIsStill = item.backdropIsEpisodeStill == true
+            let seriesPoster = item.seriesPosterUrl.flatMap { $0.isEmpty ? nil : $0 }
+            let seriesBackdrop = item.episodeSeriesBackdrop
             seriesLink = BrowseItem(seriesId: seriesId, title: item.seriesTitle ?? item.title,
-                                    posterUrl: posterIsStill ? nil : item.posterUrl,
-                                    posterThumbhash: posterIsStill ? nil : item.posterThumbhash,
-                                    backdropUrl: backdropIsStill ? nil : item.backdropUrl,
-                                    backdropThumbhash: backdropIsStill ? nil : item.backdropThumbhash)
+                                    posterUrl: seriesPoster ?? (posterIsStill ? nil : item.posterUrl),
+                                    posterThumbhash: seriesPoster != nil
+                                        ? item.seriesPosterThumbhash
+                                        : (posterIsStill ? nil : item.posterThumbhash),
+                                    backdropUrl: seriesBackdrop?.url ?? (backdropIsStill ? nil : item.backdropUrl),
+                                    backdropThumbhash: seriesBackdrop != nil
+                                        ? seriesBackdrop?.thumbhash
+                                        : (backdropIsStill ? nil : item.backdropThumbhash))
         }
         if let seriesTitle = item.seriesTitle, let season = item.seasonNumber, let episode = item.episodeNumber {
             lobbySubtitle = "\(seriesTitle) · S\(season):E\(episode)"

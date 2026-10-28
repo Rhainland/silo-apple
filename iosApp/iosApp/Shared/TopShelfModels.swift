@@ -35,6 +35,9 @@ struct TopShelfItem: Decodable {
     let progressUpdatedAt: String?
     @ArtworkURL var posterUrl: String?
     @ArtworkURL var backdropUrl: String?
+    /// Episode cards from servers with `episode_parent_artwork`.
+    @ArtworkURL var seasonPosterUrl: String?
+    @ArtworkURL var seriesPosterUrl: String?
     let posterIsEpisodeStill: Bool?
     let userState: TopShelfUserState?
 
@@ -47,6 +50,13 @@ struct TopShelfItem: Decodable {
         let isUntouched = userState?.played != true && (positionSeconds ?? 0) <= 0
         if hidingEpisodeStills, isEpisode, isUntouched, posterIsEpisodeStill != false { return nil }
         return posterUrl
+    }
+
+    /// The season's poster, else the series', when the card carries them.
+    var cardShowPosterUrl: String? {
+        if let url = seasonPosterUrl, !url.isEmpty { return url }
+        if let url = seriesPosterUrl, !url.isEmpty { return url }
+        return nil
     }
 
     /// 0.0...1.0 or nil when we don't have both position and duration.

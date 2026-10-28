@@ -57,6 +57,13 @@ enum APIv2CatalogRead {
         let seasonCount: Int64?
         let seasonNumber: Int64?
         let seriesId: String?
+        /// Episode detail from servers with `episode_parent_artwork`.
+        @ArtworkURL var seriesPosterUrl: String?
+        let seriesPosterThumbhash: String?
+        @ArtworkURL var seriesBackdropUrl: String?
+        let seriesBackdropThumbhash: String?
+        @ArtworkURL var seasonPosterUrl: String?
+        let seasonPosterThumbhash: String?
         let seriesTitle: String?
         let showStatus: String?
         let sortTitle: String?
