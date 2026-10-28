@@ -106,6 +106,13 @@ struct SearchView: View {
         .onChange(of: audiobooksAvailable) {
             refreshAudiobookAvailability(applySearch: true)
         }
+        #if os(tvOS)
+        // The libraries cache is not observable. Search can open before it
+        // fills (a Siri search at launch), so re-check once it lands.
+        .onReceive(NotificationCenter.default.publisher(for: .userLibrariesDidRefresh)) { _ in
+            refreshAudiobookAvailability(applySearch: true)
+        }
+        #endif
     }
 
     /// Whether audiobooks take part in search. On tvOS that is when the top
