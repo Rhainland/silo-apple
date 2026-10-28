@@ -1423,6 +1423,9 @@ struct TVMainTabView: View {
             RequestDetailView(mediaType: mediaType, tmdbId: tmdbId)
         case .myRequests:
             MyRequestsView()
+        case .requestDiscoverRow:
+            // The tvOS hub has no See all link for Discover rows.
+            EmptyView()
         case .search:
             SearchView(usesTVTopMenuInset: false, seededQuery: $siriSearchRequest)
         case .settings:

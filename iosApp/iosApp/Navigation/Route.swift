@@ -61,6 +61,10 @@ enum Route: Hashable {
     /// The signed-in user's own request queue, bucketed by state.
     case myRequests
 
+    /// Every title of one row of the server's Discover layout (its See all
+    /// page). iOS and macOS only; tvOS shows the rows on its hub.
+    case requestDiscoverRow(key: String, title: String)
+
     /// Offline playback of a completed download. Distinct from `.player`
     /// so the player reads the local file + stored manifest instead of
     /// starting a server session.

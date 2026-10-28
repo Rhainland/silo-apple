@@ -1237,6 +1237,8 @@ private extension Route {
             return "requestDetail"
         case .myRequests:
             return "myRequests"
+        case .requestDiscoverRow:
+            return "requestDiscoverRow"
         case .offlinePlayer:
             return "offlinePlayer"
         case .offlineSeriesBrowse:
