@@ -284,6 +284,7 @@ targets:
       - path: NotificationService
       - path: iosApp/Notifications/ApplePushDisplayMetadata.swift
       - path: iosApp/Notifications/ApplePushDisplayTargets.swift
+      - path: iosApp/Shared/InsecureRedirectGuard.swift
       - path: iosApp/Shared/KeychainAudience.swift
       - path: iosApp/Shared/SharedStorage.swift
     configFiles:

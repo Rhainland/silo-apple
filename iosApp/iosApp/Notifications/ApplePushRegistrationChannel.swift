@@ -26,7 +26,9 @@ enum ApplePushSavedServerError: Error, Equatable {
 /// on their own URL session, outside `HTTPClient`'s identity gate, which
 /// belongs to the active server.
 struct ApplePushSavedServerClient: Sendable {
-    private static let defaultSession = URLSession(configuration: .ephemeral)
+    private static let defaultSession = URLSession(configuration: .ephemeral,
+                                                   delegate: InsecureRedirectRefusingDelegate.shared,
+                                                   delegateQueue: nil)
     private static let requestTimeout: TimeInterval = 15
 
     var http: HTTPClient = .shared

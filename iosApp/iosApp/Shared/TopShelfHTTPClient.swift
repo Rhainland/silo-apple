@@ -75,9 +75,15 @@ struct TopShelfHTTPClient {
         }
     }
 
+    /// Refuses HTTPS-to-HTTP redirects, which would resend the bearer and the
+    /// refresh token unencrypted.
+    static let defaultSession = URLSession(configuration: .default,
+                                           delegate: InsecureRedirectRefusingDelegate.shared,
+                                           delegateQueue: nil)
+
     init(defaults: SharedDefaults = .shared,
          keychain: SharedKeychain = SharedKeychain(),
-         session: URLSession = .shared) {
+         session: URLSession = TopShelfHTTPClient.defaultSession) {
         self.defaults = defaults
         self.accountKeychain = keychain.withAudience(.userIndependent)
         self.profileKeychain = keychain.withAudience(.currentUser)

@@ -1300,7 +1300,9 @@ struct APIv2Client: Sendable {
         configuration.timeoutIntervalForRequest = 10
         configuration.timeoutIntervalForResource = 15
         configuration.waitsForConnectivity = false
-        return URLSession(configuration: configuration)
+        return URLSession(configuration: configuration,
+                          delegate: InsecureRedirectRefusingDelegate.shared,
+                          delegateQueue: nil)
     }()
 
     /// Tells `serverURL` to drop this device's Apple push registration
