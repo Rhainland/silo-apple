@@ -417,7 +417,9 @@ actor HTTPClient {
             request.timeoutInterval = 5
             // Removing the server or signing in again cancels ordinary traffic.
             // Let this one captured revocation finish independently.
-            let revocationSession = URLSession(configuration: session.configuration)
+            let revocationSession = URLSession(configuration: session.configuration,
+                                               delegate: InsecureRedirectRefusingDelegate.shared,
+                                               delegateQueue: nil)
             defer { revocationSession.invalidateAndCancel() }
             _ = try await revocationSession.data(for: request)
         } catch {
