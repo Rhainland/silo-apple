@@ -23,11 +23,12 @@ struct PhoneBoxSetRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text(boxSet.boxSet.title)
-                .siloScaledFont(size: 22, weight: .semibold, relativeTo: .title2)
-                .foregroundColor(.siloOnSurface)
+            PhoneSectionHeader(title: boxSet.boxSet.title)
                 .padding(.horizontal, SiloTheme.safePadding)
             cards
+                // Films open in the box set's library, as on tvOS and the
+                // box set page, not in whichever library opened this movie.
+                .environment(\.browseLibraryId, boxSet.boxSet.appLibraryId)
                 .padding(.horizontal, SiloTheme.safePadding)
         }
         .frame(maxWidth: .infinity, alignment: .leading)

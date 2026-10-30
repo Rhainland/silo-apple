@@ -17,7 +17,7 @@ class ItemDetailViewModel {
 
     var detail: ItemDetail?
     var error: ErrorState?
-    /// The movie's box set, drawn as a row under the hero. Nil while it
+    /// The movie's box set, drawn as a row after the extras. Nil while it
     /// loads, for a movie in no box set, and for anything but a movie.
     private(set) var boxSet: CatalogBoxSetDetail?
     @ObservationIgnored private var boxSetTask: Task<Void, Never>?
@@ -391,7 +391,7 @@ class ItemDetailViewModel {
     }
 
     /// Reads the movie's box set beside the page's own refresh, so watched
-    /// counts follow the player and Mark as Watched. A failed reread keeps
+    /// badges follow the player and Mark as Watched. A failed reread keeps
     /// the row on screen; the server answering "no box set" removes it.
     private func refreshBoxSet(for item: ItemDetail) {
         guard item.type == "movie" else {
@@ -1610,7 +1610,7 @@ class ItemDetailViewModel {
             if isSeries {
                 await refreshWatchedSeries(seriesId: contentId)
             } else if let detail, detail.contentId == contentId {
-                // The row's watched count and badges include this movie.
+                // The row's watched badges include this movie.
                 refreshBoxSet(for: detail)
             }
         } else {
