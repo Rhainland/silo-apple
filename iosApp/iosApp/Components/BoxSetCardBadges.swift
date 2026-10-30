@@ -101,3 +101,55 @@ struct BoxSetCardSleeves: View {
 
     private var radius: CGFloat { SiloTheme.cornerRadius }
 }
+
+/// Marks the movie whose page shows its box set row: an outline around the
+/// poster and a THIS FILM label in its bottom-leading corner, like the
+/// episode rail's current episode. Size it to the poster.
+struct BoxSetCurrentFilmMarker: View {
+    /// tvOS hides the outline while the card is focused; the focus ring
+    /// takes its place.
+    var showsOutline = true
+
+    var body: some View {
+        ZStack(alignment: .bottomLeading) {
+            RoundedRectangle(cornerRadius: SiloTheme.cornerRadius)
+                .strokeBorder(Color.white.opacity(showsOutline ? 0.8 : 0), lineWidth: lineWidth)
+            Text("This film")
+                .textCase(.uppercase)
+                .font(.system(size: labelSize, weight: .heavy))
+                .tracking(labelSize * 0.08)
+                .foregroundStyle(Color.black)
+                .padding(.horizontal, labelSize * 0.55)
+                .padding(.vertical, labelSize * 0.25)
+                .background(Capsule().fill(Color.white))
+                .padding(inset)
+        }
+        .lineLimit(1)
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+
+    private var labelSize: CGFloat {
+        #if os(tvOS)
+        16
+        #else
+        10
+        #endif
+    }
+
+    private var lineWidth: CGFloat {
+        #if os(tvOS)
+        4
+        #else
+        2
+        #endif
+    }
+
+    private var inset: CGFloat {
+        #if os(tvOS)
+        12
+        #else
+        7
+        #endif
+    }
+}

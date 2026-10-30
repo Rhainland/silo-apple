@@ -20,6 +20,19 @@ extension APIv2Client {
         return detail
     }
 
+    /// `getCatalogItemBoxSet`: the box set the movie `id` belongs to, with its
+    /// movies the viewer can see in release order, or nil when it is in none
+    /// the viewer sees. `libraryId` is the library the movie was opened from.
+    func catalogItemBoxSet(id: String, libraryId: String?, artwork: [String: String],
+                           auth: CapturedOrdinaryRequestAuth) async throws -> CatalogBoxSetDetail? {
+        var query = artwork
+        if let libraryId { query["library_id"] = libraryId }
+        let raw = try await boxSetRead(path: "/api/v2/catalog/items/\(try catalogPathSegment(id))/box-set",
+                                       query: query, auth: auth)
+        return try HTTPClient.makeJSONDecoder(artworkServerURL: raw.url)
+            .decode(CatalogItemBoxSet.self, from: raw.data).boxSet
+    }
+
     /// `searchCatalogBoxSets`: box sets whose name, or two or more of whose
     /// movies' titles, match `query`, best match first.
     func searchCatalogBoxSets(query: String, limit: Int,

@@ -118,6 +118,9 @@ struct MediaCard: View {
     /// the poster. Pass `progress` for its watched share and no `contentId`,
     /// so a tap runs `action` and the card has no title menu.
     var boxSet: CatalogBoxSet? = nil
+    /// Outlines the poster and labels it THIS FILM: the movie whose page
+    /// shows this card in its box set row.
+    var marksCurrentFilm = false
 
     @State private var personalState = MediaCardPersonalState()
     @EnvironmentObject private var overlayStore: OverlayPrefsStore
@@ -366,6 +369,11 @@ struct MediaCard: View {
         // One mask for every layer, so overlays and the progress bar stay
         // inside the rounded corners.
         .clipShape(RoundedRectangle(cornerRadius: SiloTheme.cornerRadius))
+        .overlay {
+            if marksCurrentFilm {
+                BoxSetCurrentFilmMarker()
+            }
+        }
         .background(alignment: .top) {
             if boxSet != nil {
                 BoxSetCardSleeves(width: cardWidth)
@@ -377,12 +385,13 @@ struct MediaCard: View {
 
     private var accessibilityDescription: String {
         if let boxSet { return boxSet.accessibilityLabel }
-        return mediaCardAccessibilityLabel(
+        let label = mediaCardAccessibilityLabel(
             title: title,
             episodeLabel: episodeAccessibilityLabel,
             year: year,
             isWatched: isPlayed
         )
+        return marksCurrentFilm ? label + ", This film" : label
     }
 
     @ViewBuilder

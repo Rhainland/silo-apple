@@ -104,6 +104,29 @@ final class BoxSetTests: XCTestCase {
         XCTAssertEqual(detail.factTokens, ["8 films", "2001 – 2011", "3 of 8 watched"])
     }
 
+    /// A movie page asks for the movie's box set: `{"box_set": …}` draws the
+    /// row, `{}` (a movie in no box set) draws none.
+    func testMoviePageReadsItsBoxSetOrNone() async throws {
+        let api = try await api()
+        stub.reply(path: "/api/v2/catalog/search/capabilities", 200,
+                   #"{"revision":"r","state":"available","allowed":true,"box_sets":true}"#)
+        let path = "/api/v2/catalog/items/hp3/box-set"
+        let inSet = #"{"box_set":"# + String(harryPotter.dropLast())
+            + #","items":[\#(movie("hp1", "Philosopher's Stone", year: 2001, played: true)),\#(movie("hp3", "Prisoner of Azkaban", year: 2004, played: false))]}}"#
+        stub.sequence(path: path, [.json(200, inSet), .json(200, "{}")])
+
+        let read = try await api.itemBoxSet(contentId: "hp3", libraryId: 1)
+        let found = try XCTUnwrap(read)
+        XCTAssertEqual(stub.requests.last { $0.path == path }?.query["library_id"], "1")
+        XCTAssertEqual(found.boxSet.id, "1241")
+        XCTAssertEqual(found.items.map(\.contentId), ["hp1", "hp3"])
+        XCTAssertEqual(found.boxSet.rowCaption, "Box set · 3 of 8 watched")
+
+        let none = try await api.itemBoxSet(contentId: "hp3", libraryId: nil)
+        XCTAssertNil(none)
+        XCTAssertNil(stub.requests.last { $0.path == path }?.query["library_id"])
+    }
+
     func testNextMovieStartsOverOnceEveryMovieIsPlayed() {
         let set = CatalogBoxSet(id: "1", libraryId: "1", title: "Trilogy", movieCount: 2, playedCount: 2)
         let detail = CatalogBoxSetDetail(boxSet: set, items: [

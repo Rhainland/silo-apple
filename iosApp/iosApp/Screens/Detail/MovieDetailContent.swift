@@ -8,6 +8,8 @@ struct MovieDetailContent<BelowOverview: View>: View {
     let isFavorite: Bool
     let inWatchlist: Bool
     let isWatched: Bool
+    /// The box set the movie belongs to; nil draws no row.
+    let boxSet: CatalogBoxSetDetail?
     let selectedVersionFileId: Int?
     let selectedAudioTrackIndex: Int?
     let selectedSubtitleTrackIndex: Int?
@@ -284,6 +286,10 @@ struct MovieDetailContent<BelowOverview: View>: View {
 
     private var belowFold: some View {
         VStack(alignment: .leading, spacing: 36) {
+            if let boxSet {
+                PhoneBoxSetRow(boxSet: boxSet, currentContentId: detail.contentId)
+            }
+
             if let cast = detail.cast, !cast.isEmpty {
                 castSection(cast: cast)
             }

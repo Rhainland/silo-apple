@@ -9,6 +9,8 @@ struct TVMovieDetailView: View {
     let isFavorite: Bool
     let inWatchlist: Bool
     let isWatched: Bool
+    /// The box set the movie belongs to; nil draws no row.
+    var boxSet: CatalogBoxSetDetail? = nil
     let selectedVersionFileId: Int?
     let selectedAudioTrackIndex: Int?
     let selectedSubtitleTrackIndex: Int?
@@ -97,6 +99,9 @@ struct TVMovieDetailView: View {
                         .id(heroScrollId)
 
                         VStack(alignment: .leading, spacing: TVDetailLayout.bodySectionSpacing) {
+                            if let boxSet {
+                                TVBoxSetRow(boxSet: boxSet, currentContentId: detail.contentId)
+                            }
                             if let cast = detail.cast, !cast.isEmpty {
                                 castSection(cast: cast)
                             }

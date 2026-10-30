@@ -50,6 +50,10 @@ struct TVMediaCard: View {
     /// watched progress over the poster. Leave `contentId` nil so the card
     /// has no title menu.
     var boxSet: CatalogBoxSet? = nil
+    /// Outlines the poster and labels it THIS FILM: the movie whose page
+    /// shows this card in its box set row. The focus ring replaces the
+    /// outline while focused.
+    var marksCurrentFilm = false
 
     enum FocusTreatment {
         case nativeCard
@@ -230,6 +234,11 @@ struct TVMediaCard: View {
                 watchedBadge
                     .padding(12)
             }
+
+            if marksCurrentFilm {
+                BoxSetCurrentFilmMarker(showsOutline: !isFocused)
+                    .frame(width: resolvedCardWidth, height: cardHeight)
+            }
         }
         .frame(width: resolvedCardWidth, height: cardHeight)
     }
@@ -281,6 +290,9 @@ struct TVMediaCard: View {
         }
         if isPlayed {
             components.append("Watched")
+        }
+        if marksCurrentFilm {
+            components.append("This film")
         }
         return components.joined(separator: ", ")
     }
