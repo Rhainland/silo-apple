@@ -53,10 +53,13 @@ struct TVMovieDetailView: View {
     /// True while focus sits anywhere in the hero's primary action row —
     /// drives the scroll back to the page-entry (hero at top) framing.
     @FocusState private var actionRowFocused: Bool
-    /// Whole recommendation rail focus, used only to keep its heading and
-    /// focused poster comfortably framed during native vertical reveal.
+    /// Whole poster rail focus (box set, recommendations), used only to keep
+    /// the rail's heading and focused poster comfortably framed during native
+    /// vertical reveal.
+    @FocusState private var boxSetRailFocused: Bool
     @FocusState private var similarRailFocused: Bool
     private let heroScrollId = "detail-hero"
+    private let boxSetSectionScrollId = "detail-box-set-section"
     private let similarSectionScrollId = "detail-similar-section"
     @ObservedObject private var profilePrefsStore = ProfilePrefsStore.shared
 
@@ -105,6 +108,8 @@ struct TVMovieDetailView: View {
                             trailersSection
                             if let boxSet {
                                 TVBoxSetRow(boxSet: boxSet, currentContentId: detail.contentId)
+                                    .focused($boxSetRailFocused)
+                                    .id(boxSetSectionScrollId)
                             }
                             similarSection
                                 .focused($similarRailFocused)
@@ -122,12 +127,18 @@ struct TVMovieDetailView: View {
                     proxy: scrollProxy,
                     actionRowFocused: actionRowFocused,
                     heroId: heroScrollId,
-                    similarRailFocused: similarRailFocused,
-                    similarSectionId: similarSectionScrollId
+                    focusedPosterRailId: focusedPosterRailId
                 )
                 .tvActionPopoverHost()
             }
         }
+    }
+
+    /// The poster rail section holding focus, which the page centers.
+    private var focusedPosterRailId: String? {
+        if boxSetRailFocused { return boxSetSectionScrollId }
+        if similarRailFocused { return similarSectionScrollId }
+        return nil
     }
 
     // MARK: - Hero actions
