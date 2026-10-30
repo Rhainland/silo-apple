@@ -2,63 +2,74 @@
 import SwiftUI
 
 /// The box set a movie belongs to, on the movie page between the trailers and
-/// More Like This: its title and a View box set link, then its movies as
-/// poster cards in release order. The movie on screen is outlined and labelled
-/// THIS FILM, and the row opens scrolled to it. The page draws nothing until
-/// the box set has loaded (see `ItemDetailViewModel.boxSet`).
+/// More Like This: its title, then as many of its movies as fit across the
+/// page as poster cards in release order, ending with an Explore all card
+/// that opens the box set page. The row does not scroll (see
+/// `BoxSetRowWindow`); on an iPhone too narrow for three cards the cards
+/// shrink so two films and Explore all fit. The movie on screen is outlined
+/// and labelled THIS FILM. The page draws nothing until the box set has
+/// loaded (see `ItemDetailViewModel.boxSet`).
 struct PhoneBoxSetRow: View {
     let boxSet: CatalogBoxSetDetail
     /// The movie whose page this is.
     let currentContentId: String
 
     @Environment(AppRouter.self) private var router
+    @State private var rowWidth: CGFloat = 0
+
+    private let cardSpacing: CGFloat = 12
+    /// Two films and Explore all, so the row always shows a neighbour.
+    private static let minimumSlots = 3
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            header
-                .padding(.horizontal, SiloTheme.safePadding)
-            cards
-        }
-    }
-
-    private var header: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 12) {
             Text(boxSet.boxSet.title)
                 .siloScaledFont(size: 22, weight: .semibold, relativeTo: .title2)
                 .foregroundColor(.siloOnSurface)
-            Spacer(minLength: 8)
-            if let route = Route.boxSet(boxSet.boxSet) {
-                Button("View box set") { router.navigate(to: route) }
-                    .siloScaledFont(size: 15, weight: .semibold, relativeTo: .subheadline)
-                    .foregroundColor(.siloOnSurface)
-                    .buttonStyle(.plain)
-            }
+                .padding(.horizontal, SiloTheme.safePadding)
+            cards
+                .padding(.horizontal, SiloTheme.safePadding)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { rowWidth = $0 }
     }
 
     private var cards: some View {
-        ScrollViewReader { proxy in
-            ScrollView(.horizontal, showsIndicators: false) {
-                LazyHStack(alignment: HorizontalMediaRailLayout.cardAlignment, spacing: 12) {
-                    ForEach(boxSet.items) { movie in
-                        card(movie)
-                            .id(movie.contentId)
-                    }
-                }
-                .scrollTargetLayout()
-                .padding(.vertical, 4)
-                .phoneMediaRailBounds()
+        let route = Route.boxSet(boxSet.boxSet)
+        let layout = cardLayout
+        return HStack(alignment: HorizontalMediaRailLayout.cardAlignment, spacing: cardSpacing) {
+            ForEach(BoxSetRowWindow.films(
+                boxSet.items,
+                currentContentId: currentContentId,
+                slots: layout.slots,
+                endsWithExploreAll: route != nil
+            )) { movie in
+                card(movie, cardWidthOverride: layout.cardWidthOverride)
             }
-            .contentMargins(.horizontal, SiloTheme.safePadding, for: .scrollContent)
-            .mediaRailScrolling()
-            .onAppear {
-                guard boxSet.items.first?.contentId != currentContentId else { return }
-                proxy.scrollTo(currentContentId, anchor: .center)
+            if let route {
+                SectionExploreAllCard(
+                    size: MediaCard.artworkSize(cardWidthOverride: layout.cardWidthOverride, aspect: .poster),
+                    rowTitle: boxSet.boxSet.title,
+                    action: { router.navigate(to: route) }
+                )
             }
         }
+        .padding(.vertical, 4)
     }
 
-    private func card(_ movie: BrowseItem) -> some View {
+    /// How many cards fit across the row, and the width override that makes
+    /// them fit when the normal size leaves fewer than `minimumSlots`.
+    private var cardLayout: (slots: Int, cardWidthOverride: CGFloat?) {
+        let width = rowWidth - 2 * SiloTheme.safePadding
+        let normalWidth = MediaCard.artworkSize(cardWidthOverride: nil, aspect: .poster).width
+        let slots = BoxSetRowWindow.slots(width: width, cardWidth: normalWidth, spacing: cardSpacing)
+        guard slots < Self.minimumSlots, width > 0 else { return (slots, nil) }
+        let fitted = (width - CGFloat(Self.minimumSlots - 1) * cardSpacing) / CGFloat(Self.minimumSlots)
+        // The override is scaled by the poster-size setting like the default.
+        return (Self.minimumSlots, SiloTheme.posterCardWidth * fitted / normalWidth)
+    }
+
+    private func card(_ movie: BrowseItem, cardWidthOverride: CGFloat?) -> some View {
         let isCurrent = movie.contentId == currentContentId
         // The current film's card opens nothing: its page is already here.
         return MediaCard(
@@ -72,6 +83,7 @@ struct PhoneBoxSetRow: View {
             action: {},
             contentId: isCurrent ? nil : movie.contentId,
             aspect: .poster,
+            cardWidthOverride: cardWidthOverride,
             marksCurrentFilm: isCurrent
         )
     }

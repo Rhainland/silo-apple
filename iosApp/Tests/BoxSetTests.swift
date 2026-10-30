@@ -187,6 +187,26 @@ final class BoxSetTests: XCTestCase {
         XCTAssertNil(set(nil, nil).watchedProgress)
     }
 
+    /// A movie page's box set row shows as many films as fit beside its
+    /// Explore all card: from the first film, or slid so the film on screen
+    /// follows the one before it.
+    func testMoviePageRowShowsTheFilmOnScreen() {
+        // (current film's index, films in the set, film slots) -> first film shown
+        let cases: [(current: Int?, count: Int, slots: Int, start: Int, why: String)] = [
+            (1, 8, 2, 0, "the film on screen fits from the start"),
+            (2, 8, 2, 1, "slides to the film before the one on screen"),
+            (5, 10, 5, 4, "slides mid-set on a wider row"),
+            (7, 8, 2, 6, "the last film ends the row"),
+            (7, 8, 5, 3, "the last film ends a wider row"),
+            (2, 3, 5, 0, "every film fits"),
+            (nil, 8, 2, 0, "the film on screen is not in the set"),
+        ]
+        for c in cases {
+            XCTAssertEqual(BoxSetRowWindow.start(current: c.current, count: c.count, filmSlots: c.slots),
+                           c.start, c.why)
+        }
+    }
+
     // MARK: Search
 
     /// A Search screen model on a server that does or does not advertise
