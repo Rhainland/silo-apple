@@ -120,7 +120,6 @@ final class BoxSetTests: XCTestCase {
         XCTAssertEqual(stub.requests.last { $0.path == path }?.query["library_id"], "1")
         XCTAssertEqual(found.boxSet.id, "1241")
         XCTAssertEqual(found.items.map(\.contentId), ["hp1", "hp3"])
-        XCTAssertEqual(found.boxSet.rowCaption, "Box set · 3 of 8 watched")
 
         let none = try await api.itemBoxSet(contentId: "hp3", libraryId: nil)
         XCTAssertNil(none)

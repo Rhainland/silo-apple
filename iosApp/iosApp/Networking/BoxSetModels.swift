@@ -57,12 +57,6 @@ struct CatalogBoxSet: Codable, Hashable, Identifiable {
         return yearsText ?? filmCountText
     }
 
-    /// The muted line beside a movie page's box set row: "Box set · 2 of 8
-    /// watched", or "Box set" before the first film.
-    var rowCaption: String {
-        playedCount > 0 ? "Box set · \(playedCount) of \(movieCount) watched" : "Box set"
-    }
-
     var accessibilityLabel: String {
         var parts = [title, "Box set of \(filmCountText)"]
         if let yearsText { parts.append(yearsText) }

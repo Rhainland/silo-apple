@@ -2,9 +2,9 @@
 import SwiftUI
 
 /// The box set a movie belongs to, under the tvOS movie page's hero: its
-/// title and watched count, then its movies as poster cards in release order
-/// and a View box set card at the end. The movie on screen is outlined and
-/// labelled THIS FILM; moving down into the row lands on it, and the row
+/// title, then its movies as poster cards in release order and a View box
+/// set card at the end. The movie on screen is outlined and labelled THIS
+/// FILM; moving down into the row lands on it, and the row
 /// opens scrolled to it. A native focus graph like `TVSimilarRail`.
 ///
 /// View box set is the last card rather than a button beside the heading, so
@@ -24,19 +24,9 @@ struct TVBoxSetRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: TVDetailLayout.sectionHeaderSpacing) {
-            header
+            TVSectionHeader(title: boxSet.boxSet.title)
             rail
         }
-    }
-
-    private var header: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            TVSectionHeader(title: boxSet.boxSet.title)
-            Text(boxSet.boxSet.rowCaption)
-                .font(.siloPosterMetadata)
-                .foregroundColor(.siloSecondaryText)
-        }
-        .accessibilityElement(children: .combine)
     }
 
     private var rail: some View {

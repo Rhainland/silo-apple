@@ -1,8 +1,8 @@
 #if !os(tvOS)
 import SwiftUI
 
-/// The box set a movie belongs to, under the movie page's hero: its title,
-/// watched count and a View box set link, then its movies as poster cards in
+/// The box set a movie belongs to, under the movie page's hero: its title
+/// and a View box set link, then its movies as poster cards in
 /// release order. The movie on screen is outlined and labelled THIS FILM, and
 /// the row opens scrolled to it. The page draws nothing until the box set
 /// has loaded (see `ItemDetailViewModel.boxSet`).
@@ -23,15 +23,9 @@ struct PhoneBoxSetRow: View {
 
     private var header: some View {
         HStack(alignment: .firstTextBaseline, spacing: 12) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(boxSet.boxSet.title)
-                    .siloScaledFont(size: 22, weight: .semibold, relativeTo: .title2)
-                    .foregroundColor(.siloOnSurface)
-                Text(boxSet.boxSet.rowCaption)
-                    .siloScaledFont(size: 13, weight: .medium, relativeTo: .footnote)
-                    .foregroundColor(.siloSecondaryText)
-            }
-            .accessibilityElement(children: .combine)
+            Text(boxSet.boxSet.title)
+                .siloScaledFont(size: 22, weight: .semibold, relativeTo: .title2)
+                .foregroundColor(.siloOnSurface)
             Spacer(minLength: 8)
             if let route = Route.boxSet(boxSet.boxSet) {
                 Button("View box set") { router.navigate(to: route) }
