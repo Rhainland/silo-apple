@@ -1,8 +1,8 @@
 #if !os(tvOS)
 import SwiftUI
 
-/// Phone movie detail: artwork hero, then cast, trailers, Details and More
-/// Like This. Mirrors TVMovieDetailView's metadata and actions, sized for touch.
+/// Phone movie detail: artwork hero, then cast, trailers and extras, the
+/// box set, More Like This and Details. Mirrors TVMovieDetailView's metadata and actions, sized for touch.
 struct MovieDetailContent<BelowOverview: View>: View {
     let detail: ItemDetail
     let isFavorite: Bool
@@ -286,20 +286,20 @@ struct MovieDetailContent<BelowOverview: View>: View {
 
     private var belowFold: some View {
         VStack(alignment: .leading, spacing: 36) {
-            if let boxSet {
-                PhoneBoxSetRow(boxSet: boxSet, currentContentId: detail.contentId)
-            }
-
             if let cast = detail.cast, !cast.isEmpty {
                 castSection(cast: cast)
             }
 
             trailersSection
 
-            detailsSection
-                .padding(.horizontal, SiloTheme.safePadding)
+            if let boxSet {
+                PhoneBoxSetRow(boxSet: boxSet, currentContentId: detail.contentId)
+            }
 
             similarSection
+
+            detailsSection
+                .padding(.horizontal, SiloTheme.safePadding)
         }
     }
 

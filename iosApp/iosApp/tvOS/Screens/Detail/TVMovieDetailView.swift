@@ -2,8 +2,8 @@
 import SwiftUI
 
 /// Movie detail for tvOS: a full-width hero with Play, the version/audio/
-/// subtitle selectors and More, then cast, trailers, recommendations and
-/// details rails.
+/// subtitle selectors and More, then cast, trailers and extras, the box set,
+/// recommendations and details rails.
 struct TVMovieDetailView: View {
     let detail: ItemDetail
     let isFavorite: Bool
@@ -99,13 +99,13 @@ struct TVMovieDetailView: View {
                         .id(heroScrollId)
 
                         VStack(alignment: .leading, spacing: TVDetailLayout.bodySectionSpacing) {
-                            if let boxSet {
-                                TVBoxSetRow(boxSet: boxSet, currentContentId: detail.contentId)
-                            }
                             if let cast = detail.cast, !cast.isEmpty {
                                 castSection(cast: cast)
                             }
                             trailersSection
+                            if let boxSet {
+                                TVBoxSetRow(boxSet: boxSet, currentContentId: detail.contentId)
+                            }
                             similarSection
                                 .focused($similarRailFocused)
                                 .id(similarSectionScrollId)

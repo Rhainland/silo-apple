@@ -1,11 +1,11 @@
 #if !os(tvOS)
 import SwiftUI
 
-/// The box set a movie belongs to, under the movie page's hero: its title
-/// and a View box set link, then its movies as poster cards in
-/// release order. The movie on screen is outlined and labelled THIS FILM, and
-/// the row opens scrolled to it. The page draws nothing until the box set
-/// has loaded (see `ItemDetailViewModel.boxSet`).
+/// The box set a movie belongs to, on the movie page between the trailers and
+/// More Like This: its title and a View box set link, then its movies as
+/// poster cards in release order. The movie on screen is outlined and labelled
+/// THIS FILM, and the row opens scrolled to it. The page draws nothing until
+/// the box set has loaded (see `ItemDetailViewModel.boxSet`).
 struct PhoneBoxSetRow: View {
     let boxSet: CatalogBoxSetDetail
     /// The movie whose page this is.

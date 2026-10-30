@@ -1,14 +1,15 @@
 #if os(tvOS)
 import SwiftUI
 
-/// The box set a movie belongs to, under the tvOS movie page's hero: its
-/// title, then its movies as poster cards in release order and a View box
-/// set card at the end. The movie on screen is outlined and labelled THIS
-/// FILM; moving down into the row lands on it, and the row
-/// opens scrolled to it. A native focus graph like `TVSimilarRail`.
+/// The box set a movie belongs to, on the tvOS movie page between the
+/// trailers and More Like This: its title, then its movies as poster cards in
+/// release order and a View box set card at the end. The movie on screen is
+/// outlined and labelled THIS FILM; moving down into the row lands on it, and
+/// the row opens scrolled to it. A native focus graph like `TVSimilarRail`.
 ///
 /// View box set is the last card rather than a button beside the heading, so
-/// Down from the hero enters the cards instead of a lone button above them.
+/// Down from the row above enters the cards instead of a lone button above
+/// them.
 struct TVBoxSetRow: View {
     let boxSet: CatalogBoxSetDetail
     /// The movie whose page this is.
